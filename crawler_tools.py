@@ -91,5 +91,5 @@ def download_ncu_pdfs(target_url: str, save_dir: str = "data"):
 # 單獨執行此腳本來更新資料庫
 if __name__ == "__main__":
 
-    test_url = "https://www.csie.ncu.edu.tw/downloads" 
+    test_url = "https://www.lc.ncu.edu.tw/zh-TW/article/2022-08-31%2016:42:00" 
     download_ncu_pdfs(test_url)
