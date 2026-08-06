@@ -19,7 +19,7 @@ class AgentState(TypedDict):
     username: str
     password: str
     current_step: str
-    agent_results: List[str]
+    agent_results: Annotated[List[str], operator.add]
     next_agent: str
     past_queries: Annotated[List[str], operator.add]
 
@@ -130,7 +130,7 @@ def academic_agent_node(state: AgentState):
     except Exception as e:
         result = f"查詢法規時發生錯誤：{str(e)}"
         
-    return {"agent_results": [f"[Academic Agent 回報]:\n{result}"]}
+    return {"agent_results": [f"Academic Agent 回報:\n{result}"]}
 
 
 def fallback_node(state: AgentState):
@@ -182,9 +182,14 @@ async def run_ncuxplore_agent(user_message: str, username: str = "", password: s
         "user_input": user_message, 
         "username": username,
         "password": password,
+        "agent_results": [],
         "past_queries": [user_message]
     }
     
     config = {"configurable": {"thread_id": thread_id}}
     final_state = await app.ainvoke(initial_state, config=config)
-    return final_state
+    results = final_state.get("agent_results", [])
+    if results:
+        return results[-1]
+    else:
+        return "系統未產生任何回覆，請重試。"

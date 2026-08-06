@@ -20,18 +20,16 @@ async def chat_with_agent(req: ChatRequest):
     """
     print(f"\n[main API] 收到前端訊息：「{req.user_message}」")
 
-    result_state = await run_ncuxplore_agent(req.user_message, req.username, req.password)
+    result_text = await run_ncuxplore_agent(req.user_message, req.username, req.password)
 
-    print(f"[main API] LangGraph 執行完畢的狀態：{result_state}")
-    
-    results = result_state.get("agent_results", ["系統沒有回傳任何結果。"])
+    print(f"[main API] LangGraph 執行完畢的狀態：{result_text}")
 
     return {
         "status": "success",
-        "response": results,
+        "response": [str(result_text)],
         "debug_info": {
-            "current_step": result_state["current_step"],
-            "executed_agent": result_state["next_agent"]
+            "current_step": "completed",
+            "executed_agent": "Academic Agent"
         }
     }
 

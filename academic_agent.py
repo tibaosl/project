@@ -274,7 +274,7 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> str:
 
     expanded_query = expand_query_for_retrieval(query_str, history_str)
 
-    query_engine = index.as_query_engine(similarity_top_k=3)
+    query_engine = index.as_query_engine(similarity_top_k=8)
     
     qa_prompt_tmpl_str = """\
     你是 NCUXplore 系統的專業校園法規檢索助理，負責服務「中央大學全校師生」。請嚴格根據以下提供的參考文件內容來回答問題。
@@ -302,6 +302,17 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> str:
     
     response = query_engine.query(expanded_query)
 
+    # debug
+    """ print("\n[Debug ] RAG 實際找到並餵給 AI 的參考區塊：")
+    if not response.source_nodes:
+        print("沒有檢索到任何相關區塊！請確認法規文件是否齊全。")
+        
+    for i, node in enumerate(response.source_nodes):
+        filename = node.metadata.get('file_name', '未知檔案')
+        print(f"\n--- 區塊 {i+1} (來自: {filename}) ---")
+        print(node.node.text.strip())
+        print("-" * 30) """
+    
     return str(response)
 
 if __name__ == "__main__":
