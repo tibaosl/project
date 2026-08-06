@@ -1,9 +1,0 @@
-__pycache__/
-*.pyc
-.env
-*.doc
-*.docx
-*.pdf
-poppler/
-storage/
-parsed_markdown_cache/
