@@ -302,6 +302,19 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> str:
     
     response = query_engine.query(expanded_query)
 
+    sources = []
+    if hasattr(response, "source_nodes") and response.source_nodes:
+        for node in response.source_nodes:
+            file_name = node.metadata.get("file_name", "未知文件")
+            page_label = node.metadata.get("page_label", "")
+            
+            source_text = f"{file_name}"
+            if page_label:
+                source_text += f" (第 {page_label} 頁)"
+                
+            if source_text not in sources:
+                sources.append(source_text)
+
     # debug
     """ print("\n[Debug ] RAG 實際找到並餵給 AI 的參考區塊：")
     if not response.source_nodes:
@@ -313,7 +326,10 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> str:
         print(node.node.text.strip())
         print("-" * 30) """
     
-    return str(response)
+    return {
+        "answer": str(response),
+        "sources": sources
+    }
 
 if __name__ == "__main__":
     test_query = "資工系畢業門檻"

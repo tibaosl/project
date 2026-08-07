@@ -2,11 +2,14 @@ import sys
 import asyncio
 import uvicorn
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from action_tools import ncu_portal_login_tool
 from supervisor_agent import run_ncuxplore_agent
 
 app = FastAPI(title="NCUXplore Agent System")
+
+app.mount("/files", StaticFiles(directory="data"), name="files")
 
 class ChatRequest(BaseModel):
     user_message: str
@@ -15,18 +18,24 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 async def chat_with_agent(req: ChatRequest):
-    """
-    接收學生輸入的白話文，交給 Supervisor Agent 處理
-    """
     print(f"\n[main API] 收到前端訊息：「{req.user_message}」")
+    final_state = await run_ncuxplore_agent(req.user_message, req.username, req.password)
 
-    result_text = await run_ncuxplore_agent(req.user_message, req.username, req.password)
-
-    print(f"[main API] LangGraph 執行完畢的狀態：{result_text}")
+    if isinstance(final_state, dict):
+        all_results = final_state.get("agent_results", [])
+        if all_results:
+            results = [all_results[-1]]  
+        else:
+            results = ["系統沒有回傳任何結果。"]
+        sources = final_state.get("sources", [])
+    else:
+        results = [str(final_state)]
+        sources = []
 
     return {
         "status": "success",
-        "response": [str(result_text)],
+        "response": results,
+        "sources": sources,
         "debug_info": {
             "current_step": "completed",
             "executed_agent": "Academic Agent"

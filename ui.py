@@ -1,5 +1,6 @@
 import streamlit as st
 import requests
+import urllib.parse
 
 st.set_page_config(page_title="NCUXplore 校園助手", page_icon="🎓")
 st.title("NCUXplore 智慧校園代理系統")
@@ -17,6 +18,12 @@ if "messages" not in st.session_state:
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
+        if msg.get("sources"):
+            with st.expander("📚 參考資料來源", expanded=False):
+                for src in msg["sources"]:
+                    file_name = src.split(" (")[0] 
+                    safe_url = urllib.parse.quote(file_name)
+                    st.markdown(f"• 📄 <a href='http://127.0.0.1:8000/files/{safe_url}' target='_blank'>{src}</a>", unsafe_allow_html=True)
 
 if prompt := st.chat_input("請輸入你的問題，例如：幫我登入系統 / 查一下資工系教室借用規定。"):
     
@@ -26,6 +33,7 @@ if prompt := st.chat_input("請輸入你的問題，例如：幫我登入系統 
 
     with st.chat_message("assistant"):
         with st.spinner("AI 大腦思考中，請稍候..."):
+            sources = []
             try:
                 api_url = "http://127.0.0.1:8000/api/chat" 
                 payload = {"user_message": prompt, "username": user_id, "password": user_pwd}
@@ -34,6 +42,7 @@ if prompt := st.chat_input("請輸入你的問題，例如：幫我登入系統 
                 if response.status_code == 200:
                     data = response.json()
                     results = data.get("response", [])
+                    sources = data.get("sources", [])
                     
                     if isinstance(results, list):
                         valid_results = [str(item) for item in results if str(item).strip()]
@@ -57,4 +66,16 @@ if prompt := st.chat_input("請輸入你的問題，例如：幫我登入系統 
                 bot_reply = f"發生未預期錯誤：{str(e)}"
 
             st.markdown(bot_reply)
-            st.session_state.messages.append({"role": "assistant", "content": bot_reply})
+
+            if sources:
+                with st.expander("📚 參考資料來源", expanded=True):
+                    for src in sources:
+                        file_name = src.split(" (")[0] 
+                        safe_url = urllib.parse.quote(file_name)
+                        st.markdown(f"• 📄 <a href='http://127.0.0.1:8000/files/{safe_url}' target='_blank'>{src}</a>", unsafe_allow_html=True)
+
+            st.session_state.messages.append({
+                "role": "assistant", 
+                "content": bot_reply,
+                "sources": sources
+            })

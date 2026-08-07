@@ -22,6 +22,7 @@ class AgentState(TypedDict):
     agent_results: Annotated[List[str], operator.add]
     next_agent: str
     past_queries: Annotated[List[str], operator.add]
+    sources: List[str]
 
 def supervisor_node(state: AgentState):
     user_input = state['user_input']
@@ -126,11 +127,18 @@ def academic_agent_node(state: AgentState):
     history_str = " -> ".join(history[-3:]) if history else "無"
     
     try:
-        result = query_academic_knowledge(user_question, history_str)
+        result_dict = query_academic_knowledge(user_question, history_str)
+        answer_text = result_dict.get("answer", "")
+        sources = result_dict.get("sources", [])
+        return {
+            "agent_results": [f"**Academic Agent 回報**：\n{answer_text}"],
+            "sources": sources
+        }
     except Exception as e:
-        result = f"查詢法規時發生錯誤：{str(e)}"
-        
-    return {"agent_results": [f"Academic Agent 回報:\n{result}"]}
+        return {
+            "agent_results": [f"查詢法規時發生錯誤：{str(e)}"],
+            "sources": []
+        }
 
 
 def fallback_node(state: AgentState):
@@ -182,14 +190,12 @@ async def run_ncuxplore_agent(user_message: str, username: str = "", password: s
         "user_input": user_message, 
         "username": username,
         "password": password,
+        "current_step": "start",
         "agent_results": [],
-        "past_queries": [user_message]
+        "next_agent": "",
+        "past_queries": [user_message],
+        "sources": []
     }
-    
     config = {"configurable": {"thread_id": thread_id}}
     final_state = await app.ainvoke(initial_state, config=config)
-    results = final_state.get("agent_results", [])
-    if results:
-        return results[-1]
-    else:
-        return "系統未產生任何回覆，請重試。"
+    return final_state
