@@ -13,7 +13,6 @@ def download_ncu_pdfs(target_url: str, save_dir: str = "data"):
     """
     print(f"\n[Crawler] 啟動自動化爬蟲，準備掃描網頁：{target_url}")
     
-    # 確保存放 PDF 的資料夾存在
     os.makedirs(save_dir, exist_ok=True)
     
     # 偽裝成真人瀏覽器發送請求
