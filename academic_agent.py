@@ -14,17 +14,34 @@ from llama_index.core import (
     StorageContext,
     load_index_from_storage,
     Settings,
-    Document
+    Document,
+    get_response_synthesizer,
+    QueryBundle
 )
 from llama_index.llms.openai import OpenAI as LlamaOpenAI
 from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 from llama_index.readers.file import DocxReader
 from llama_index.core.llms import ChatMessage, MessageRole
+from llama_index.core.postprocessor import LLMRerank
+from llama_index.core.prompts import PromptTemplate
 
 load_dotenv()
 
-Settings.llm = LlamaOpenAI(model="gpt-4o-mini", temperature=0)
-llm_smart = LlamaOpenAI(model="gpt-4o", temperature=0)
+Settings.llm = LlamaOpenAI(
+    model="gpt-4o-mini", 
+    temperature=0,
+    max_tokens=800,
+    presence_penalty=0.5,
+    frequency_penalty=0.5
+)
+
+llm_smart = LlamaOpenAI(
+    model="gpt-4o", 
+    temperature=0,
+    max_tokens=1000,
+    presence_penalty=0.5,
+    frequency_penalty=0.5
+)
 openai_client = OpenAI()
 
 CACHE_MD_DIR = "./parsed_markdown_cache"
@@ -44,20 +61,36 @@ def clean_markdown_output(text: str) -> str:
     return text.strip()
 
 def has_tables_in_pdf(pdf_path: str) -> bool:
-    """【表格預檢器】快速掃描 PDF 所有頁面，判斷是否包含表格結構 (0.1秒完成)"""
+    """【表格預檢器】快速掃描 PDF 所有頁面，判斷是否包含表格結構"""
     try:
         with pdfplumber.open(pdf_path) as pdf:
             for page in pdf.pages:
-                tables = page.find_tables()
-                if tables and len(tables) > 0:
-                    return True
+                tables = page.extract_tables()
+                if tables:
+                    for table in tables:
+                        if not table:
+                            continue
+                        
+                        total_cells = 0
+                        total_text_length = 0
+                        
+                        for row in table:
+                            for cell in row:
+                                if cell and cell.strip():
+                                    total_cells += 1
+                                    total_text_length += len(cell.strip())
+                        
+                        if total_cells > 0:
+                            avg_cell_length = total_text_length / total_cells
+                            if avg_cell_length < 35 and total_cells >= 4:
+                                return True
     except Exception as e:
         print(f"[表格偵測警告] 無法讀取 {os.path.basename(pdf_path)}，將預設處理。錯誤: {e}")
         return True
     return False
 
 def extract_plain_text_from_pdf(pdf_path: str) -> str:
-    """針對無表格的 PDF 直接極速抽取純文字"""
+    """針對無表格的 PDF 直接快速抽取純文字"""
     try:
         text_content = ""
         with pdfplumber.open(pdf_path) as pdf:
@@ -90,23 +123,26 @@ def convert_pdf_to_markdown_via_vision(pdf_path: str) -> str:
         print(f"    --> 正在解析第 {i+1} / {total_pages} 頁...")
 
         buffered = io.BytesIO()
-        img.save(buffered, format="JPEG")
+        img.save(buffered, format="PNG")
         img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
 
-        user_prompt = "請將這張校園法規/申請表 PDF 頁面轉為標準且結構完整的 Markdown 格式。"
-        user_prompt += (
-            "\n\n【排版與表格結構極重要指示】：\n"
-            "1. 門檻對照表邏輯：若頁面包含英文門檻表格，請統一整理為標準 6 欄表格："
-            "| Test Name | 資電學院 | 客家學院 | 管理學院 | 生醫學院 | 校學士 |\n"
-            "2. 填寫欄分離：頁面上的『考試成績/考試日期/簽章』等學生填寫欄位，請獨立拆成後續的小表格或列表，絕對不可將門檻數據與填寫欄混在同一個表格中！\n"
+        user_prompt = (
+            "你是一個極度精準的文件視覺 OCR 引擎。請將圖片中的內容 100% 忠實轉錄為 Markdown 格式。\n\n"
+            "【最高排版原則 - 請根據圖片實際排版動態調整】：\n"
+            "1. 若圖片包含「資料對照表 / 門檻規定 / 收費明細」等網格表格：\n"
+            "   - 請精準還原為 Markdown 表格 (|...|)。\n"
+            "   - 圖片有幾欄，你就畫幾欄（不論是 3 欄、4 欄或 6 欄），絕對不可漏掉或自行合併欄位！\n"
+            "   - 儲存格內的文字再長都必須完整轉錄，嚴禁截斷、省略或摘要文字。\n"
+            "2. 若圖片為「Q&A 問答 / 一般條文 / 條列式說明」：\n"
+            "   - 直接以純文字、標題 (#, ##) 或清單 (- ) 輸出。\n"
+            "   - 絕對禁止將一般文字或 Q&A 硬排成表格！\n"
+            "3. 若圖片底部有「申請人簽章 / 填表日期 / 聯絡方式」等空白填寫區：\n"
+            "   - 請將這些填寫欄位獨立列在 Markdown 最下方（使用清單格式），絕對不要把填寫欄位與上方的資料表格混在一起。\n\n"
+            "【嚴格禁令】：必須一字不漏轉錄，不可發明詞彙，嚴禁輸出 ```markdown 標籤。"
         )
 
         if previous_page_snippet:
-            user_prompt += (
-                f"\n3. 跨頁銜接：上一頁 Markdown 結尾如下：\n```\n{previous_page_snippet}\n```\n"
-                f"如果本頁頂部的文字（如 150(115年後適用)、培力英檢）是上一頁表格的『未完成延續』，"
-                f"**請將它們填入正確的 6 欄表格中，並自動補上 | Test Name | 資電學院 | 客家學院 |... 表頭**！"
-            )
+            user_prompt += f"\n【跨頁銜接參考】（上一頁結尾）：\n{previous_page_snippet}\n請確保語意與表格結構連貫。\n"
 
         response = openai_client.chat.completions.create(
             model="gpt-4o",
@@ -123,19 +159,24 @@ def convert_pdf_to_markdown_via_vision(pdf_path: str) -> str:
                     "role": "user",
                     "content": [
                         {"type": "text", "text": user_prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_base64}"}}
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{img_base64}",
+                                "detail": "high"
+                            }
+                        }
                     ]
                 }
             ],
-            temperature=0
+            temperature=0,
+            max_tokens=4000,
         )
         
         raw_text = response.choices[0].message.content
-        
         cleaned_page_md = clean_markdown_output(raw_text)
         
         all_pages_md.append(f"\n{cleaned_page_md}")
-        
         previous_page_snippet = cleaned_page_md[-400:] if len(cleaned_page_md) > 400 else cleaned_page_md
 
     full_md_content = "\n\n---\n\n".join(all_pages_md)
@@ -145,17 +186,6 @@ def convert_pdf_to_markdown_via_vision(pdf_path: str) -> str:
         f.write(full_md_content)
 
     return full_md_content
-
-def has_tables_in_pdf(pdf_path: str) -> bool:
-    """【表格預檢器】只花 0.1 秒掃描是否有表格"""
-    try:
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                if page.find_tables():
-                    return True
-    except Exception:
-        return True
-    return False
 
 def load_documents():
     """自動同時處理 .pdf 與 .docx 檔案"""
@@ -305,10 +335,10 @@ def expand_query_for_retrieval(user_query: str, history_str: str = "") -> str:
     1. 意圖與條件強制合併：當使用者在最新輸入中只是「補充條件」（如：資工系、大學部），你必須將「對話歷史」中的「核心詢問目標」（如：畢業門檻、多少錢）完整保留並合併在一起，絕對不可以把歷史中真正要問的事情丟掉。
     2. 話題切換與覆蓋：如果使用者提出了「全新的系所/單位」（如：客家系、那企管系呢），請「直接用新系所覆蓋掉」歷史紀錄中的舊系所，但保留原本詢問的動作，絕對不可以把兩個不同的系所混在一起。
     3. 動態學院推導：若問題中提到「任何系所」（例如：企管系、物理系、資工系），請運用你的常識，自動在關鍵字中補上該系所隸屬的「學院名稱」（如管理學院、理學院、資電學院），以及「全校通用」、「大學部」等上層關鍵字。
-    
+
     【範例】：
     歷史：畢業門檻 -> 資工系大學部的
-    輸出：中央大學 資訊工程學系 資電學院 大學部 畢業門檻 英文能力鑑定
+    輸出：中央大學 資訊工程學系 資電學院 大學部 畢業門檻 英文能力鑑定 問答集
 
     歷史：資工系畢業門檻 -> 那客家系呢
     輸出：中央大學 客家語文暨社會科學學系 客家學院 大學部 畢業門檻 英文能力鑑定
@@ -330,15 +360,10 @@ def expand_query_for_retrieval(user_query: str, history_str: str = "") -> str:
     print(f"[Academic Agent] 擴寫後問題：{expanded_query}")
     return expanded_query
 
-def query_academic_knowledge(query_str: str, history_str: str = "") -> str:
+def query_academic_knowledge(query_str: str, history_str: str = "") -> dict:
     index = get_or_create_index()
-    
     print(f"\n[Academic Agent] 收到原始問題：「{query_str}」")
 
-    expanded_query = expand_query_for_retrieval(query_str, history_str)
-
-    query_engine = index.as_query_engine(similarity_top_k=8)
-    
     qa_prompt_tmpl_str = """\
     你是 NCUXplore 系統的專業校園法規檢索助理，負責服務「中央大學全校師生」。請嚴格根據以下提供的參考文件內容來回答問題。
 
@@ -352,6 +377,10 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> str:
     2. 動態階層繼承推理：使用者可能會詢問全校「任何系所」的規定。若文件中標示為該系所隸屬的「學院」規定，或「全校大學部」通用規定，請直接套用該標準回答，並主動向使用者說明層級關係（例如：「您詢問的企管系隸屬管理學院，依據管理學院/全校大學部規定...」）。
     3. 雜訊過濾：請精準針對使用者的「問題核心」回答，自動忽略無關的獎金、匯款帳號、郵局存摺等行政細節。
     4. 嚴禁推託與捏造：只能根據文件回答。若文件中完全沒有相關資訊，請直接回答：「目前系統的參考文件中未包含此資訊。」
+    5. 請簡明扼要地整理答案，絕對禁止無限重複相同的字句。若發現語句不通順，請重新組織為人類好讀的條列式。
+    6. 綜合評估：參考資料中若同時包含【常見問題 (FAQ)】與【一般法規】，請將兩者互相對照。
+    7. 互補原則：請以「一般法規」作為規定的依據，並以「常見問題」作為實務做法的補充說明。
+    8. 衝突處理：若常見問題與一般法規條文有細節差異，請說明法規標準，並特別提醒常見問題中的例外或具體做法。
 
     ---------------------
     參考文件內容如下：
@@ -360,16 +389,44 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> str:
     使用者問題：
     {query_str}
     """
-    qa_prompt_tmpl = PromptTemplate(qa_prompt_tmpl_str)
-    query_engine.update_prompts({"response_synthesizer:text_qa_template": qa_prompt_tmpl})
-    
-    response = query_engine.query(expanded_query)
 
-    sources = []
-    if hasattr(response, "source_nodes") and response.source_nodes:
-        for node in response.source_nodes:
-            file_name = node.metadata.get("file_name", "未知文件")
-            page_label = node.metadata.get("page_label", "")
+    try:
+        expanded_query = expand_query_for_retrieval(query_str, history_str)
+
+        print("[Academic Agent] 正在執行雙軌並行檢索...")
+        retriever = index.as_retriever(similarity_top_k=15)
+        nodes_from_original = retriever.retrieve(query_str)
+        nodes_from_expanded = retriever.retrieve(expanded_query)
+
+        unique_nodes_dict = {}
+        for node in nodes_from_original + nodes_from_expanded:
+            unique_nodes_dict[node.node.node_id] = node
+        merged_nodes = list(unique_nodes_dict.values())
+        print(f"[Academic Agent] 合併去重後共取得 {len(merged_nodes)} 筆候選區塊")
+
+        reranker = LLMRerank(
+            choice_batch_size=5,
+            top_n=8,
+            llm=Settings.llm 
+        )
+        query_bundle = QueryBundle(query_str)
+        final_nodes = reranker.postprocess_nodes(merged_nodes, query_bundle=query_bundle)
+
+        qa_prompt_tmpl = PromptTemplate(qa_prompt_tmpl_str)
+        synthesizer = get_response_synthesizer(
+            text_qa_template=qa_prompt_tmpl,
+            llm=Settings.llm
+        )
+        
+        response = synthesizer.synthesize(
+            query=query_str,
+            nodes=final_nodes
+        )
+
+        sources = []
+        for node in final_nodes:
+            file_name = node.node.metadata.get("file_name", "未知文件")
+            page_label = node.node.metadata.get("page_label", "")
             
             source_text = f"{file_name}"
             if page_label:
@@ -378,21 +435,17 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> str:
             if source_text not in sources:
                 sources.append(source_text)
 
-    # debug
-    """ print("\n[Debug ] RAG 實際找到並餵給 AI 的參考區塊：")
-    if not response.source_nodes:
-        print("沒有檢索到任何相關區塊！請確認法規文件是否齊全。")
-        
-    for i, node in enumerate(response.source_nodes):
-        filename = node.metadata.get('file_name', '未知檔案')
-        print(f"\n--- 區塊 {i+1} (來自: {filename}) ---")
-        print(node.node.text.strip())
-        print("-" * 30) """
-    
-    return {
-        "answer": str(response),
-        "sources": sources
-    }
+        return {
+            "answer": str(response),
+            "sources": sources
+        }
+
+    except Exception as e:
+        print(f"\n[Academic Agent] 查詢時發生非預期錯誤: {e}")
+        return {
+            "answer": "系統在檢索法規與常見問題時發生錯誤，請稍後再試。",
+            "sources": []
+        }
 
 if __name__ == "__main__":
     test_query = "資工系畢業門檻"
