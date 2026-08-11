@@ -17,7 +17,7 @@ from llama_index.core import (
     Document
 )
 from llama_index.llms.openai import OpenAI as LlamaOpenAI
-from llama_index.core.node_parser import MarkdownNodeParser
+from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
 from llama_index.readers.file import DocxReader
 from llama_index.core.llms import ChatMessage, MessageRole
 
@@ -263,15 +263,20 @@ def get_or_create_index():
         print("\n[Academic Agent] 正在解析 data 資料夾下的法規 (.pdf / .docx)...")
         documents = load_documents()
         
-        print("\n[Academic Agent] 文件載入完成！正在進行 Markdown 智慧切塊...")
-        node_parser = MarkdownNodeParser()
-        nodes = node_parser.get_nodes_from_documents(documents)
-
-        for node in nodes:
-            file_name = node.metadata.get('file_name', '未知檔案')
-            node.text = f"【來源檔案: {file_name}】\n{node.text}"
+        print("\n[Academic Agent] 文件載入完成！正在進行智慧切塊與 Token 安全切割...")
         
-        index = VectorStoreIndex(nodes)
+        md_parser = MarkdownNodeParser()
+        base_nodes = md_parser.get_nodes_from_documents(documents)
+
+        text_splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=100)
+        final_nodes = text_splitter.get_nodes_from_documents(base_nodes)
+
+        for node in final_nodes:
+            file_name = node.metadata.get('file_name', '未知檔案')
+            if not node.text.startswith("【來源檔案:"):
+                node.text = f"【來源檔案: {file_name}】\n{node.text}"
+        
+        index = VectorStoreIndex(final_nodes)
         index.storage_context.persist(persist_dir=PERSIST_DIR)
 
         with open(mtime_file, "w") as f:

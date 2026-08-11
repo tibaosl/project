@@ -14,7 +14,7 @@ GENERIC_NAMES = {"pdf", "doc", "docx", "下載", "點我下載", "檔案", "附�
 # 不爬該關鍵字
 PARTIAL_BLACKLIST = ["測試用檔案", "無效文件"]
 # 不爬特定檔案
-EXACT_BLACKLIST = ["LaTex套件下載", "圖書館表單下載","共授課程期末學生學習心得回饋", "共時授課教學計畫書"]
+EXACT_BLACKLIST = ["LaTex套件下載", "圖書館表單下載","共授課程期末學生學習心得回饋", "共時授課教學計畫書", "檔案下載", "領域專長模組課程計畫書"]
 
 def extract_pdf_title(pdf_bytes: bytes) -> str:
     """
