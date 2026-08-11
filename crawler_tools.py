@@ -14,7 +14,7 @@ GENERIC_NAMES = {"pdf", "doc", "docx", "下載", "點我下載", "檔案", "附�
 # 不爬該關鍵字
 PARTIAL_BLACKLIST = ["測試用檔案", "無效文件"]
 # 不爬特定檔案
-EXACT_BLACKLIST = ["LaTex套件下載", "圖書館表單下載"]
+EXACT_BLACKLIST = ["LaTex套件下載", "圖書館表單下載","共授課程期末學生學習心得回饋", "共時授課教學計畫書"]
 
 def extract_pdf_title(pdf_bytes: bytes) -> str:
     """
@@ -145,7 +145,8 @@ if __name__ == "__main__":
     test_urls = [
         "https://www.csie.ncu.edu.tw/downloads",
         "https://pdc.adm.ncu.edu.tw/p/412-1019-1765.php?Lang=zh-tw",
-        "https://pdc.adm.ncu.edu.tw/p/412-1019-1706.php?Lang=zh-tw"
+        "https://pdc.adm.ncu.edu.tw/p/412-1019-1706.php?Lang=zh-tw",
+        "https://www.lc.ncu.edu.tw/zh-TW/article/2022-08-31%2016:42:00"
     ]
 
     for idx, url in enumerate(test_urls, 1):

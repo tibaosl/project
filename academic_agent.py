@@ -6,6 +6,7 @@ import base64
 from dotenv import load_dotenv
 from pdf2image import convert_from_path
 from openai import OpenAI
+import pdfplumber
 
 from llama_index.core import (
     VectorStoreIndex, 
@@ -36,13 +37,36 @@ def clean_markdown_output(text: str) -> str:
     """【自動清洗器】自動砍掉 GPT 的廢話開場白、警語與 Markdown 區塊標籤"""
     if not text:
         return ""
-
     text = re.sub(r"^```markdown\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"^```\s*$", "", text, flags=re.MULTILINE)
     text = re.sub(r"^(I'm unable to|However, I can|Please adjust|Here's a|Here is|這是一份).*?\n+", "", text, flags=re.IGNORECASE | re.MULTILINE)
     text = re.sub(r"\n+(Please adjust|Hope this helps|如需修改|希望這對您有幫助).*?$", "", text, flags=re.IGNORECASE | re.MULTILINE)
-    
     return text.strip()
+
+def has_tables_in_pdf(pdf_path: str) -> bool:
+    """【表格預檢器】快速掃描 PDF 所有頁面，判斷是否包含表格結構 (0.1秒完成)"""
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                tables = page.find_tables()
+                if tables and len(tables) > 0:
+                    return True
+    except Exception as e:
+        print(f"[表格偵測警告] 無法讀取 {os.path.basename(pdf_path)}，將預設處理。錯誤: {e}")
+        return True
+    return False
+
+def extract_plain_text_from_pdf(pdf_path: str) -> str:
+    """針對無表格的 PDF 直接極速抽取純文字"""
+    try:
+        text_content = ""
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                text_content += (page.extract_text() or "") + "\n\n"
+        return text_content
+    except Exception as e:
+        print(f"  [純文字抽取失敗] {os.path.basename(pdf_path)}: {e}")
+        return ""
 
 def convert_pdf_to_markdown_via_vision(pdf_path: str) -> str:
     """智慧型 Context-Aware Vision 轉碼器 (自動銜接跨頁表格 + 自動清洗)"""
@@ -122,6 +146,17 @@ def convert_pdf_to_markdown_via_vision(pdf_path: str) -> str:
 
     return full_md_content
 
+def has_tables_in_pdf(pdf_path: str) -> bool:
+    """【表格預檢器】只花 0.1 秒掃描是否有表格"""
+    try:
+        with pdfplumber.open(pdf_path) as pdf:
+            for page in pdf.pages:
+                if page.find_tables():
+                    return True
+    except Exception:
+        return True
+    return False
+
 def load_documents():
     """自動同時處理 .pdf 與 .docx 檔案"""
     documents = []
@@ -141,12 +176,35 @@ def load_documents():
             
             if file.endswith(".pdf"):
                 try:
-                    md_text = convert_pdf_to_markdown_via_vision(file_path)
-                    doc = Document(
-                        text=md_text,
-                        metadata={"file_name": file, "file_path": file_path}
-                    )
-                    documents.append(doc)
+                    md_cache_path = os.path.join(CACHE_MD_DIR, f"{file}.md")
+
+                    # 1. 若已經有解析過的 .md 快取，直接讀取
+                    if os.path.exists(md_cache_path):
+                        print(f"  [快取命中] 讀取 Markdown 快取: {file}.md")
+                        with open(md_cache_path, "r", encoding="utf-8") as f:
+                            md_text = f.read()
+
+                    # 2. 判斷是否有表格：有表格才呼叫 Vision OCR 並建立 .md 快取
+                    elif has_tables_in_pdf(file_path):
+                        print(f"  [偵測到表格] {file} 包含表格，啟動 Vision OCR 轉 Markdown...")
+                        md_text = convert_pdf_to_markdown_via_vision(file_path)
+                        if md_text:
+                            os.makedirs(CACHE_MD_DIR, exist_ok=True)
+                            with open(md_cache_path, "w", encoding="utf-8") as f:
+                                f.write(md_text)
+
+                    # 3. 無表格：走本地純文字抽取 (不呼叫 API、不生成 .md 快取)
+                    else:
+                        print(f"  [純文字 PDF] {file} 無表格，快速本地抽取文字...")
+                        md_text = extract_plain_text_from_pdf(file_path)
+
+                    if md_text:
+                        doc = Document(
+                            text=md_text,
+                            metadata={"file_name": file, "file_path": file_path}
+                        )
+                        documents.append(doc)
+
                 except Exception as e:
                     print(f"\n  [檔案損毀] 無法讀取 PDF: {file}")
                     print(f" 錯誤原因: {e}")
