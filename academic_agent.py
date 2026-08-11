@@ -448,6 +448,6 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> dict:
         }
 
 if __name__ == "__main__":
-    test_query = "資工系畢業門檻"
+    test_query = "資工系英文畢業門檻"
     answer = query_academic_knowledge(test_query)
     print(f"\n[Academic Agent 回答]:\n{answer}")
