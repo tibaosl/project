@@ -10,7 +10,6 @@ import pdfplumber
 
 from llama_index.core import (
     VectorStoreIndex, 
-    PromptTemplate,
     StorageContext,
     load_index_from_storage,
     Settings,
@@ -19,10 +18,10 @@ from llama_index.core import (
     QueryBundle
 )
 from llama_index.llms.openai import OpenAI as LlamaOpenAI
-from llama_index.core.node_parser import MarkdownNodeParser, SentenceSplitter
+from llama_index.core.node_parser import SentenceWindowNodeParser
+from llama_index.core.postprocessor import MetadataReplacementPostProcessor, LLMRerank
 from llama_index.readers.file import DocxReader
 from llama_index.core.llms import ChatMessage, MessageRole
-from llama_index.core.postprocessor import LLMRerank
 from llama_index.core.prompts import PromptTemplate
 
 load_dotenv()
@@ -47,7 +46,6 @@ openai_client = OpenAI()
 CACHE_MD_DIR = "./parsed_markdown_cache"
 PERSIST_DIR = "./storage"
 DATA_DIR = "data"
-
 POPPLER_PATH = os.getenv("POPPLER_PATH", None)
 
 def clean_markdown_output(text: str) -> str:
@@ -293,18 +291,14 @@ def get_or_create_index():
         print("\n[Academic Agent] 正在解析 data 資料夾下的法規 (.pdf / .docx)...")
         documents = load_documents()
         
-        print("\n[Academic Agent] 文件載入完成！正在進行智慧切塊與 Token 安全切割...")
+        print("\n[Academic Agent] 文件載入完成！啟動 Sentence Window 智慧切割器...")
         
-        md_parser = MarkdownNodeParser()
-        base_nodes = md_parser.get_nodes_from_documents(documents)
-
-        text_splitter = SentenceSplitter(chunk_size=1024, chunk_overlap=100)
-        final_nodes = text_splitter.get_nodes_from_documents(base_nodes)
-
-        for node in final_nodes:
-            file_name = node.metadata.get('file_name', '未知檔案')
-            if not node.text.startswith("【來源檔案:"):
-                node.text = f"【來源檔案: {file_name}】\n{node.text}"
+        node_parser = SentenceWindowNodeParser.from_defaults(
+            window_size=3, # # 前後各抓 3 句，一個 Node 擴展出 7 句的完整段落
+            window_metadata_key="window",
+            original_text_metadata_key="original_text",
+        )
+        final_nodes = node_parser.get_nodes_from_documents(documents)
         
         index = VectorStoreIndex(final_nodes)
         index.storage_context.persist(persist_dir=PERSIST_DIR)
@@ -398,9 +392,7 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> dict:
         nodes_from_original = retriever.retrieve(query_str)
         nodes_from_expanded = retriever.retrieve(expanded_query)
 
-        unique_nodes_dict = {}
-        for node in nodes_from_original + nodes_from_expanded:
-            unique_nodes_dict[node.node.node_id] = node
+        unique_nodes_dict = {n.node.node_id: n for n in nodes_from_original + nodes_from_expanded}
         merged_nodes = list(unique_nodes_dict.values())
         print(f"[Academic Agent] 合併去重後共取得 {len(merged_nodes)} 筆候選區塊")
 
@@ -410,8 +402,9 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> dict:
             llm=Settings.llm 
         )
         query_bundle = QueryBundle(query_str)
-        final_nodes = reranker.postprocess_nodes(merged_nodes, query_bundle=query_bundle)
-
+        reranked_nodes = reranker.postprocess_nodes(merged_nodes, query_bundle=query_bundle)
+        window_processor = MetadataReplacementPostProcessor(target_metadata_key="window")
+        final_nodes = window_processor.postprocess_nodes(reranked_nodes)
         qa_prompt_tmpl = PromptTemplate(qa_prompt_tmpl_str)
         synthesizer = get_response_synthesizer(
             text_qa_template=qa_prompt_tmpl,
