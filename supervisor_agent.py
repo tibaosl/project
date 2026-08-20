@@ -1,7 +1,7 @@
 from typing import TypedDict, Annotated, List
 from langgraph.graph import StateGraph, END
 import operator
-from action_tools import ncu_portal_login_tool
+from action_tools import main
 from academic_agent import query_academic_knowledge
 import os
 from dotenv import load_dotenv
@@ -108,16 +108,26 @@ def clarification_node(state: AgentState):
 
 async def action_agent_node(state: AgentState):
     print("\n[Action Agent] 被喚醒了！準備去操作網頁...")
-    if not state.get("username") or not state.get("password"):
-        return {"agent_results": ["[Action Agent 回報] 失敗：請提供 Portal 帳號與密碼才能執行登入喔！"]}
-    
+    user_input = state['user_input']
+    username = state.get("username", "")
+    password = state.get("password", "")
+
+    if not username or not password:
+        return {"agent_results": ["[Action Agent 回報]:\n缺乏帳號或密碼，無法執行 Portal 登入自動化操作。請先在左側邊欄輸入帳號密碼！"]}
+
     try:
-        action_result = await ncu_portal_login_tool(state["username"], state["password"])
-        result_message = action_result["message"]
-    except Exception as e:
-        result_message = f"自動化操作發生錯誤：{str(e)}"
+        print("[Action Agent] 正在啟動無頭瀏覽器執行任務...")
+        result = await main(username, password)
         
-    return {"agent_results": [result_message]}
+        if result.get("status") == "success":
+            schedule_data = result.get("data", [])
+            return {"agent_results": [schedule_data]}
+        else:
+            return {"agent_results": [f"[Action Agent 回報]:\n執行失敗：{result.get('message')}"]}
+
+    except Exception as e:
+        print(f"[Action Agent] 發生錯誤: {e}")
+        return {"agent_results": [f"[Action Agent 回報]:\n系統執行時發生錯誤：{str(e)}"]}
 
 
 def academic_agent_node(state: AgentState):

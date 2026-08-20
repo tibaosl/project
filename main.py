@@ -4,7 +4,7 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from action_tools import ncu_portal_login_tool
+from action_tools import main
 from supervisor_agent import run_ncuxplore_agent
 
 app = FastAPI(title="NCUXplore Agent System")
@@ -49,7 +49,7 @@ class LoginRequest(BaseModel):
 
 @app.post("/api/action/login")
 async def trigger_login(req: LoginRequest):
-    result = await ncu_portal_login_tool(req.username, req.password)
+    result = await main(req.username, req.password)
     return {"status": "success", "data": result}
 
 if __name__ == "__main__":
