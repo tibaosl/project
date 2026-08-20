@@ -173,4 +173,4 @@ async def main(username, password):
             return {"status": "error", "message": str(e)}
 
 if __name__ == "__main__":
-    asyncio.run(main("113502513", "MAX10207max*"))
+    asyncio.run(main("你的帳號", "你的密碼"))
