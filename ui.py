@@ -14,6 +14,7 @@ user_id = st.sidebar.text_input("帳號")
 user_pwd = st.sidebar.text_input("密碼", type="password")
 st.sidebar.warning("僅供本次測試使用，重整網頁後即會清除。")
 
+
 def format_course_cell(details):
     if not details:
         return ""
@@ -39,6 +40,7 @@ def format_course_cell(details):
         courses_html.append(c_html)
 
     return "<div class='course-divider'></div>".join(courses_html)
+
 
 def render_agent_reply(content):
     """判斷並渲染文字或結構化的課表資料"""

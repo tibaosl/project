@@ -4,7 +4,6 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from action_tools import main
 from supervisor_agent import run_ncuxplore_agent
 
 app = FastAPI(title="NCUXplore Agent System")
@@ -41,16 +40,6 @@ async def chat_with_agent(req: ChatRequest):
             "executed_agent": "Academic Agent"
         }
     }
-
-# 舊測試
-class LoginRequest(BaseModel):
-    username: str
-    password: str
-
-@app.post("/api/action/login")
-async def trigger_login(req: LoginRequest):
-    result = await main(req.username, req.password)
-    return {"status": "success", "data": result}
 
 if __name__ == "__main__":
     if sys.platform == "win32":
