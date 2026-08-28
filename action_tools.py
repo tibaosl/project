@@ -1,5 +1,8 @@
 import asyncio
 from typing import Any, Optional
+import re
+
+from typing import Any
 
 from playwright.async_api import (
     Browser,
@@ -710,10 +713,10 @@ class NCUSession:
 async def search_courses(
     session: NCUSession,
     keyword: str,
-):
+) -> list[dict[str, Any]]:
     """依關鍵字搜尋課程。
 
-    只解析標題等於 keyword 的搜尋欄位。
+    只解析標題包含 keyword 的搜尋欄位。
     如果該欄位已經存在，就直接使用原本的欄位。
     """
 
@@ -724,7 +727,6 @@ async def search_courses(
     # ==================================================
     # 1. 點擊「依關鍵字」
     # ==================================================
-
     await page.get_by_role(
         "button",
         name="依關鍵字",
@@ -733,10 +735,7 @@ async def search_courses(
     # ==================================================
     # 2. 找到搜尋輸入框
     # ==================================================
-
-    search_input = page.locator(
-        "#searchWord"
-    )
+    search_input = page.locator("#searchWord")
 
     await search_input.wait_for(
         state="visible",
@@ -746,16 +745,12 @@ async def search_courses(
     # ==================================================
     # 3. 填入關鍵字
     # ==================================================
-
     await search_input.fill(keyword)
 
     # ==================================================
-    # 4. 找到 searchWord 所在的 form
+    # 4. 找到 searchWord 所在的 form 並送出
     # ==================================================
-
-    search_form = search_input.locator(
-        "xpath=ancestor::form"
-    )
+    search_form = search_input.locator("xpath=ancestor::form")
 
     search_button = search_form.locator(
         'input[type="submit"][value="Search"]'
@@ -763,12 +758,10 @@ async def search_courses(
 
     await search_button.click()
 
-    print(
-        f"[Action Agent] 已送出搜尋：{keyword}"
-    )
+    print(f"[Action Agent] 已送出搜尋：{keyword}")
 
     # ==================================================
-    # 5 & 6. 尋找標題包含 keyword 的 portlet (破解 Column 排版問題)
+    # 5. 尋找標題包含 keyword 的 portlet (處理 Column 排版問題)
     # ==================================================
     print(f"[Action Agent] 正在等待 AJAX 載入並尋找「{keyword}」欄位...")
 
@@ -778,96 +771,116 @@ async def search_courses(
     for _ in range(20):
         portlets = page.locator('div.portlet[id^="portlet_search_"]')
         count = await portlets.count()
-        
+
         for i in range(count):
             p = portlets.nth(i)
             try:
                 title_text = await p.locator(".panel_title").inner_text()
-                
+
                 if keyword in title_text:
                     portlet = p
                     actual_keyword = title_text.strip()
                     break
             except Exception:
                 continue
-                
+
         if portlet is not None:
             break
 
         await page.wait_for_timeout(500)
 
     if portlet is None:
-        raise RuntimeError(f"等待逾時：畫面上找不到標題包含「{keyword}」的結果。")
-        
+        raise RuntimeError(
+            f"等待逾時：畫面上找不到標題包含「{keyword}」的結果。"
+        )
+
     print(f"[Action Agent] 成功鎖定搜尋欄位：{actual_keyword}")
 
     # ==================================================
-    # 7. ★ 只抓這個 portlet 裡面的課程
+    # 6. 只抓取該 portlet 內部的課程
     # ==================================================
-
-    courses = portlet.locator(
-        "li[sno]"
-    )
+    courses = portlet.locator("li[sno]")
 
     course_count = await courses.count()
 
     print(
-        f"[Action Agent] 「{keyword}」"
-        f"目前共有 {course_count} 門課程。"
+        f"[Action Agent] 「{keyword}」目前共有 {course_count} 門課程。"
     )
 
     if course_count == 0:
-        print(
-            f"[Action Agent] 「{keyword}」沒有課程。"
-        )
-
+        print(f"[Action Agent] 「{keyword}」沒有課程。")
         return []
-
+    # 找到 courses 後，印出第一筆課程的 HTML 原始碼
+  
     # ==================================================
-    # 8. 解析課程
+    # 7. 解析課程資料（精準 Hover .class_no 並擷取 .ui-tooltip-content）
     # ==================================================
+    import re
 
     results = []
 
     for index in range(course_count):
-
         course = courses.nth(index)
 
-        try:
-            serial = (
-                await course.locator(
-                    ".class_serial"
-                ).inner_text()
-            ).strip()
-        except Exception:
-            serial = ""
+        # 1. 取得清單列上的基本文字
+        serial = (
+            (await course.locator(".class_serial").inner_text()).strip()
+            if await course.locator(".class_serial").count() > 0
+            else ""
+        )
+        course_no = (
+            (await course.locator(".class_no").inner_text()).strip()
+            if await course.locator(".class_no").count() > 0
+            else ""
+        )
+        title = (
+            (await course.locator(".class_title").inner_text()).strip()
+            if await course.locator(".class_title").count() > 0
+            else ""
+        )
+        teacher = (
+            (await course.locator(".class_teacher").inner_text()).strip()
+            if await course.locator(".class_teacher").count() > 0
+            else ""
+        )
+
+        # 2. Hover 到該課程的 .class_no 觸發 Tooltip
+        class_no_locator = course.locator(".class_no")
+        if await class_no_locator.count() > 0:
+            await class_no_locator.first.hover()
+        else:
+            await course.hover()
+
+        # 等待浮動層出現在 DOM 中
+        tooltip = page.locator(".ui-tooltip-content").last
+        
+        time_text = ""
+        credits_text = ""
+        capacity_text = ""
 
         try:
-            course_no = (
-                await course.locator(
-                    ".class_no"
-                ).inner_text()
-            ).strip()
-        except Exception:
-            course_no = ""
+            # 等待 tooltip 可見（設定較短 timeout 避免沒 tooltip 時卡太久）
+            await tooltip.wait_for(state="visible", timeout=1000)
+            tooltip_content = await tooltip.inner_text()
 
-        try:
-            title = (
-                await course.locator(
-                    ".class_title"
-                ).inner_text()
-            ).strip()
-        except Exception:
-            title = ""
+            # 解析「課程時間」（例如：五567）
+            time_match = re.search(r"課程時間\s*[:：]\s*([^\n\r]+)", tooltip_content)
+            if time_match:
+                time_text = time_match.group(1).strip()
 
-        try:
-            teacher = (
-                await course.locator(
-                    ".class_teacher"
-                ).inner_text()
-            ).strip()
+            # 解析「學分」
+            credit_match = re.search(r"學分\s*[:：]\s*([^\n\r]+)", tooltip_content)
+            if credit_match:
+                credits_text = credit_match.group(1).strip()
+
+            # 解析「人數限制」
+            limit_match = re.search(r"人數限制\s*[:：]\s*([^\n\r]+)", tooltip_content)
+            if limit_match:
+                capacity_text = limit_match.group(1).strip()
+
         except Exception:
-            teacher = ""
+            # 部分課程若無 tooltip 則略過
+            pass
 
         results.append(
             {
@@ -875,76 +888,45 @@ async def search_courses(
                 "course_no": course_no,
                 "title": title,
                 "teacher": teacher,
+                "time": time_text,
+                "credits": credits_text,
+                "capacity": capacity_text,
             }
         )
-
+    # 8. 輸出搜尋結果
     # ==================================================
-    # 9. 輸出
-    # ==================================================
-
-    print()
-    print(
-        "=================================================="
-    )
-
-    print(
-        f"「{keyword}」搜尋結果"
-    )
-
-    print(
-        "=================================================="
-    )
+    print("\n" + "=" * 70)
+    print(f"「{keyword}」搜尋結果（共 {len(results)} 門）")
+    print("=" * 70)
 
     for result in results:
         print(
-            f"{result['serial']} | "
-            f"{result['course_no']} | "
-            f"{result['title']} | "
-            f"{result['teacher']}"
+            f"{result['serial']:<6} | "
+            f"{result['course_no']:<8} | "
+            f"{result['title']:<15} | "
+            f"{result['teacher']:<8} | "
+            f"時段: {result['time']:<8} | "
+            f"學分: {result['credits']:<4} | "
+            f"限額: {result['capacity']}"
         )
 
-    print(
-        "=================================================="
-    )
+    print("=" * 70 + "\n")
 
     # ==================================================
-    # 10. 測試本次搜尋欄位的第一門課
+    # 9. 測試本次搜尋欄位的第一門課 hover 與加選按鈕
     # ==================================================
-
     first_course = courses.first
 
-    print(
-        "[TEST] 正在 hover 本次搜尋欄位的第一門課..."
-    )
-
+    print("[TEST] 正在 hover 本次搜尋欄位的第一門課...")
     await first_course.hover()
 
-    register_button = first_course.locator(
-        "#fm_register"
-    )
+    register_button = first_course.locator("#fm_register")
 
-    print(
-        "[TEST] fm_register 是否存在：",
-        await register_button.count(),
-    )
-
-    print(
-        "[TEST] fm_register 是否可見：",
-        await register_button.is_visible(),
-    )
-
-    if await register_button.is_visible():
-        print(
-            "[TEST] 加選按鈕成功顯示！"
-        )
-    else:
-        print(
-            "[TEST] 加選按鈕沒有顯示！"
-        )
+    is_btn_visible = await register_button.is_visible()
+    print(f"[TEST] fm_register 存在數量: {await register_button.count()}")
+    print(f"[TEST] fm_register 加選按鈕可見: {is_btn_visible}")
 
     return results
-
-
 async def get_schedule(
     session: NCUSession,
 ):
@@ -956,3 +938,95 @@ async def get_schedule(
     return await parse_ncu_schedule_table(
         course_mgr_page
     )
+
+
+
+# 中文節次轉標準代碼
+PERIOD_MAP = {
+    "第1節": "1", "第一節": "1",
+    "第2節": "2", "第二節": "2",
+    "第3節": "3", "第三節": "3",
+    "第4節": "4", "第四節": "4",
+    "第Z節": "Z", "第z節": "Z",
+    "第5節": "5", "第五節": "5",
+    "第6節": "6", "第六節": "6",
+    "第7節": "7", "第七節": "7",
+    "第8節": "8", "第八節": "8",
+    "第9節": "9", "第九節": "9",
+    "第A節": "A", "第a節": "A",
+    "第B節": "B", "第b節": "B",
+    "第C節": "C", "第c節": "C",
+    "第D節": "D", "第d節": "D",
+}
+
+DAY_MAP = {
+    "星期一": "一", "週一": "一", "一": "一",
+    "星期二": "二", "週二": "二", "二": "二",
+    "星期三": "三", "週三": "三", "三": "三",
+    "星期四": "四", "週四": "四", "四": "四",
+    "星期五": "五", "週五": "五", "五": "五",
+    "星期六": "六", "週六": "六", "六": "六",
+    "星期日": "日", "週日": "日", "日": "日",
+}
+
+
+def build_schedule_occupied_slots(schedule_data: list[dict[str, Any]]) -> set[str]:
+    """將 get_schedule() 回傳的課表轉為佔用時段集合。
+    
+    例如: {'一2', '一3', '一4', '三2', '三3', ...}
+    """
+    occupied_slots = set()
+    for item in schedule_data:
+        day_str = DAY_MAP.get(item.get("day", "").strip(), "")
+        period_raw = item.get("period", "").strip()
+        period_code = PERIOD_MAP.get(period_raw, period_raw.replace("第", "").replace("節", ""))
+        
+        if day_str and period_code:
+            occupied_slots.add(f"{day_str}{period_code}")
+            
+    return occupied_slots
+
+
+def parse_course_time_slots(time_str: str) -> set[str]:
+    """將選課系統的時間字串（例如 '一234', '四ABC'）轉為時段集合。
+    
+    例如: '一234' -> {'一2', '一3', '一4'}
+    """
+    slots = set()
+    if not time_str or "學分" in time_str:
+        return slots
+
+    # 比對格式：星期 + 多個節次代碼 (例: 一234, 四ABC)
+    matches = re.findall(r"([一二三四五六日])([0-9A-Za-z]+)", time_str)
+    for day, periods in matches:
+        for p in periods:
+            slots.add(f"{day}{p.upper()}")
+            
+    return slots
+
+
+def filter_available_courses(
+    courses: list[dict[str, Any]], 
+    occupied_slots: set[str]
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """過濾出無衝堂的課程。
+    
+    回傳: (可選課程清單, 衝堂課程清單)
+    """
+    available_courses = []
+    conflicted_courses = []
+
+    for course in courses:
+        course_slots = parse_course_time_slots(course.get("time", ""))
+        
+        # 判斷是否有交集（衝堂）
+        conflict_slots = course_slots & occupied_slots
+        
+        if conflict_slots:
+            course_copy = dict(course)
+            course_copy["conflict_reason"] = f"與已選課表衝堂: {sorted(list(conflict_slots))}"
+            conflicted_courses.append(course_copy)
+        else:
+            available_courses.append(course)
+
+    return available_courses, conflicted_courses
