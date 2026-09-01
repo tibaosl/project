@@ -19,7 +19,7 @@ git switch 選課
 
 ```powershell
 git switch 選課
-git pull --ff-only origin 選課
+git pull origin 選課
 ```
 
 修改完、測試沒問題後：
