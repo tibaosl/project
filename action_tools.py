@@ -1,6 +1,9 @@
 import asyncio
 from typing import Any, Optional
 import re
+import re
+from typing import Any
+from playwright.async_api import Page
 
 from typing import Any
 
@@ -710,238 +713,20 @@ class NCUSession:
         self.registration_page = None
 
 
-async def search_courses(
-    session: NCUSession,
-    keyword: str,
-) -> list[dict[str, Any]]:
-    """依關鍵字搜尋課程。
-
-    只解析標題包含 keyword 的搜尋欄位。
-    如果該欄位已經存在，就直接使用原本的欄位。
-    """
-
-    page = await session.open_registration_system()
-
-    print(f"[Action Agent] 搜尋課程：{keyword}")
-
-    # ==================================================
-    # 1. 點擊「依關鍵字」
-    # ==================================================
-    await page.get_by_role(
-        "button",
-        name="依關鍵字",
-    ).click()
-
-    # ==================================================
-    # 2. 找到搜尋輸入框
-    # ==================================================
-    search_input = page.locator("#searchWord")
-
-    await search_input.wait_for(
-        state="visible",
-        timeout=10000,
-    )
-
-    # ==================================================
-    # 3. 填入關鍵字
-    # ==================================================
-    await search_input.fill(keyword)
-
-    # ==================================================
-    # 4. 找到 searchWord 所在的 form 並送出
-    # ==================================================
-    search_form = search_input.locator("xpath=ancestor::form")
-
-    search_button = search_form.locator(
-        'input[type="submit"][value="Search"]'
-    )
-
-    await search_button.click()
-
-    print(f"[Action Agent] 已送出搜尋：{keyword}")
-
-    # ==================================================
-    # 5. 尋找標題包含 keyword 的 portlet (處理 Column 排版問題)
-    # ==================================================
-    print(f"[Action Agent] 正在等待 AJAX 載入並尋找「{keyword}」欄位...")
-
-    portlet = None
-    actual_keyword = ""
-
-    for _ in range(20):
-        portlets = page.locator('div.portlet[id^="portlet_search_"]')
-        count = await portlets.count()
-
-        for i in range(count):
-            p = portlets.nth(i)
-            try:
-                title_text = await p.locator(".panel_title").inner_text()
-
-                if keyword in title_text:
-                    portlet = p
-                    actual_keyword = title_text.strip()
-                    break
-            except Exception:
-                continue
-
-        if portlet is not None:
-            break
-
-        await page.wait_for_timeout(500)
-
-    if portlet is None:
-        raise RuntimeError(
-            f"等待逾時：畫面上找不到標題包含「{keyword}」的結果。"
-        )
-
-    print(f"[Action Agent] 成功鎖定搜尋欄位：{actual_keyword}")
-
-    # ==================================================
-    # 6. 只抓取該 portlet 內部的課程
-    # ==================================================
-    courses = portlet.locator("li[sno]")
-
-    course_count = await courses.count()
-
-    print(
-        f"[Action Agent] 「{keyword}」目前共有 {course_count} 門課程。"
-    )
-
-    if course_count == 0:
-        print(f"[Action Agent] 「{keyword}」沒有課程。")
-        return []
-    # 找到 courses 後，印出第一筆課程的 HTML 原始碼
-  
-    # ==================================================
-    # 7. 解析課程資料（精準 Hover .class_no 並擷取 .ui-tooltip-content）
-    # ==================================================
-    import re
-
-    results = []
-
-    for index in range(course_count):
-        course = courses.nth(index)
-
-        # 1. 取得清單列上的基本文字
-        serial = (
-            (await course.locator(".class_serial").inner_text()).strip()
-            if await course.locator(".class_serial").count() > 0
-            else ""
-        )
-        course_no = (
-            (await course.locator(".class_no").inner_text()).strip()
-            if await course.locator(".class_no").count() > 0
-            else ""
-        )
-        title = (
-            (await course.locator(".class_title").inner_text()).strip()
-            if await course.locator(".class_title").count() > 0
-            else ""
-        )
-        teacher = (
-            (await course.locator(".class_teacher").inner_text()).strip()
-            if await course.locator(".class_teacher").count() > 0
-            else ""
-        )
-
-        # 2. Hover 到該課程的 .class_no 觸發 Tooltip
-        class_no_locator = course.locator(".class_no")
-        if await class_no_locator.count() > 0:
-            await class_no_locator.first.hover()
-        else:
-            await course.hover()
-
-        # 等待浮動層出現在 DOM 中
-        tooltip = page.locator(".ui-tooltip-content").last
-        
-        time_text = ""
-        credits_text = ""
-        capacity_text = ""
-
-        try:
-            # 等待 tooltip 可見（設定較短 timeout 避免沒 tooltip 時卡太久）
-            await tooltip.wait_for(state="visible", timeout=1000)
-            tooltip_content = await tooltip.inner_text()
-
-            # 解析「課程時間」（例如：五567）
-            time_match = re.search(r"課程時間\s*[:：]\s*([^\n\r]+)", tooltip_content)
-            if time_match:
-                time_text = time_match.group(1).strip()
-
-            # 解析「學分」
-            credit_match = re.search(r"學分\s*[:：]\s*([^\n\r]+)", tooltip_content)
-            if credit_match:
-                credits_text = credit_match.group(1).strip()
-
-            # 解析「人數限制」
-            limit_match = re.search(r"人數限制\s*[:：]\s*([^\n\r]+)", tooltip_content)
-            if limit_match:
-                capacity_text = limit_match.group(1).strip()
-
-        except Exception:
-            # 部分課程若無 tooltip 則略過
-            pass
-
-        results.append(
-            {
-                "serial": serial,
-                "course_no": course_no,
-                "title": title,
-                "teacher": teacher,
-                "time": time_text,
-                "credits": credits_text,
-                "capacity": capacity_text,
-            }
-        )
-    # 8. 輸出搜尋結果
-    # ==================================================
-    print("\n" + "=" * 70)
-    print(f"「{keyword}」搜尋結果（共 {len(results)} 門）")
-    print("=" * 70)
-
-    for result in results:
-        print(
-            f"{result['serial']:<6} | "
-            f"{result['course_no']:<8} | "
-            f"{result['title']:<15} | "
-            f"{result['teacher']:<8} | "
-            f"時段: {result['time']:<8} | "
-            f"學分: {result['credits']:<4} | "
-            f"限額: {result['capacity']}"
-        )
-
-    print("=" * 70 + "\n")
-
-    # ==================================================
-    # 9. 測試本次搜尋欄位的第一門課 hover 與加選按鈕
-    # ==================================================
-    first_course = courses.first
-
-    print("[TEST] 正在 hover 本次搜尋欄位的第一門課...")
-    await first_course.hover()
-
-    register_button = first_course.locator("#fm_register")
-
-    is_btn_visible = await register_button.is_visible()
-    print(f"[TEST] fm_register 存在數量: {await register_button.count()}")
-    print(f"[TEST] fm_register 加選按鈕可見: {is_btn_visible}")
-
-    return results
-async def get_schedule(
-    session: NCUSession,
-):
-    """Action：取得目前個人課表。"""
-
-    # 課表仍然走 Portal → 課務系統
-    course_mgr_page = await session.open_course_system()
-
-    return await parse_ncu_schedule_table(
-        course_mgr_page
-    )
 
 
 
-# 中文節次轉標準代碼
+import asyncio
+import json
+import re
+import sqlite3
+from typing import Any, Optional
+from playwright.async_api import BrowserContext, Page
+
+# ==================================================
+# 1. 課表代碼轉換與衝堂比對核心
+# ==================================================
+
 PERIOD_MAP = {
     "第1節": "1", "第一節": "1",
     "第2節": "2", "第二節": "2",
@@ -971,62 +756,320 @@ DAY_MAP = {
 
 
 def build_schedule_occupied_slots(schedule_data: list[dict[str, Any]]) -> set[str]:
-    """將 get_schedule() 回傳的課表轉為佔用時段集合。
-    
-    例如: {'一2', '一3', '一4', '三2', '三3', ...}
-    """
+    """將 get_schedule() 回傳的課表轉為佔用時段集合 (例如: {'一2', '一3', '四5'})。"""
     occupied_slots = set()
     for item in schedule_data:
         day_str = DAY_MAP.get(item.get("day", "").strip(), "")
         period_raw = item.get("period", "").strip()
-        period_code = PERIOD_MAP.get(period_raw, period_raw.replace("第", "").replace("節", ""))
-        
+        period_code = PERIOD_MAP.get(
+            period_raw, period_raw.replace("第", "").replace("節", "")
+        )
+
         if day_str and period_code:
-            occupied_slots.add(f"{day_str}{period_code}")
-            
+            occupied_slots.add(f"{day_str}{period_code.upper()}")
+
     return occupied_slots
 
 
 def parse_course_time_slots(time_str: str) -> set[str]:
-    """將選課系統的時間字串（例如 '一234', '四ABC'）轉為時段集合。
-    
-    例如: '一234' -> {'一2', '一3', '一4'}
-    """
+    """將時間字串（例如 '一234', '四ABC', '一567/I-015'）解析為時段集合。"""
     slots = set()
     if not time_str or "學分" in time_str:
         return slots
 
-    # 比對格式：星期 + 多個節次代碼 (例: 一234, 四ABC)
     matches = re.findall(r"([一二三四五六日])([0-9A-Za-z]+)", time_str)
     for day, periods in matches:
         for p in periods:
             slots.add(f"{day}{p.upper()}")
-            
+
     return slots
 
 
 def filter_available_courses(
-    courses: list[dict[str, Any]], 
-    occupied_slots: set[str]
+    courses: list[dict[str, Any]], occupied_slots: set[str]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """過濾出無衝堂的課程。
-    
-    回傳: (可選課程清單, 衝堂課程清單)
-    """
+    """過濾出無衝堂的課程，回傳 (可選清單, 衝堂清單)。"""
     available_courses = []
     conflicted_courses = []
 
     for course in courses:
         course_slots = parse_course_time_slots(course.get("time", ""))
-        
-        # 判斷是否有交集（衝堂）
         conflict_slots = course_slots & occupied_slots
-        
+
         if conflict_slots:
             course_copy = dict(course)
-            course_copy["conflict_reason"] = f"與已選課表衝堂: {sorted(list(conflict_slots))}"
+            course_copy["conflict_reason"] = (
+                f"與已選課表衝堂: {sorted(list(conflict_slots))}"
+            )
             conflicted_courses.append(course_copy)
         else:
             available_courses.append(course)
 
     return available_courses, conflicted_courses
+
+
+# ==================================================
+# 2. 公開課程爬蟲（含非同步課綱批次下載）
+# ==================================================
+
+async def _fetch_single_outline(context: BrowserContext, course: dict[str, Any]) -> dict[str, Any]:
+    """在新分頁載入課綱網址並抓取前段純文字。"""
+    url = course.get("outline_url")
+    if not url:
+        return course
+
+    page = await context.new_page()
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=12000)
+        # 取得課綱內文並截取前 500 字摘要
+        content = await page.locator("body").inner_text()
+        course["outline_text"] = content.strip()[:500]
+    except Exception:
+        course["outline_text"] = ""
+    finally:
+        await page.close()
+
+    return course
+
+
+async def query_courses_by_keywords(
+    page: Page, keyword: str, fetch_outlines: bool = False
+) -> list[dict[str, Any]]:
+    """從公開查詢系統爬取課程。可選擇是否並行抓取課綱。"""
+    url = "https://cis.ncu.edu.tw/Course/main/query/byKeywords"
+    await page.goto(url, wait_until="domcontentloaded")
+
+    search_input = page.locator(
+        'input[name="keyWord"], #keyWord, input[type="text"]'
+    ).first
+    await search_input.fill(keyword)
+
+    submit_btn = page.locator(
+        'input[type="submit"], button:has-text("查詢"), button:has-text("Search")'
+    ).first
+    await submit_btn.click()
+
+    table = page.locator("table.table, table").last
+    await table.wait_for(state="visible", timeout=10000)
+
+    rows = table.locator("tbody tr")
+    row_count = await rows.count()
+    courses = []
+
+    for i in range(row_count):
+        row = rows.nth(i)
+        tds = row.locator("td")
+        td_count = await tds.count()
+        if td_count < 6:
+            continue
+
+        col0_text = (await tds.nth(0).inner_text()).strip()
+        lines = [line.strip() for line in col0_text.splitlines() if line.strip()]
+        serial = lines[0] if len(lines) > 0 else ""
+        course_no = "".join(lines[1:]) if len(lines) > 1 else ""
+
+        title = (await tds.nth(1).inner_text()).strip().splitlines()[0]
+        teacher = (await tds.nth(2).inner_text()).strip()
+        credits_val = (await tds.nth(3).inner_text()).strip()
+
+        raw_time_room = (await tds.nth(4).inner_text()).strip()
+        time_match = re.search(r"([一二三四五六日][0-9A-Za-z]+)", raw_time_room)
+        time_slot = time_match.group(1) if time_match else raw_time_room
+
+        # 抓取課綱連結
+        outline_link = row.locator("a:has-text('課程綱要')")
+        outline_url = ""
+        if await outline_link.count() > 0:
+            onclick_attr = await outline_link.first.get_attribute("onclick")
+            m = re.search(r"open_outline\('([^']+)'\)", onclick_attr or "")
+            if m:
+                outline_url = f"https://cis.ncu.edu.tw{m.group(1)}"
+
+        courses.append({
+            "serial": serial,
+            "course_no": course_no,
+            "title": title,
+            "teacher": teacher,
+            "time": time_slot,
+            "credits": credits_val,
+            "raw_info": raw_time_room,
+            "outline_url": outline_url,
+            "outline_text": "",
+        })
+
+    # 並行抓取課綱（限制 3 個 Worker 避免過載）
+    if fetch_outlines and page.context:
+        sem = asyncio.Semaphore(3)
+
+        async def sem_fetch(c):
+            async with sem:
+                return await _fetch_single_outline(page.context, c)
+
+        courses = await asyncio.gather(*(sem_fetch(c) for c in courses))
+
+    return courses
+
+
+# ==================================================
+# 3. 本地 SQLite 快取管理
+# ==================================================
+
+DB_PATH = "courses.db"
+
+def init_db():
+    """初始化儲存課程與個人課表的 SQLite 資料庫"""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS courses (
+                serial TEXT PRIMARY KEY,
+                course_no TEXT,
+                title TEXT,
+                teacher TEXT,
+                time TEXT,
+                credits TEXT,
+                outline_text TEXT
+            )
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS student_schedule (
+                slot TEXT PRIMARY KEY
+            )
+        """)
+        conn.commit()
+
+
+def save_student_slots(occupied_slots: set[str]):
+    """快取學生目前課表佔用的時段"""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM student_schedule")
+        cursor.executemany(
+            "INSERT OR REPLACE INTO student_schedule (slot) VALUES (?)",
+            [(slot,) for slot in occupied_slots],
+        )
+        conn.commit()
+
+
+def get_student_slots() -> set[str]:
+    """自資料庫讀取已儲存的學生時段"""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT slot FROM student_schedule")
+        return {r[0] for r in cursor.fetchall()}
+
+
+def save_courses_to_db(courses: list[dict[str, Any]]):
+    """將爬取下來的課程寫入或更新至資料庫"""
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        for c in courses:
+            cursor.execute("""
+                INSERT OR REPLACE INTO courses (serial, course_no, title, teacher, time, credits, outline_text)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                c.get("serial", ""),
+                c.get("course_no", ""),
+                c.get("title", ""),
+                c.get("teacher", ""),
+                c.get("time", ""),
+                c.get("credits", ""),
+                c.get("outline_text", ""),
+            ))
+        conn.commit()
+
+
+# ==================================================
+# 4. Agentic AI 工具介面 (Tools / Function Calling)
+# ==================================================
+
+def tool_search_available_courses(
+    keyword: str,
+    max_credits: Optional[float] = None
+) -> str:
+    """
+    【Agent Tool】根據關鍵字搜尋課程，並自動依據當前學生的課表排除衝堂課程。
+
+    :param keyword: 想搜尋的課名關鍵字，如「日文」、「資料結構」、「人工智慧」
+    :param max_credits: 學分上限篩選（可選）
+    :return: 包含可選課程與衝堂課程列表的 JSON 字串
+    """
+    occupied_slots = get_student_slots()
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT serial, course_no, title, teacher, time, credits FROM courses WHERE title LIKE ?",
+            (f"%{keyword}%",),
+        )
+        rows = cursor.fetchall()
+
+    if not rows:
+        return json.dumps(
+            {"status": "empty", "message": f"資料庫中暫無包含「{keyword}」的課程資料。"},
+            ensure_ascii=False,
+        )
+
+    courses = [
+        {"serial": r[0], "course_no": r[1], "title": r[2], "teacher": r[3], "time": r[4], "credits": r[5]}
+        for r in rows
+    ]
+
+    available, conflicts = filter_available_courses(courses, occupied_slots)
+
+    # 處理學分篩選（含小數容錯）
+    if max_credits is not None:
+        def safe_float(val: str) -> float:
+            try:
+                return float(val)
+            except ValueError:
+                return 0.0
+
+        available = [c for c in available if safe_float(c["credits"]) <= float(max_credits)]
+
+    return json.dumps({
+        "status": "success",
+        "student_occupied_slots": sorted(list(occupied_slots)),
+        "available_count": len(available),
+        "available_courses": available,
+        "conflicts_count": len(conflicts),
+        "conflicted_courses": conflicts,
+    }, ensure_ascii=False)
+
+
+def tool_check_course_syllabus(course_title_or_serial: str) -> str:
+    """
+    【Agent Tool】查詢指定課程的綱要、評分標準與上課目標。
+
+    :param course_title_or_serial: 課程名稱或流水號（例如 "00002" 或 "日文(一)A"）
+    :return: 課綱內文 JSON 字串
+    """
+    with sqlite3.connect(DB_PATH) as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT title, teacher, time, credits, outline_text FROM courses WHERE title LIKE ? OR serial = ? LIMIT 1",
+            (f"%{course_title_or_serial}%", course_title_or_serial),
+        )
+        row = cursor.fetchone()
+
+    if not row:
+        return json.dumps(
+            {"status": "error", "message": f"找不到課程「{course_title_or_serial}」的詳細課綱。"},
+            ensure_ascii=False,
+        )
+
+    return json.dumps({
+        "status": "success",
+        "title": row[0],
+        "teacher": row[1],
+        "time": row[2],
+        "credits": row[3],
+        "syllabus": row[4] if row[4] else "該課程無課綱或尚未抓取內文",
+    }, ensure_ascii=False)
+async def get_schedule(session: NCUSession):
+    """Action：取得目前個人課表。"""
+    # 透過 Portal 跳轉至課務系統
+    course_mgr_page = await session.open_course_system()
+
+    # 解析課表並回傳
+    return await parse_ncu_schedule_table(course_mgr_page)
