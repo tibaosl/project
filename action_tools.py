@@ -893,10 +893,14 @@ class NCUSession:
         )
 
         # ------------------------------------------------------------------
-        # 解析「時數總計」「基本時數」：從統計區塊文字裡用正規表示式撈數字。
+        # 解析「時數總計」「基本時數」「高階時數」：從統計區塊文字裡撈數字。
+        #
+        # 注意：這三個數字只屬於「學習護照」系統（總計 = 基本 + 高階），
+        # 跟「軟實力」是完全分開的兩套時數，兩者不能加在一起看。
         # ------------------------------------------------------------------
         total_hours: Optional[float] = None
         basic_hours: Optional[float] = None
+        advanced_hours: Optional[float] = None
 
         for block in summary_blocks:
             if total_hours is None:
@@ -907,6 +911,10 @@ class NCUSession:
                 m = re.search(r"基本時數[：:]\s*([\d.]+)", block)
                 if m:
                     basic_hours = float(m.group(1))
+            if advanced_hours is None:
+                m = re.search(r"高階時數[：:]\s*([\d.]+)", block)
+                if m:
+                    advanced_hours = float(m.group(1))
 
         # ------------------------------------------------------------------
         # 解析每個 table：
@@ -947,12 +955,10 @@ class NCUSession:
                 else:
                     print(f"[iNCU] 略過一列非預期格式的時數資料：{row}")
 
-        # 依「已核發 / 待核發」分別加總，這是大多數情境下真正需要的數字：
-        # 已經到手的時數 vs. 還在審核中、之後可能會多出來的時數。
-        confirmed_hours_total = 0.0
-        pending_hours_total = 0.0
-        confirmed_by_category: dict[str, float] = {}
-        pending_by_category: dict[str, float] = {}
+        # 依「時數類型（學習護照／軟實力）」分開統計已核發／待核發，
+        # 因為這是學校系統裡兩套獨立的時數（不能加在一起看）。
+        # 每套裡面再依「類別」（人文藝術、服務學習課程...）列出細項。
+        by_type: dict[str, dict[str, Any]] = {}
 
         for record in hour_records:
             try:
@@ -960,39 +966,49 @@ class NCUSession:
             except (TypeError, ValueError):
                 continue
 
-            category_key = f"{record['hour_type']}-{record['category']}"
+            hour_type = record["hour_type"]
+            bucket = by_type.setdefault(
+                hour_type,
+                {
+                    "confirmed_total": 0.0,
+                    "pending_total": 0.0,
+                    "confirmed_by_category": {},
+                    "pending_by_category": {},
+                },
+            )
 
             if "待核發" in record["status"]:
-                pending_hours_total += hours_value
-                pending_by_category[category_key] = (
-                    pending_by_category.get(category_key, 0.0) + hours_value
+                bucket["pending_total"] += hours_value
+                bucket["pending_by_category"][record["category"]] = (
+                    bucket["pending_by_category"].get(record["category"], 0.0)
+                    + hours_value
                 )
             elif "已核發" in record["status"]:
-                confirmed_hours_total += hours_value
-                confirmed_by_category[category_key] = (
-                    confirmed_by_category.get(category_key, 0.0) + hours_value
+                bucket["confirmed_total"] += hours_value
+                bucket["confirmed_by_category"][record["category"]] = (
+                    bucket["confirmed_by_category"].get(record["category"], 0.0)
+                    + hours_value
                 )
 
         result = {
             "url": page.url,
-            "total_hours": total_hours,
-            "basic_hours": basic_hours,
-            "confirmed_hours_total": confirmed_hours_total,
-            "pending_hours_total": pending_hours_total,
-            "confirmed_by_category": confirmed_by_category,
-            "pending_by_category": pending_by_category,
+            # 以下三個數字只屬於「學習護照」系統：時數總計 = 基本時數 + 高階時數
+            "study_passport_total_hours": total_hours,
+            "study_passport_basic_hours": basic_hours,
+            "study_passport_advanced_hours": advanced_hours,
+            # 依時數類型（學習護照／軟實力）分開的已核發／待核發統計
+            "by_hour_type": by_type,
             "hour_records": hour_records,
             "raw_tables": raw_tables,
             "raw_summary_blocks": summary_blocks,
         }
 
-        print(
-            f"[iNCU] 時數 dashboard 解析完成："
-            f"總時數 {total_hours}、基本時數 {basic_hours}、"
-            f"已核發 {confirmed_hours_total} 小時、"
-            f"待核發 {pending_hours_total} 小時"
-            f"（共 {len(hour_records)} 筆時數紀錄）。"
+        summary_line = ", ".join(
+            f"{hour_type}：已核發 {bucket['confirmed_total']} 小時／"
+            f"待核發 {bucket['pending_total']} 小時"
+            for hour_type, bucket in by_type.items()
         )
+        print(f"[iNCU] 時數 dashboard 解析完成：{summary_line}")
 
         return result
 

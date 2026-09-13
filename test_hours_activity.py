@@ -79,30 +79,25 @@ async def test_hours_dashboard():
         dashboard_data = await session.get_hours_dashboard()
 
         print(f"\n目前頁面 URL：{dashboard_data['url']}")
-        print(f"時數總計：{dashboard_data['total_hours']} 小時")
-        print(f"基本時數：{dashboard_data['basic_hours']} 小時")
-        print(f"已核發：{dashboard_data['confirmed_hours_total']} 小時")
-        print(f"待核發：{dashboard_data['pending_hours_total']} 小時")
-
-        print("\n已核發（依類別）：")
-        for category, hours in dashboard_data["confirmed_by_category"].items():
-            print(f"  - {category}：{hours} 小時")
-
-        print("\n待核發（依類別）：")
-        for category, hours in dashboard_data["pending_by_category"].items():
-            print(f"  - {category}：{hours} 小時")
-
         print(
-            "\n以下這段是為了找「畢業/達標門檻」數字才印出來的，"
-            "如果畫面上有看到門檻/應達時數之類的文字，麻煩對照確認一下："
+            f"學習護照 時數總計：{dashboard_data['study_passport_total_hours']} 小時 "
+            f"(基本 {dashboard_data['study_passport_basic_hours']} + "
+            f"高階 {dashboard_data['study_passport_advanced_hours']})"
         )
-        for i, block_text in enumerate(dashboard_data["raw_summary_blocks"], 1):
-            print(f"\n--- 統計區塊 {i} ---")
-            print(block_text)
+
+        for hour_type, bucket in dashboard_data["by_hour_type"].items():
+            print(f"\n【{hour_type}】")
+            print(f"  已核發：{bucket['confirmed_total']} 小時")
+            for category, hours in bucket["confirmed_by_category"].items():
+                print(f"    - {category}：{hours} 小時")
+            print(f"  待核發：{bucket['pending_total']} 小時")
+            for category, hours in bucket["pending_by_category"].items():
+                print(f"    - {category}：{hours} 小時")
 
         print(
             f"\n（原始表格資料仍保留在 raw_tables，共 "
-            f"{len(dashboard_data['raw_tables'])} 個，需要時可以對照除錯）"
+            f"{len(dashboard_data['raw_tables'])} 個，需要時可以對照除錯；"
+            "畫面上目前沒有找到畢業門檻/應達時數之類的目標值文字）"
         )
 
 
