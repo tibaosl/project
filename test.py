@@ -1,10 +1,16 @@
 import asyncio
+import os
+
+from dotenv import load_dotenv
+
 from action_tools import *
+
+load_dotenv()
 
 
 async def main():
-    username = "113502564"
-    password = "0928027067aB"
+    username = os.environ["NCU_USERNAME"]
+    password = os.environ["NCU_PASSWORD"]
     keyword = "日文"
 
     async with NCUSession(username, password) as session:
