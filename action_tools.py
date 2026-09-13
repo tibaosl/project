@@ -1080,6 +1080,12 @@ class NCUSession:
                 避免測試時不小心真的報名到不想參加的活動。
                 確定要真的送出報名時，才明確傳入 confirm=True。
 
+                confirm=True 時，除了點擊報名按鈕，還會處理點擊後可能跳出的
+                「基本資料確認」表單（姓名/Email/電話 + 個資蒐集同意書）：
+                自動勾選同意書勾選框，再點表單裡的報名按鈕送出。
+                姓名/Email/電話欄位目前不會自動填寫或修改，沿用系統
+                預設帶出的值（通常是帳號資料或上次報名時留下的資料）。
+
         回傳的 dict 一定會有 "would_click"（找到的按鈕文字，None 表示沒找到）；
         只有 confirm=True 且成功點擊後，才會有 "success"/"result_text"。
         """
@@ -1158,6 +1164,37 @@ class NCUSession:
         await signup_control.click()
         await page.wait_for_timeout(1000)
 
+        # --------------------------------------------------------------
+        # 點擊報名後，畫面會先跳出「基本資料確認」表單（姓名/Email/電話 +
+        # 個資蒐集告知同意書），裡面也有一個文字同樣是「報名」的按鈕，
+        # 但同意書勾選框沒打勾之前這個按鈕是不能按的。
+        #
+        # 這裡的做法：
+        # 1. 找同意書的勾選框，打勾
+        # 2. 找表單裡「另一個」報名按鈕（用 .last，因為原本觸發用的按鈕
+        #    通常還留在背景 DOM 裡，表單的按鈕會晚出現、排在後面）
+        #    點擊送出
+        # 3. 如果畫面上根本沒有這個表單（例如活動不需要額外資料確認），
+        #    就跳過這段，直接視為已完成
+        # --------------------------------------------------------------
+        consent_checkbox = page.get_by_role("checkbox")
+        if await consent_checkbox.count() > 0:
+            print("[iNCU] 偵測到基本資料確認表單，勾選個資蒐集同意書...")
+            await consent_checkbox.first.check()
+            await page.wait_for_timeout(300)
+
+            final_signup_button = page.get_by_role("button", name="報名")
+            button_count = await final_signup_button.count()
+
+            if button_count > 0:
+                await final_signup_button.nth(button_count - 1).click()
+                await page.wait_for_timeout(1000)
+            else:
+                print(
+                    "[iNCU] 勾選同意書後找不到表單裡的「報名」按鈕，"
+                    "可能按鈕文字不同，需要對照畫面調整。"
+                )
+
         confirm_button = page.get_by_role("button", name="確認")
         if await confirm_button.count() > 0:
             await confirm_button.first.click()
@@ -1165,12 +1202,15 @@ class NCUSession:
 
         result_text = await pane.inner_text()
 
-        print(f"[iNCU] 報名動作已送出，目前該場次區塊文字：\n{result_text[:500]}")
+        print(f"[iNCU] 報名流程執行完畢，目前該場次區塊文字：\n{result_text[:500]}")
 
         return {
             "would_click": matched_text,
             "success": True,
-            "message": "報名動作已送出，請對照 result_text 確認實際結果。",
+            "message": (
+                "報名流程已跑完（含基本資料確認表單，如果有跳出的話），"
+                "請對照 result_text 確認實際結果是否真的報名成功。"
+            ),
             "result_text": result_text,
         }
 
