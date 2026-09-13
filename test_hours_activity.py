@@ -80,24 +80,29 @@ async def test_hours_dashboard():
 
         print(f"\n目前頁面 URL：{dashboard_data['url']}")
         print(
-            f"學習護照 時數總計：{dashboard_data['study_passport_total_hours']} 小時 "
-            f"(基本 {dashboard_data['study_passport_basic_hours']} + "
-            f"高階 {dashboard_data['study_passport_advanced_hours']})"
+            f"已核發共 {dashboard_data['total_confirmed_hours']} 小時、"
+            f"待核發共 {dashboard_data['total_pending_hours']} 小時"
         )
+        print(f"是否已達畢業門檻（四類都達標）：{dashboard_data['graduated']}")
 
-        for hour_type, bucket in dashboard_data["by_hour_type"].items():
-            print(f"\n【{hour_type}】")
-            print(f"  已核發：{bucket['confirmed_total']} 小時")
-            for category, hours in bucket["confirmed_by_category"].items():
-                print(f"    - {category}：{hours} 小時")
-            print(f"  待核發：{bucket['pending_total']} 小時")
-            for category, hours in bucket["pending_by_category"].items():
-                print(f"    - {category}：{hours} 小時")
+        print("\n各類別進度：")
+        for category, data in dashboard_data["categories"].items():
+            status = "✅ 已達標" if data["passed_graduation"] else "⚠️ 尚未達標"
+            print(
+                f"  - {category}：{data['confirmed_hours']}/"
+                f"{data['graduation_required']} 小時 {status}"
+                f"（還差 {data['remaining_to_graduate']} 小時"
+                f"，另有 {data['pending_hours']} 小時待核發）"
+            )
+            print(
+                f"      里程碑：畢業門檻 {data['milestones']['畢業門檻']} / "
+                f"銀質獎 {data['milestones']['銀質獎']} / "
+                f"金質獎 {data['milestones']['金質獎']}"
+            )
 
         print(
             f"\n（原始表格資料仍保留在 raw_tables，共 "
-            f"{len(dashboard_data['raw_tables'])} 個，需要時可以對照除錯；"
-            "畫面上目前沒有找到畢業門檻/應達時數之類的目標值文字）"
+            f"{len(dashboard_data['raw_tables'])} 個，需要時可以對照除錯）"
         )
 
 

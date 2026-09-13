@@ -27,6 +27,28 @@ INCU_HOME_URL = "https://cis.ncu.edu.tw/iNCU/home"
 INCU_LOGIN_URL = "https://cis.ncu.edu.tw/iNCU/login"
 INCU_HOURS_DASHBOARD_URL = "https://cis.ncu.edu.tw/iNCU/messageNotice/dashboard/signupDashboard"
 
+# 學習護照系統畫面上的四大類別，以及各自涵蓋哪些細項子類別
+# （子類別名稱是時數紀錄表格裡實際出現的名稱）。
+# 只處理學習護照，不處理軟實力時數（校方目前用不到）。
+STUDY_PASSPORT_CATEGORY_GROUPS = {
+    "服務學習": ["服務學習課程", "校外服務"],
+    "生活知能": ["其他生活知能", "自我探索與生涯規劃", "院週會", "大一週會", "大一CPR"],
+    "人文藝術": ["人文藝術"],
+    "國際視野": ["國際視野"],
+}
+
+# 畢業門檻 / 銀質獎 / 金質獎，每個類別各自需要的時數。
+# 這是從「儀表板」畫面「里程碑」表格（方案1）讀出來的固定門檻值，
+# 屬於全校共通的制度規則，不是每個學生會不同的資料，所以直接寫死。
+# ⚠️ 畫面上另外還有「方案2」，門檻數字不同；如果之後發現帳號適用的是
+# 方案2，這裡要改成方案2 的數字。
+STUDY_PASSPORT_MILESTONES = {
+    "服務學習": {"畢業門檻": 40, "銀質獎": 65, "金質獎": 90},
+    "生活知能": {"畢業門檻": 35, "銀質獎": 60, "金質獎": 85},
+    "人文藝術": {"畢業門檻": 20, "銀質獎": 45, "金質獎": 70},
+    "國際視野": {"畢業門檻": 5, "銀質獎": 30, "金質獎": 55},
+}
+
 async def parse_ncu_schedule_table(
     page: Page,
 ) -> Optional[list[dict[str, Any]]]:
@@ -837,17 +859,22 @@ class NCUSession:
         print(f"[iNCU] 授權完成，導回 URL：{page.url}")
 
     async def get_hours_dashboard(self) -> dict[str, Any]:
-        """取得個人時數 dashboard 的結構化資料。
+        """取得個人「學習護照」時數，並對照畢業門檻計算每個類別還差多少。
 
         對應網頁：
         https://cis.ncu.edu.tw/iNCU/messageNotice/dashboard/signupDashboard
 
-        已用真實帳號實測過畫面結構，回傳內容包含：
-        - total_hours / basic_hours：頁面上「時數總計」「基本時數」數字
-        - pending_applications：還在申請中、尚未核發時數的活動清單
-        - hour_records：已經有時數紀錄的清單（每筆含類型、類別、時數、狀態）
-        - raw_tables：所有表格的原始 cell 資料（list of rows of cell texts），
-          保留下來是為了在畫面改版或有例外資料時，還能對照除錯。
+        只處理學習護照時數，不處理軟實力時數（校方用不到，直接忽略）。
+
+        回傳內容：
+        - categories：依畫面上的四大類別（服務學習/生活知能/人文藝術/國際視野）
+          分組，每組含 confirmed_hours（已核發）、pending_hours（待核發）、
+          graduation_required（畢業門檻）、remaining_to_graduate（還差多少）、
+          passed_graduation（是否已達門檻）、milestones（該類別的三個等級門檻）
+        - total_confirmed_hours / total_pending_hours：四類加總
+        - graduated：四個類別是否都已達畢業門檻
+        - hour_records：解析出來的學習護照時數紀錄清單
+        - raw_tables：原始表格 cell 資料，供例外狀況時對照除錯
         """
 
         page = await self.open_incu_home()
@@ -879,56 +906,12 @@ class NCUSession:
             }"""
         )
 
-        summary_blocks: list[str] = await page.evaluate(
-            """() => {
-                const nodes = Array.from(
-                    document.querySelectorAll(
-                        '[class*="card"], [class*="progress"], [class*="summary"], [class*="dashboard"]'
-                    )
-                );
-                return nodes
-                    .map(n => n.innerText.trim())
-                    .filter(t => t.length > 0 && t.length < 2000);
-            }"""
-        )
-
         # ------------------------------------------------------------------
-        # 解析「時數總計」「基本時數」「高階時數」：從統計區塊文字裡撈數字。
-        #
-        # 注意：這三個數字只屬於「學習護照」系統（總計 = 基本 + 高階），
-        # 跟「軟實力」是完全分開的兩套時數，兩者不能加在一起看。
+        # 畫面上有一個「活動總表」大表格，每列最後一欄內嵌小表格顯示時數，
+        # document.querySelectorAll('table') 會把內嵌小表格重複抓一次。
+        # 這裡只採用獨立小表格（每列固定 4 欄）的乾淨資料，略過活動總表，
+        # 並且只保留「學習護照」（忽略「軟實力」）。
         # ------------------------------------------------------------------
-        total_hours: Optional[float] = None
-        basic_hours: Optional[float] = None
-        advanced_hours: Optional[float] = None
-
-        for block in summary_blocks:
-            if total_hours is None:
-                m = re.search(r"時數總計[：:]\s*([\d.]+)", block)
-                if m:
-                    total_hours = float(m.group(1))
-            if basic_hours is None:
-                m = re.search(r"基本時數[：:]\s*([\d.]+)", block)
-                if m:
-                    basic_hours = float(m.group(1))
-            if advanced_hours is None:
-                m = re.search(r"高階時數[：:]\s*([\d.]+)", block)
-                if m:
-                    advanced_hours = float(m.group(1))
-
-        # ------------------------------------------------------------------
-        # 解析每個 table：
-        # - 第一列若像是表頭（含「活動名稱」或「申請單位」等字樣），
-        #   視為「申請中活動清單」表格。
-        # - 其餘的表格，每一列固定是 [時數類型, 類別, 時數, 狀態] 四欄，
-        #   視為「時數紀錄」，可能一個活動同時有學習護照＋軟實力兩筆。
-        # ------------------------------------------------------------------
-        # 注意：畫面上有一個「活動總表」的大表格，每一列是一個活動，
-        # 最後一欄裡面又內嵌了小表格（顯示該活動核發的時數）。
-        # document.querySelectorAll('table') 會把內嵌的小表格也各自抓一次，
-        # 造成同樣的時數資料重複出現兩份（一份被壓進大表格那一列的最後一欄，
-        # 一份是獨立的小表格）。這裡只採用「獨立小表格」（每列固定 4 欄）
-        # 的乾淨資料，直接略過那個大表格，避免重複、也避免巢狀文字混在一起。
         hour_records: list[dict[str, str]] = []
 
         for table in raw_tables:
@@ -943,22 +926,34 @@ class NCUSession:
                 continue
 
             for row in table:
-                if len(row) == 4:
-                    hour_records.append(
-                        {
-                            "hour_type": row[0],
-                            "category": row[1],
-                            "hours": row[2],
-                            "status": row[3],
-                        }
-                    )
-                else:
+                if len(row) != 4:
                     print(f"[iNCU] 略過一列非預期格式的時數資料：{row}")
+                    continue
 
-        # 依「時數類型（學習護照／軟實力）」分開統計已核發／待核發，
-        # 因為這是學校系統裡兩套獨立的時數（不能加在一起看）。
-        # 每套裡面再依「類別」（人文藝術、服務學習課程...）列出細項。
-        by_type: dict[str, dict[str, Any]] = {}
+                hour_type, category, hours, status = row
+                if hour_type != "學習護照":
+                    continue
+
+                hour_records.append(
+                    {"category": category, "hours": hours, "status": status}
+                )
+
+        # ------------------------------------------------------------------
+        # 把細項子類別歸到畫面上的四大類別，加總已核發／待核發，
+        # 再對照 STUDY_PASSPORT_MILESTONES 算出離畢業門檻還差多少。
+        # ------------------------------------------------------------------
+        subcategory_to_group = {
+            sub: group
+            for group, subs in STUDY_PASSPORT_CATEGORY_GROUPS.items()
+            for sub in subs
+        }
+
+        categories: dict[str, dict[str, Any]] = {
+            group: {"confirmed_hours": 0.0, "pending_hours": 0.0}
+            for group in STUDY_PASSPORT_CATEGORY_GROUPS
+        }
+
+        unmapped_categories: set[str] = set()
 
         for record in hour_records:
             try:
@@ -966,49 +961,49 @@ class NCUSession:
             except (TypeError, ValueError):
                 continue
 
-            hour_type = record["hour_type"]
-            bucket = by_type.setdefault(
-                hour_type,
-                {
-                    "confirmed_total": 0.0,
-                    "pending_total": 0.0,
-                    "confirmed_by_category": {},
-                    "pending_by_category": {},
-                },
-            )
+            group = subcategory_to_group.get(record["category"])
+            if group is None:
+                unmapped_categories.add(record["category"])
+                continue
 
             if "待核發" in record["status"]:
-                bucket["pending_total"] += hours_value
-                bucket["pending_by_category"][record["category"]] = (
-                    bucket["pending_by_category"].get(record["category"], 0.0)
-                    + hours_value
-                )
+                categories[group]["pending_hours"] += hours_value
             elif "已核發" in record["status"]:
-                bucket["confirmed_total"] += hours_value
-                bucket["confirmed_by_category"][record["category"]] = (
-                    bucket["confirmed_by_category"].get(record["category"], 0.0)
-                    + hours_value
-                )
+                categories[group]["confirmed_hours"] += hours_value
+
+        if unmapped_categories:
+            print(
+                "[iNCU] 有時數類別沒對應到畫面上的四大分類，"
+                f"STUDY_PASSPORT_CATEGORY_GROUPS 可能要更新：{unmapped_categories}"
+            )
+
+        for group, data in categories.items():
+            required = STUDY_PASSPORT_MILESTONES[group]["畢業門檻"]
+            data["graduation_required"] = required
+            data["remaining_to_graduate"] = max(
+                0.0, required - data["confirmed_hours"]
+            )
+            data["passed_graduation"] = data["confirmed_hours"] >= required
+            data["milestones"] = STUDY_PASSPORT_MILESTONES[group]
+
+        total_confirmed_hours = sum(c["confirmed_hours"] for c in categories.values())
+        total_pending_hours = sum(c["pending_hours"] for c in categories.values())
+        graduated = all(c["passed_graduation"] for c in categories.values())
 
         result = {
             "url": page.url,
-            # 以下三個數字只屬於「學習護照」系統：時數總計 = 基本時數 + 高階時數
-            "study_passport_total_hours": total_hours,
-            "study_passport_basic_hours": basic_hours,
-            "study_passport_advanced_hours": advanced_hours,
-            # 依時數類型（學習護照／軟實力）分開的已核發／待核發統計
-            "by_hour_type": by_type,
+            "categories": categories,
+            "total_confirmed_hours": total_confirmed_hours,
+            "total_pending_hours": total_pending_hours,
+            "graduated": graduated,
             "hour_records": hour_records,
             "raw_tables": raw_tables,
-            "raw_summary_blocks": summary_blocks,
         }
 
-        summary_line = ", ".join(
-            f"{hour_type}：已核發 {bucket['confirmed_total']} 小時／"
-            f"待核發 {bucket['pending_total']} 小時"
-            for hour_type, bucket in by_type.items()
+        print(
+            f"[iNCU] 學習護照時數解析完成：已核發共 {total_confirmed_hours} 小時、"
+            f"待核發 {total_pending_hours} 小時、是否已達畢業門檻：{graduated}"
         )
-        print(f"[iNCU] 時數 dashboard 解析完成：{summary_line}")
 
         return result
 
