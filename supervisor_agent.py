@@ -224,16 +224,30 @@ async def action_agent_node(state: AgentState):
     1. SCHEDULE：查詢個人課表
     2. SEARCH：在選課系統搜尋特定課程
     3. HOURS：查詢「使用者自己」的學習護照時數進度、離畢業門檻還差多少
-    4. ACTIVITY_SEARCH：查詢/搜尋校內活動列表
-    5. ACTIVITY_INFO：查看某個活動的詳細資訊/內容/場次
-    6. ACTIVITY_RECOMMEND：依使用者自己的時數缺口推薦活動
-    7. ACTIVITY_REGISTER：幫使用者報名某個活動
-    8. ACTIVITY_CANCEL：取消使用者某個活動的報名
+    4. ACTIVITY_SEARCH：單純查詢/瀏覽校內活動列表，使用者自己講出明確的
+       篩選條件（活動名稱關鍵字、類別），沒有要系統幫忙判斷該報名什麼
+    5. ACTIVITY_INFO：查看某個「已經指名」的活動的詳細資訊/內容/場次
+    6. ACTIVITY_RECOMMEND：使用者沒有指定活動名稱，而是要系統依他自己的
+       狀況（時數缺口、還差什麼）主動推薦適合報名的活動
+    7. ACTIVITY_REGISTER：幫使用者報名某個「已經指名」的活動
+    8. ACTIVITY_CANCEL：取消使用者某個「已經指名」活動的報名
+
+    ★★ ACTIVITY_SEARCH 與 ACTIVITY_RECOMMEND 是最容易搞混的兩個，請特別注意：
+    - 只要使用者的輸入裡出現「推薦」，或是「有沒有活動可以報名/參加」這種
+      沒有指定任何活動名稱或類別、希望系統幫忙挑的說法，一律判斷為
+      ACTIVITY_RECOMMEND，絕對不要判斷成 ACTIVITY_SEARCH。
+      例如：「有沒有什麼活動可以推薦我報名的」「有什麼活動適合我」
+      「幫我推薦活動」「我還缺時數，有什麼可以參加的」-> 都是 ACTIVITY_RECOMMEND。
+    - 只有使用者自己講出具體條件（例如「查一下有沒有日文相關的活動」
+      「最近有什麼藝文活動」「幫我查一下活動列表」），沒有要系統依他個人
+      狀況判斷時，才是 ACTIVITY_SEARCH。這種情況通常有明確的 keyword
+      可以提取；如果想不出合理的 keyword，那大概不該判斷成 ACTIVITY_SEARCH。
 
     如果是 SEARCH 或 ACTIVITY_SEARCH，請提取搜尋關鍵字。
     如果是 ACTIVITY_INFO / ACTIVITY_REGISTER / ACTIVITY_CANCEL，請提取活動的名稱關鍵字
     （使用者通常只會講活動名稱的一部分，不會知道活動編號，用 keyword 表示即可，
     系統會自動搜尋比對最接近的活動）。
+    ACTIVITY_RECOMMEND 不需要 keyword，請留空字串。
 
     請嚴格遵守以下 JSON 格式輸出，不要輸出任何其他文字：
     {{
@@ -249,6 +263,13 @@ async def action_agent_node(state: AgentState):
 
         action_type = parsed_action.get("action_type", "SCHEDULE")
         keyword = parsed_action.get("keyword", "")
+
+        # 保險機制：LLM 偶爾會把「推薦活動」誤判成 ACTIVITY_SEARCH（然後
+        # keyword 留空，變成列出全部活動）。只要看到「推薦」兩個字又沒有
+        # 抓到具體關鍵字，直接強制修正，不要完全依賴 LLM 的判斷。
+        if action_type == "ACTIVITY_SEARCH" and not keyword and "推薦" in user_input:
+            print("[Action Agent] 偵測到「推薦」但關鍵字是空的，修正為 ACTIVITY_RECOMMEND")
+            action_type = "ACTIVITY_RECOMMEND"
 
         print(f"[Action Agent] 解析動作意圖: 類型={action_type}, 關鍵字={keyword}")
 
