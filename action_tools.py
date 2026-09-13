@@ -888,7 +888,7 @@ class NCUSession:
                 );
                 return nodes
                     .map(n => n.innerText.trim())
-                    .filter(t => t.length > 0 && t.length < 500);
+                    .filter(t => t.length > 0 && t.length < 2000);
             }"""
         )
 
@@ -915,34 +915,23 @@ class NCUSession:
         # - 其餘的表格，每一列固定是 [時數類型, 類別, 時數, 狀態] 四欄，
         #   視為「時數紀錄」，可能一個活動同時有學習護照＋軟實力兩筆。
         # ------------------------------------------------------------------
-        pending_applications: list[dict[str, str]] = []
+        # 注意：畫面上有一個「活動總表」的大表格，每一列是一個活動，
+        # 最後一欄裡面又內嵌了小表格（顯示該活動核發的時數）。
+        # document.querySelectorAll('table') 會把內嵌的小表格也各自抓一次，
+        # 造成同樣的時數資料重複出現兩份（一份被壓進大表格那一列的最後一欄，
+        # 一份是獨立的小表格）。這裡只採用「獨立小表格」（每列固定 4 欄）
+        # 的乾淨資料，直接略過那個大表格，避免重複、也避免巢狀文字混在一起。
         hour_records: list[dict[str, str]] = []
 
         for table in raw_tables:
             if not table:
                 continue
 
-            first_row = table[0]
-            first_row_text = "".join(first_row)
-
-            is_header_table = (
+            first_row_text = "".join(table[0]) if table[0] else ""
+            is_overview_table = (
                 "活動名稱" in first_row_text or "申請單位" in first_row_text
             )
-
-            if is_header_table:
-                data_rows = table[1:] if len(table) > 1 else []
-                for row in data_rows:
-                    if not row:
-                        continue
-                    pending_applications.append(
-                        {
-                            "activity_name": row[0] if len(row) > 0 else "",
-                            "unit": row[1] if len(row) > 1 else "",
-                            "apply_type": row[2] if len(row) > 2 else "",
-                            "event_time": row[3] if len(row) > 3 else "",
-                            "hours_status": row[4] if len(row) > 4 else "",
-                        }
-                    )
+            if is_overview_table:
                 continue
 
             for row in table:
@@ -956,15 +945,42 @@ class NCUSession:
                         }
                     )
                 else:
-                    # 欄位數不是預期的 4 欄，原始資料保留在 raw_tables 裡，
-                    # 這裡先跳過避免塞進錯誤對應的欄位。
                     print(f"[iNCU] 略過一列非預期格式的時數資料：{row}")
+
+        # 依「已核發 / 待核發」分別加總，這是大多數情境下真正需要的數字：
+        # 已經到手的時數 vs. 還在審核中、之後可能會多出來的時數。
+        confirmed_hours_total = 0.0
+        pending_hours_total = 0.0
+        confirmed_by_category: dict[str, float] = {}
+        pending_by_category: dict[str, float] = {}
+
+        for record in hour_records:
+            try:
+                hours_value = float(record["hours"])
+            except (TypeError, ValueError):
+                continue
+
+            category_key = f"{record['hour_type']}-{record['category']}"
+
+            if "待核發" in record["status"]:
+                pending_hours_total += hours_value
+                pending_by_category[category_key] = (
+                    pending_by_category.get(category_key, 0.0) + hours_value
+                )
+            elif "已核發" in record["status"]:
+                confirmed_hours_total += hours_value
+                confirmed_by_category[category_key] = (
+                    confirmed_by_category.get(category_key, 0.0) + hours_value
+                )
 
         result = {
             "url": page.url,
             "total_hours": total_hours,
             "basic_hours": basic_hours,
-            "pending_applications": pending_applications,
+            "confirmed_hours_total": confirmed_hours_total,
+            "pending_hours_total": pending_hours_total,
+            "confirmed_by_category": confirmed_by_category,
+            "pending_by_category": pending_by_category,
             "hour_records": hour_records,
             "raw_tables": raw_tables,
             "raw_summary_blocks": summary_blocks,
@@ -973,8 +989,9 @@ class NCUSession:
         print(
             f"[iNCU] 時數 dashboard 解析完成："
             f"總時數 {total_hours}、基本時數 {basic_hours}、"
-            f"申請中 {len(pending_applications)} 筆、"
-            f"時數紀錄 {len(hour_records)} 筆。"
+            f"已核發 {confirmed_hours_total} 小時、"
+            f"待核發 {pending_hours_total} 小時"
+            f"（共 {len(hour_records)} 筆時數紀錄）。"
         )
 
         return result
