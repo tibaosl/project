@@ -65,71 +65,78 @@ def test_activity_query():
             )
 
 
-async def test_hours_dashboard():
+async def test_hours_dashboard(session):
     print("\n" + "=" * 70)
     print("【測試 2】個人時數 dashboard（需要登入）")
     print("=" * 70)
 
+    dashboard_data = await session.get_hours_dashboard()
+
+    print(f"\n目前頁面 URL：{dashboard_data['url']}")
+    print(f"是否已達畢業門檻（四大類別都要達標）：{dashboard_data['graduated']}")
+
+    for category, data in dashboard_data["categories"].items():
+        status = "✅ 已達標" if data["passed_graduation"] else "⚠️ 尚未達標"
+        print(f"\n【{category}】{status}（門檻總計 {data['graduation_required']} 小時）")
+        for sub_name, sub in data["subcategories"].items():
+            sub_status = "✅" if sub["passed"] else "⚠️"
+            print(
+                f"    {sub_status} {sub_name}：{sub['confirmed_hours']}/"
+                f"{sub['required']} 小時"
+                f"（還差 {sub['remaining']}，待核發 {sub['pending_hours']}）"
+            )
+        print(
+            f"    里程碑：畢業門檻 {data['milestones']['畢業門檻']} / "
+            f"銀質獎 {data['milestones']['銀質獎']} / "
+            f"金質獎 {data['milestones']['金質獎']}"
+        )
+
+    print(
+        f"\n（原始表格資料仍保留在 raw_tables，共 "
+        f"{len(dashboard_data['raw_tables'])} 個，需要時可以對照除錯）"
+    )
+
+
+async def test_activity_registration(session, activity_id: str, confirm: bool):
+    print("\n" + "=" * 70)
+    title = "【測試 3】活動報名" + ("（confirm=True，會真的送出！）" if confirm else "（dry-run，不會真的送出）")
+    print(title)
+    print("=" * 70)
+
+    result = await session.register_for_activity_session(activity_id, confirm=confirm)
+    print(f"\n結果：{result}")
+
+
+async def run_login_tests():
     username = os.environ.get("NCU_USERNAME", "")
     password = os.environ.get("NCU_PASSWORD", "")
 
     if not username or not password:
         print(
-            "沒有偵測到 NCU_USERNAME / NCU_PASSWORD 環境變數，跳過這項測試。\n"
+            "沒有偵測到 NCU_USERNAME / NCU_PASSWORD 環境變數，跳過需要登入的測試。\n"
             "請參考本檔案最上方的說明設定環境變數後再加 --with-login 執行。"
         )
         return
 
     from action_tools import NCUSession
 
+    # 兩個測試共用同一個 NCUSession（只登入一次），
+    # 也共用同一個 event loop（只呼叫一次 asyncio.run）——
+    # 在某些 Windows 環境下，短時間內重複建立/銷毀 ProactorEventLoop
+    # 會被系統擋下 socket 存取（WinError 10013），跟防火牆/防毒攔截新
+    # 程序的網路存取是類似的狀況，所以避免重複登入、重複開新 event loop。
     async with NCUSession(username, password) as session:
-        dashboard_data = await session.get_hours_dashboard()
+        await test_hours_dashboard(session)
 
-        print(f"\n目前頁面 URL：{dashboard_data['url']}")
-        print(f"是否已達畢業門檻（四大類別都要達標）：{dashboard_data['graduated']}")
-
-        for category, data in dashboard_data["categories"].items():
-            status = "✅ 已達標" if data["passed_graduation"] else "⚠️ 尚未達標"
-            print(f"\n【{category}】{status}（門檻總計 {data['graduation_required']} 小時）")
-            for sub_name, sub in data["subcategories"].items():
-                sub_status = "✅" if sub["passed"] else "⚠️"
-                print(
-                    f"    {sub_status} {sub_name}：{sub['confirmed_hours']}/"
-                    f"{sub['required']} 小時"
-                    f"（還差 {sub['remaining']}，待核發 {sub['pending_hours']}）"
-                )
-            print(
-                f"    里程碑：畢業門檻 {data['milestones']['畢業門檻']} / "
-                f"銀質獎 {data['milestones']['銀質獎']} / "
-                f"金質獎 {data['milestones']['金質獎']}"
+        registration_arg = next(
+            (a for a in sys.argv if a.startswith("--test-registration=")), None
+        )
+        if registration_arg:
+            target_activity_id = registration_arg.split("=", 1)[1]
+            confirm_registration = "--confirm-registration" in sys.argv
+            await test_activity_registration(
+                session, target_activity_id, confirm_registration
             )
-
-        print(
-            f"\n（原始表格資料仍保留在 raw_tables，共 "
-            f"{len(dashboard_data['raw_tables'])} 個，需要時可以對照除錯）"
-        )
-
-
-async def test_activity_registration(activity_id: str, confirm: bool):
-    print("\n" + "=" * 70)
-    title = "【測試 3】活動報名" + ("（confirm=True，會真的送出！）" if confirm else "（dry-run，不會真的送出）")
-    print(title)
-    print("=" * 70)
-
-    username = os.environ.get("NCU_USERNAME", "")
-    password = os.environ.get("NCU_PASSWORD", "")
-
-    if not username or not password:
-        print("沒有偵測到 NCU_USERNAME / NCU_PASSWORD 環境變數，跳過這項測試。")
-        return
-
-    from action_tools import NCUSession
-
-    async with NCUSession(username, password) as session:
-        result = await session.register_for_activity_session(
-            activity_id, confirm=confirm
-        )
-        print(f"\n結果：{result}")
 
 
 if __name__ == "__main__":
@@ -141,14 +148,4 @@ if __name__ == "__main__":
             "NCU_USERNAME / NCU_PASSWORD 環境變數)"
         )
     else:
-        asyncio.run(test_hours_dashboard())
-
-        registration_arg = next(
-            (a for a in sys.argv if a.startswith("--test-registration=")), None
-        )
-        if registration_arg:
-            target_activity_id = registration_arg.split("=", 1)[1]
-            confirm_registration = "--confirm-registration" in sys.argv
-            asyncio.run(
-                test_activity_registration(target_activity_id, confirm_registration)
-            )
+        asyncio.run(run_login_tests())
