@@ -726,6 +726,8 @@ class NCUSession:
 
         await page.goto(INCU_HOME_URL, wait_until="networkidle")
 
+        await self._handle_oauth_consent_if_present(page)
+
         if "login" in page.url:
             print(
                 "[iNCU] SSO session 未生效，偵測到被導回登入頁，"
@@ -733,6 +735,7 @@ class NCUSession:
             )
             await self._login_on_page(page)
             await page.goto(INCU_HOME_URL, wait_until="networkidle")
+            await self._handle_oauth_consent_if_present(page)
 
             if "login" in page.url:
                 raise RuntimeError(
@@ -768,6 +771,71 @@ class NCUSession:
 
         await page.wait_for_load_state("networkidle")
 
+    async def _handle_oauth_consent_if_present(self, page: Page):
+        """處理 iNCU 部分子系統（例如時數 dashboard）額外要求的 OAuth2 授權同意畫面。
+
+        這個畫面跟一般 Portal SSO 不同，是走
+        portal.ncu.edu.tw/oauth2/authorization?... 的授權碼流程，
+        會要求同意分享 identifier / 姓名 / 學號 / 系所等資料，
+        需要手動按下同意按鈕才會導回原本要去的頁面。
+        """
+
+        if "oauth2/authorization" not in page.url:
+            return
+
+        print(f"[iNCU] 偵測到 OAuth2 授權同意畫面：{page.url}")
+
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(500)
+
+        candidate_texts = [
+            "同意", "授權", "允許", "確認", "同意並繼續",
+            "Authorize", "Allow", "Accept", "Continue",
+        ]
+
+        clicked = False
+        for text in candidate_texts:
+            btn = page.get_by_role("button", name=text)
+            if await btn.count() > 0:
+                print(f"[iNCU] 點擊授權按鈕：「{text}」")
+                await btn.first.click()
+                clicked = True
+                break
+
+            link_btn = page.get_by_role("link", name=text)
+            if await link_btn.count() > 0:
+                print(f"[iNCU] 點擊授權連結：「{text}」")
+                await link_btn.first.click()
+                clicked = True
+                break
+
+        if not clicked:
+            body_text = await page.locator("body").inner_text()
+            buttons = await page.locator(
+                "button, input[type=submit], a.btn, a[role=button]"
+            ).all_inner_texts()
+
+            print(
+                "[iNCU] 找不到預期文字的授權按鈕，需要對照畫面調整按鈕文字清單。\n"
+                f"目前頁面上找到的按鈕/連結文字：{buttons}\n"
+                f"頁面內容前 1500 字：\n{body_text[:1500]}"
+            )
+
+            raise RuntimeError(
+                "iNCU 出現 OAuth2 授權同意畫面，但自動化找不到授權按鈕。"
+                "請把上面印出的按鈕文字回報，才能加進 candidate_texts。"
+            )
+
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(500)
+
+        if "oauth2/authorization" in page.url:
+            raise RuntimeError(
+                "點擊授權按鈕後仍停留在 OAuth2 授權畫面，可能該畫面有多個步驟。"
+            )
+
+        print(f"[iNCU] 授權完成，導回 URL：{page.url}")
+
     async def get_hours_dashboard(self) -> dict[str, Any]:
         """取得個人時數 dashboard 的原始資料。
 
@@ -785,6 +853,8 @@ class NCUSession:
         print(f"[iNCU] 正在前往時數 dashboard：{INCU_HOURS_DASHBOARD_URL}")
 
         await page.goto(INCU_HOURS_DASHBOARD_URL, wait_until="networkidle")
+
+        await self._handle_oauth_consent_if_present(page)
 
         if "login" in page.url:
             raise RuntimeError(
@@ -857,6 +927,8 @@ class NCUSession:
         print(f"[iNCU] 前往活動頁準備報名：{activity_url}")
 
         await page.goto(activity_url, wait_until="networkidle")
+
+        await self._handle_oauth_consent_if_present(page)
 
         if session_id:
             tab_link = page.locator(f'a[href="#{session_id}"]')
