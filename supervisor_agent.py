@@ -1,7 +1,19 @@
 from typing import TypedDict, Annotated, List
 from langgraph.graph import StateGraph, END
 import operator
-from action_tools import NCUSession, get_schedule, search_courses
+from action_tools import (
+    NCUSession,
+    get_schedule,
+    search_courses,
+    format_hours_summary,
+    get_deficient_subcategories,
+)
+from activity_tools import (
+    search_activities,
+    get_activity_detail,
+    recommend_activities_for_categories,
+    format_activity_summary,
+)
 from academic_agent import query_academic_knowledge
 import os
 from dotenv import load_dotenv
@@ -25,6 +37,11 @@ class AgentState(TypedDict):
     next_agent: str
     past_queries: Annotated[List[str], operator.add]
     sources: List[str]
+    # 用來記住「上一輪請使用者確認是否要報名/取消報名某活動」這件事，
+    # 讓確認動作可以跨輪對話（不用一次講完）。沒有 Annotated reducer，
+    # 所以每個節點回傳時要嘛明確清空（{}），要嘛明確設成新的待確認動作，
+    # 否則舊的待確認動作會一直留著（checkpointer 只覆蓋有回傳的欄位）。
+    pending_action: dict
 
 
 async def supervisor_node(state: AgentState):
@@ -49,6 +66,11 @@ async def supervisor_node(state: AgentState):
     - ★ 針對「選課、找課、加選」這類指令：
         - 若有明確提到「課程關鍵字或名稱」（例如：幫我選日文課、找微積分） -> 判斷為 ACTION。
         - 若非常籠統、完全沒提到任何特定課程（例如：幫我選課、我要找課、可以幫我加選嗎） -> 判斷為 CLARIFY。
+    - ★ 針對「時數、活動」相關的問題，注意分辨「問自己的狀況」還是「問規則本身」：
+        - 若是問「我自己的」時數進度、還差多少小時、有沒有達到畢業門檻、我報名了什麼活動 -> 判斷為 ACTION（這是要查個人資料，不是查規則）。
+        - 若是查詢活動列表、活動有哪些場次、活動內容是什麼、依時數缺口推薦活動、幫我報名/取消報名活動 -> 判斷為 ACTION。
+        - 若是問「服務學習時數的規定是什麼」「畢業門檻是幾小時」這種制度規則本身、沒有涉及個人資料查詢或操作 -> 判斷為 ACADEMIC。
+        - 若使用者這句話明顯是在回覆上一輪系統要求的「確認報名/確認取消」（例如訊息裡包含「確定」兩個字，且對話歷史顯示上一輪在問是否要報名/取消） -> 判斷為 ACTION。
 
     第二步：法規查詢的條件檢查
     若問題極度空泛且「完全沒有」指定任何系所或學制（如：單純只講「畢業門檻」、「必修」） -> 判斷為 CLARIFY。
@@ -115,12 +137,16 @@ async def clarification_node(state: AgentState):
         ai_reply = f"**引導助手**：\n{response.content}"
         return {
             "agent_results": [ai_reply],
-            "past_queries": [f"[引導助手]: {response.content}"]
+            "past_queries": [f"[引導助手]: {response.content}"],
+            "pending_action": {},
         }
     except Exception as e:
         error_msg = str(e)
         print(f"[Clarification Agent] 呼叫 LLM 發生錯誤：{error_msg}")
-        return {"agent_results": [f"[系統提示]: 抱歉，AI 思考時發生了一點錯誤（{error_msg}），請確認 API Key 狀態或稍後再試！"]}
+        return {
+            "agent_results": [f"[系統提示]: 抱歉，AI 思考時發生了一點錯誤（{error_msg}），請確認 API Key 狀態或稍後再試！"],
+            "pending_action": {},
+        }
 
 
 async def action_agent_node(state: AgentState):
@@ -129,25 +155,87 @@ async def action_agent_node(state: AgentState):
     user_input = state['user_input']
     username = state.get("username", "")
     password = state.get("password", "")
-    
-    if not username or not password:
-        return {"agent_results": ["[Action Agent 回報]:\n缺乏帳號或密碼，無法執行 Portal 登入自動化操作。請先在左側邊欄輸入帳號密碼！"]}
+    pending_action = state.get("pending_action") or {}
+
+    # ------------------------------------------------------------------
+    # 先處理「確認送出」：如果上一輪有等待確認的報名/取消報名動作，
+    # 而這一輪的輸入裡有「確定」兩個字，就直接執行，不用再重新判斷意圖。
+    # 用簡單的關鍵字比對而不是再問一次 LLM，是為了確保這個會改變學校
+    # 系統資料的動作只在使用者明確表態時才會發生，行為要可預期。
+    # ------------------------------------------------------------------
+    if pending_action and "確定" in user_input:
+        if not username or not password:
+            return {
+                "agent_results": ["[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先在左側邊欄輸入帳號密碼！"],
+                "pending_action": {},
+            }
+
+        action_type = pending_action.get("type")
+        activity_id = pending_action.get("activity_id")
+        session_id = pending_action.get("session_id")
+
+        try:
+            if global_ncu_session is None or global_ncu_session.username != username:
+                if global_ncu_session is not None:
+                    await global_ncu_session.close()
+                global_ncu_session = NCUSession(username, password)
+                await global_ncu_session.start()
+
+            if action_type == "ACTIVITY_REGISTER":
+                result = await global_ncu_session.register_for_activity_session(
+                    activity_id, session_id=session_id, confirm=True
+                )
+            elif action_type == "ACTIVITY_CANCEL":
+                result = await global_ncu_session.cancel_activity_registration(
+                    activity_id, session_id=session_id, confirm=True
+                )
+            else:
+                result = {"message": "沒有找到待確認的動作，請重新告訴我想做什麼。"}
+
+            return {
+                "agent_results": [f"**Action Agent 回報**：\n{result.get('message', '')}"],
+                "pending_action": {},
+            }
+        except Exception as e:
+            print(f"[Action Agent] 確認動作執行時發生錯誤: {e}")
+            if global_ncu_session is not None:
+                await global_ncu_session.close()
+                global_ncu_session = None
+            return {
+                "agent_results": [f"**Action Agent 回報**：\n系統執行時發生錯誤：{str(e)}"],
+                "pending_action": {},
+            }
+
+    # ------------------------------------------------------------------
+    # 不是確認動作，走意圖判斷流程
+    # ------------------------------------------------------------------
+    history = state.get("past_queries", [])
+    history_str = " -> ".join(history[-3:]) if history else "無"
 
     extraction_prompt = f"""
     分析以下使用者的輸入，判斷他想要執行的網頁自動化動作：
+    對話歷史：{history_str}
     使用者輸入：「{user_input}」
 
-    請判斷動作類型為以下兩種之一：
-    1. SCHEDULE: 查詢個人課表
-    2. SEARCH: 在選課系統搜尋特定課程
+    請判斷動作類型為以下其中之一：
+    1. SCHEDULE：查詢個人課表
+    2. SEARCH：在選課系統搜尋特定課程
+    3. HOURS：查詢「使用者自己」的學習護照時數進度、離畢業門檻還差多少
+    4. ACTIVITY_SEARCH：查詢/搜尋校內活動列表
+    5. ACTIVITY_INFO：查看某個活動的詳細資訊/內容/場次
+    6. ACTIVITY_RECOMMEND：依使用者自己的時數缺口推薦活動
+    7. ACTIVITY_REGISTER：幫使用者報名某個活動
+    8. ACTIVITY_CANCEL：取消使用者某個活動的報名
 
-    如果你判斷為 SEARCH，請同時提取使用者想搜尋的「課程關鍵字」。
-    例如：「幫我找日文課」 -> 關鍵字為「日文」。
+    如果是 SEARCH 或 ACTIVITY_SEARCH，請提取搜尋關鍵字。
+    如果是 ACTIVITY_INFO / ACTIVITY_REGISTER / ACTIVITY_CANCEL，請提取活動的名稱關鍵字
+    （使用者通常只會講活動名稱的一部分，不會知道活動編號，用 keyword 表示即可，
+    系統會自動搜尋比對最接近的活動）。
 
     請嚴格遵守以下 JSON 格式輸出，不要輸出任何其他文字：
     {{
-        "action_type": "SCHEDULE" 或 "SEARCH",
-        "keyword": "搜尋關鍵字(如果是 SCHEDULE 請留空字串)"
+        "action_type": "SCHEDULE" 或 "SEARCH" 或 "HOURS" 或 "ACTIVITY_SEARCH" 或 "ACTIVITY_INFO" 或 "ACTIVITY_RECOMMEND" 或 "ACTIVITY_REGISTER" 或 "ACTIVITY_CANCEL",
+        "keyword": "搜尋關鍵字或活動名稱關鍵字（不需要時留空字串）"
     }}
     """
     try:
@@ -155,23 +243,73 @@ async def action_agent_node(state: AgentState):
         import json
         raw_json = extraction_response.content.replace("```json", "").replace("```", "").strip()
         parsed_action = json.loads(raw_json)
-        
+
         action_type = parsed_action.get("action_type", "SCHEDULE")
         keyword = parsed_action.get("keyword", "")
-        
+
         print(f"[Action Agent] 解析動作意圖: 類型={action_type}, 關鍵字={keyword}")
-        
+
     except Exception as e:
         print(f"[Action Agent] 解析動作意圖失敗，預設執行查課表。錯誤：{e}")
         action_type = "SCHEDULE"
         keyword = ""
+
+    # ------------------------------------------------------------------
+    # 不需要登入的分支：活動查詢／活動詳情都是公開資料，先處理掉，
+    # 不用管有沒有帳號密碼。
+    # ------------------------------------------------------------------
+    if action_type == "ACTIVITY_SEARCH":
+        try:
+            results = search_activities(keyword=keyword)
+            if not results:
+                return {
+                    "agent_results": [f"**Action Agent 回報**：\n找不到符合「{keyword}」的活動。"],
+                    "pending_action": {},
+                }
+            lines = [f"**「{keyword}」活動搜尋結果（共 {len(results)} 筆）：**\n"]
+            for item in results[:10]:
+                lines.append(f"- [{item['activity_id']}] {item['title']}（{item['status']}）")
+            return {"agent_results": ["\n".join(lines)], "pending_action": {}}
+        except Exception as e:
+            return {
+                "agent_results": [f"**Action Agent 回報**：\n查詢活動時發生錯誤：{str(e)}"],
+                "pending_action": {},
+            }
+
+    if action_type == "ACTIVITY_INFO":
+        try:
+            activity_id = _find_activity_id_by_keyword(keyword)
+            if not activity_id:
+                return {
+                    "agent_results": [f"**Action Agent 回報**：\n找不到符合「{keyword}」的活動，麻煩提供更明確的活動名稱。"],
+                    "pending_action": {},
+                }
+            detail = get_activity_detail(activity_id)
+            return {
+                "agent_results": [f"**Action Agent 回報**：\n{format_activity_summary(detail)}"],
+                "pending_action": {},
+            }
+        except Exception as e:
+            return {
+                "agent_results": [f"**Action Agent 回報**：\n查詢活動詳情時發生錯誤：{str(e)}"],
+                "pending_action": {},
+            }
+
+    # ------------------------------------------------------------------
+    # 以下都需要登入
+    # ------------------------------------------------------------------
+    if not username or not password:
+        return {
+            "agent_results": ["[Action Agent 回報]:\n缺乏帳號或密碼，無法執行 Portal 登入自動化操作。請先在左側邊欄輸入帳號密碼！"],
+            "pending_action": {},
+        }
 
     try:
         if global_ncu_session is None or global_ncu_session.username != username:
             print("[Action Agent] 啟動全新的瀏覽器 Session，準備登入...")
             if global_ncu_session is not None:
                 await global_ncu_session.close()
-                
+
             global_ncu_session = NCUSession(username, password)
             await global_ncu_session.start()
         else:
@@ -179,28 +317,126 @@ async def action_agent_node(state: AgentState):
 
         if action_type == "SEARCH" and keyword:
             search_data = await search_courses(global_ncu_session, keyword)
-            
+
             if search_data:
                 result_text = f"**「{keyword}」搜尋結果：**\n\n"
                 for item in search_data:
                     result_text += f"- {item['serial']} | {item['course_no']} | **{item['title']}** | {item['teacher']}\n"
-                return {"agent_results": [result_text]}
+                return {"agent_results": [result_text], "pending_action": {}}
             else:
-                return {"agent_results": [f"**Action Agent 回報**：\n找不到關鍵字為「{keyword}」的課程。"]}
+                return {
+                    "agent_results": [f"**Action Agent 回報**：\n找不到關鍵字為「{keyword}」的課程。"],
+                    "pending_action": {},
+                }
+
+        elif action_type == "HOURS":
+            dashboard_data = await global_ncu_session.get_hours_dashboard()
+            return {
+                "agent_results": [f"**Action Agent 回報**：\n{format_hours_summary(dashboard_data)}"],
+                "pending_action": {},
+            }
+
+        elif action_type == "ACTIVITY_RECOMMEND":
+            dashboard_data = await global_ncu_session.get_hours_dashboard()
+            deficient = get_deficient_subcategories(dashboard_data)
+
+            if not deficient:
+                return {
+                    "agent_results": ["**Action Agent 回報**：\n你的學習護照時數已經全部達標了，沒有需要補的細項！"],
+                    "pending_action": {},
+                }
+
+            recommendations = recommend_activities_for_categories(deficient)
+            lines = [f"**依你目前還缺的細項（{'、'.join(deficient)}）推薦活動：**"]
+            any_found = False
+            for name, items in recommendations.items():
+                if items:
+                    any_found = True
+                    lines.append(f"\n【{name}】")
+                    for item in items[:3]:
+                        lines.append(
+                            f"- [{item['activity_id']}] {item['activity_title']} / "
+                            f"{item['session_name']}｜{item['tag']}｜報名期間：{item['signup_period']}"
+                        )
+            if not any_found:
+                lines.append("\n目前開放報名中的活動裡沒有找到符合的場次，之後可以再查一次。")
+
+            return {"agent_results": ["\n".join(lines)], "pending_action": {}}
+
+        elif action_type in ("ACTIVITY_REGISTER", "ACTIVITY_CANCEL"):
+            activity_id = _find_activity_id_by_keyword(keyword)
+            if not activity_id:
+                return {
+                    "agent_results": [f"**Action Agent 回報**：\n找不到符合「{keyword}」的活動，麻煩提供更明確的活動名稱。"],
+                    "pending_action": {},
+                }
+
+            if action_type == "ACTIVITY_REGISTER":
+                dry_run = await global_ncu_session.register_for_activity_session(
+                    activity_id, confirm=False
+                )
+                action_label = "報名"
+            else:
+                dry_run = await global_ncu_session.cancel_activity_registration(
+                    activity_id, confirm=False
+                )
+                action_label = "取消報名"
+
+            if not dry_run.get("would_click"):
+                reason = dry_run.get("reason", "無法執行，請查看後端 log。")
+                return {
+                    "agent_results": [f"**Action Agent 回報**：\n{reason}"],
+                    "pending_action": {},
+                }
+
+            detail = get_activity_detail(activity_id)
+            summary = format_activity_summary(detail)
+            message = (
+                f"**Action Agent 回報**：\n{summary}\n\n"
+                f"⚠️ 確定要{action_label}這個活動嗎？這個動作會真的改變你在學校系統上的報名紀錄，"
+                f"請回覆「確定{action_label}」來送出。"
+            )
+            return {
+                "agent_results": [message],
+                "pending_action": {
+                    "type": action_type,
+                    "activity_id": activity_id,
+                    "session_id": None,
+                },
+            }
+
         else:
             schedule_data = await get_schedule(global_ncu_session)
             if schedule_data is not None:
-                return {"agent_results": [schedule_data]}
+                return {"agent_results": [schedule_data], "pending_action": {}}
             else:
-                return {"agent_results": ["**Action Agent 回報**：\n執行失敗：無法解析課表或查無資料"]}
+                return {
+                    "agent_results": ["**Action Agent 回報**：\n執行失敗：無法解析課表或查無資料"],
+                    "pending_action": {},
+                }
 
     except Exception as e:
         print(f"[Action Agent] 發生錯誤: {e}")
         if global_ncu_session is not None:
             await global_ncu_session.close()
             global_ncu_session = None
-            
-        return {"agent_results": [f"**Action Agent 回報**：\n系統執行時發生錯誤：{str(e)}"]}
+
+        return {
+            "agent_results": [f"**Action Agent 回報**：\n系統執行時發生錯誤：{str(e)}"],
+            "pending_action": {},
+        }
+
+
+def _find_activity_id_by_keyword(keyword: str) -> str | None:
+    """依關鍵字搜尋活動，回傳最符合的第一筆活動的 activity_id（找不到回傳 None）。
+
+    這是給 agent 用的：使用者通常只會講活動名稱的一部分，
+    不會知道系統內部的活動編號。
+    """
+    if not keyword:
+        return None
+    matches = search_activities(keyword=keyword)
+    return matches[0]["activity_id"] if matches else None
 
 
 def academic_agent_node(state: AgentState):
@@ -215,19 +451,21 @@ def academic_agent_node(state: AgentState):
         sources = result_dict.get("sources", [])
         return {
             "agent_results": [f"**Academic Agent 回報**：\n{answer_text}"],
-            "sources": sources
+            "sources": sources,
+            "pending_action": {},
         }
     except Exception as e:
         return {
             "agent_results": [f"查詢法規時發生錯誤：{str(e)}"],
-            "sources": []
+            "sources": [],
+            "pending_action": {},
         }
 
 
 def fallback_node(state: AgentState):
     print("\n[Fallback Agent] 被喚醒了！發現這不在系統的服務範圍內...")
-    result = "我是 NCUXplore 校園助手，目前僅提供「校園法規查詢」與「Portal 自動化登入」服務喔！其他問題我暫時還聽不懂～"
-    return {"agent_results": [result]}
+    result = "我是 NCUXplore 校園助手，目前提供「校園法規查詢」、「Portal 自動化登入／課表／選課」、「個人時數進度查詢」與「活動查詢／推薦／報名」服務喔！其他問題我暫時還聽不懂～"
+    return {"agent_results": [result], "pending_action": {}}
 
 
 def router(state: AgentState):
