@@ -769,6 +769,16 @@ class NCUSession:
         self.incu_page = await self.context.new_page()
         page = self.incu_page
 
+        # 報名/取消報名這類操作，網頁可能會跳出瀏覽器原生的 confirm() 對話框
+        # （例如「確定要取消報名嗎？」）。Playwright 預設會自動按「取消」，
+        # 導致點擊看起來成功但實際上什麼事都沒發生（畫面完全沒變）。
+        # 這裡註冊一個 handler，讓所有跳出來的對話框都自動按「確定」。
+        async def _auto_accept_dialog(dialog):
+            print(f"[iNCU] 偵測到瀏覽器對話框「{dialog.message}」，自動按下確定。")
+            await dialog.accept()
+
+        page.on("dialog", _auto_accept_dialog)
+
         await page.goto(INCU_HOME_URL, wait_until="networkidle")
 
         await self._handle_oauth_consent_if_present(page)
@@ -1356,8 +1366,20 @@ class NCUSession:
 
         body_text = await page.locator("body").inner_text()
 
-        cancelled = any(
-            phrase in body_text for phrase in ["取消成功", "已取消", "取消報名成功"]
+        # 這個網站取消報名後不一定會顯示「取消成功」之類的文字，畫面可能
+        # 只是重新整理回同一個活動頁。比對文字之外，再用「取消報名按鈕
+        # 是否還在」當作結構性的判斷依據：如果按鈕不見了（代表已經不是
+        # 報名狀態），也算取消成功。
+        cancel_button_still_present = await pane.get_by_role(
+            "button", name=matched_text
+        ).count() > 0
+
+        cancelled = (
+            any(
+                phrase in body_text
+                for phrase in ["取消成功", "已取消", "取消報名成功"]
+            )
+            or not cancel_button_still_present
         )
 
         if cancelled:
