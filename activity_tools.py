@@ -284,6 +284,61 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
     return info
 
 
+def _scan_open_activities_for_tags(
+    tag_names: list[str],
+    max_candidates: int,
+) -> dict[str, list[dict[str, Any]]]:
+    """核心邏輯：掃描「開放報名中」的活動，比對每個場次的學習護照時數標籤
+    有沒有包含目標名稱。recommend_activities_for_categories() 跟
+    find_activities_by_hour_tag() 共用這個，差別只在要不要附推薦理由。
+
+    每筆場次資訊都會附上報名人數/名額（capacity、waitlist_capacity、
+    signup_status_text），因為使用者選活動時最在意的就是還有沒有名額，
+    不能只給活動資訊卻不給名額，等到真的要報名才發現額滿。
+    """
+
+    print(
+        f"[Activity Tools] 依標籤 {tag_names} 掃描開放報名中的活動"
+        f"（最多掃描 {max_candidates} 個）..."
+    )
+
+    candidates = search_activities(open_signup_only=True)[:max_candidates]
+
+    matches: dict[str, list[dict[str, Any]]] = {name: [] for name in tag_names}
+
+    for activity in candidates:
+        try:
+            detail = get_activity_detail(activity["activity_id"])
+        except Exception as e:
+            print(f"[Activity Tools] 查詢活動 {activity['activity_id']} 詳情失敗：{e}")
+            continue
+
+        for sess in detail.get("sessions", []):
+            tag = sess.get("passport_hours_tag") or ""
+            if not tag or "不提供時數" in tag:
+                continue
+
+            for name in tag_names:
+                if name in tag:
+                    matches[name].append(
+                        {
+                            "activity_id": activity["activity_id"],
+                            "activity_title": detail.get("title"),
+                            "session_id": sess.get("session_id"),
+                            "session_name": sess.get("session_name"),
+                            "tag": tag,
+                            "event_period": sess.get("event_period"),
+                            "signup_period": sess.get("signup_period"),
+                            "capacity": sess.get("capacity"),
+                            "waitlist_capacity": sess.get("waitlist_capacity"),
+                            "signup_status_text": sess.get("signup_status_text"),
+                            "url": detail.get("url"),
+                        }
+                    )
+
+    return matches
+
+
 def recommend_activities_for_categories(
     deficiencies: list[dict[str, Any]],
     max_candidates: int = 40,
@@ -300,10 +355,8 @@ def recommend_activities_for_categories(
         max_candidates: 因為每個候選活動都要多打一次 get_activity_detail()
             請求，用這個限制最多掃描幾個開放報名中的活動。
 
-    做法：先抓「開放報名中」的活動列表，再逐一查詳情，
-    比對每個場次的 passport_hours_tag 有沒有包含目標細項名稱。
-
-    回傳：{細項名稱: [符合的場次資訊（含 reason 推薦理由）, ...]}（找不到就是空 list）
+    回傳：{細項名稱: [符合的場次資訊（含 reason 推薦理由、報名人數/名額）, ...]}
+    （找不到就是空 list）
     """
 
     subcategory_names = [d["subcategory"] for d in deficiencies]
@@ -315,51 +368,42 @@ def recommend_activities_for_categories(
         for d in deficiencies
     }
 
-    print(
-        f"[Activity Tools] 依細項 {subcategory_names} 尋找推薦活動"
-        f"（最多掃描 {max_candidates} 個開放報名中的活動）..."
-    )
+    matches = _scan_open_activities_for_tags(subcategory_names, max_candidates)
 
-    candidates = search_activities(open_signup_only=True)[:max_candidates]
+    for name, items in matches.items():
+        for item in items:
+            item["reason"] = f"推薦原因：{reason_by_name[name]}"
 
-    recommendations: dict[str, list[dict[str, Any]]] = {
-        name: [] for name in subcategory_names
-    }
-
-    for activity in candidates:
-        try:
-            detail = get_activity_detail(activity["activity_id"])
-        except Exception as e:
-            print(f"[Activity Tools] 查詢活動 {activity['activity_id']} 詳情失敗：{e}")
-            continue
-
-        for sess in detail.get("sessions", []):
-            tag = sess.get("passport_hours_tag") or ""
-            if not tag or "不提供時數" in tag:
-                continue
-
-            for name in subcategory_names:
-                if name in tag:
-                    recommendations[name].append(
-                        {
-                            "activity_id": activity["activity_id"],
-                            "activity_title": detail.get("title"),
-                            "session_id": sess.get("session_id"),
-                            "session_name": sess.get("session_name"),
-                            "tag": tag,
-                            "event_period": sess.get("event_period"),
-                            "signup_period": sess.get("signup_period"),
-                            "url": detail.get("url"),
-                            "reason": f"推薦原因：{reason_by_name[name]}",
-                        }
-                    )
-
-    found_summary = ", ".join(
-        f"{name}：{len(items)} 場" for name, items in recommendations.items()
-    )
+    found_summary = ", ".join(f"{name}：{len(items)} 場" for name, items in matches.items())
     print(f"[Activity Tools] 推薦結果 - {found_summary}")
 
-    return recommendations
+    return matches
+
+
+def find_activities_by_hour_tag(
+    tag_names: list[str],
+    max_candidates: int = 40,
+) -> dict[str, list[dict[str, Any]]]:
+    """直接依「學習護照時數標籤」名稱查詢活動，不需要登入、也不需要知道
+    使用者自己的時數狀況（跟 recommend_activities_for_categories 的差別：
+    這個是使用者自己指名想找哪個類別，不是系統依缺口主動推薦）。
+
+    例如：使用者問「有沒有自我探索與生涯規劃時數的活動」，
+    直接呼叫 find_activities_by_hour_tag(["自我探索與生涯規劃"])。
+
+    回傳：{標籤名稱: [符合的場次資訊（含報名人數/名額）, ...]}（找不到就是空 list）
+    """
+
+    matches = _scan_open_activities_for_tags(tag_names, max_candidates)
+
+    for name, items in matches.items():
+        for item in items:
+            item["reason"] = f"提供「{name}」時數"
+
+    found_summary = ", ".join(f"{name}：{len(items)} 場" for name, items in matches.items())
+    print(f"[Activity Tools] 查詢結果 - {found_summary}")
+
+    return matches
 
 
 def format_activity_summary(detail: dict[str, Any]) -> str:

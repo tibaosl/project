@@ -149,7 +149,11 @@ def render_hours_dashboard(data):
 
 
 def render_activity_recommendations(data):
-    """渲染依時數缺口推薦的活動清單，每張卡片附上推薦理由。"""
+    """渲染活動清單（依時數缺口推薦、或依標籤直接查詢都用這個），
+    每張卡片附上推薦/查詢理由，以及報名人數/名額——
+    使用者選活動最在意的就是還有沒有名額，不能只給活動資訊不給名額，
+    等到真的要報名才發現額滿。
+    """
 
     recommendations = data.get("recommendations", {})
     any_found = any(items for items in recommendations.values())
@@ -165,6 +169,13 @@ def render_activity_recommendations(data):
         st.markdown(f"**【{name}】找到 {len(items)} 個場次**")
 
         for item in items[:5]:
+            headcount = item.get("signup_status_text")
+            if not headcount and item.get("capacity") is not None:
+                headcount = f"名額上限：{item['capacity']}"
+            headcount_line = (
+                f"<div class='ncux-card-meta'>👥 {headcount}</div>" if headcount else ""
+            )
+
             st.markdown(
                 f"""
                 <div class="ncux-card">
@@ -173,6 +184,7 @@ def render_activity_recommendations(data):
                     <div class="ncux-card-meta">🕒 活動時間：{item.get('event_period', '')}</div>
                     <div class="ncux-card-meta">📝 報名時間：{item.get('signup_period', '')}</div>
                     <div class="ncux-card-meta">🎖️ 時數標籤：{item.get('tag', '')}</div>
+                    {headcount_line}
                     <div class="ncux-reason">💡 {item.get('reason', '')}</div>
                 </div>
                 """,
@@ -274,7 +286,7 @@ def render_agent_reply(content):
         if kind == "hours_dashboard":
             render_hours_dashboard(content)
             return
-        if kind == "activity_recommendations":
+        if kind in ("activity_recommendations", "activity_tag_search"):
             render_activity_recommendations(content)
             return
         if kind == "activity_detail":

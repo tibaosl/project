@@ -11,6 +11,7 @@ from activity_tools import (
     search_activities,
     get_activity_detail,
     recommend_activities_for_categories,
+    find_activities_by_hour_tag,
 )
 from academic_agent import query_academic_knowledge
 import os
@@ -231,19 +232,25 @@ async def action_agent_node(state: AgentState):
        狀況（時數缺口、還差什麼）主動推薦適合報名的活動
     7. ACTIVITY_REGISTER：幫使用者報名某個「已經指名」的活動
     8. ACTIVITY_CANCEL：取消使用者某個「已經指名」活動的報名
+    9. ACTIVITY_SEARCH_BY_TAG：使用者指名某個「學習護照時數標籤/類別」，
+       要找有提供這種時數的活動（不是要系統依他個人狀況判斷，是他自己
+       講出想要哪一種時數）
 
-    ★★ ACTIVITY_SEARCH 與 ACTIVITY_RECOMMEND 是最容易搞混的兩個，請特別注意：
-    - 只要使用者的輸入裡出現「推薦」，或是「有沒有活動可以報名/參加」這種
-      沒有指定任何活動名稱或類別、希望系統幫忙挑的說法，一律判斷為
-      ACTIVITY_RECOMMEND，絕對不要判斷成 ACTIVITY_SEARCH。
-      例如：「有沒有什麼活動可以推薦我報名的」「有什麼活動適合我」
-      「幫我推薦活動」「我還缺時數，有什麼可以參加的」-> 都是 ACTIVITY_RECOMMEND。
-    - 只有使用者自己講出具體條件（例如「查一下有沒有日文相關的活動」
-      「最近有什麼藝文活動」「幫我查一下活動列表」），沒有要系統依他個人
-      狀況判斷時，才是 ACTIVITY_SEARCH。這種情況通常有明確的 keyword
-      可以提取；如果想不出合理的 keyword，那大概不該判斷成 ACTIVITY_SEARCH。
+    ★★ 三個容易搞混的類型，請特別注意分辨：
+    - ACTIVITY_RECOMMEND：只要出現「推薦」，或是「有沒有活動可以報名/參加」
+      這種沒有指定任何活動名稱或時數類別、希望系統幫忙挑的說法，一律判斷為
+      ACTIVITY_RECOMMEND。例如：「有沒有什麼活動可以推薦我報名的」
+      「有什麼活動適合我」「我還缺時數，有什麼可以參加的」。
+    - ACTIVITY_SEARCH_BY_TAG：使用者自己講出一個具體的時數類別/標籤名稱
+      （例如「自我探索與生涯規劃」「校外服務」「人文藝術」「國際視野」），
+      問有沒有活動提供這種時數。例如：「有沒有自我探索與生涯規劃時數的活動」
+      「哪些活動有校外服務時數」。這種情況 keyword 就是那個類別名稱。
+    - ACTIVITY_SEARCH：使用者講的是活動名稱關鍵字或一般類別（不是時數標籤
+      名稱），單純要看活動列表。例如「查一下有沒有日文相關的活動」
+      「最近有什麼藝文活動」。
 
-    如果是 SEARCH 或 ACTIVITY_SEARCH，請提取搜尋關鍵字。
+    如果是 SEARCH、ACTIVITY_SEARCH 或 ACTIVITY_SEARCH_BY_TAG，請提取搜尋關鍵字
+    （ACTIVITY_SEARCH_BY_TAG 的 keyword 就是時數類別名稱）。
     如果是 ACTIVITY_INFO / ACTIVITY_REGISTER / ACTIVITY_CANCEL，請提取活動的名稱關鍵字
     （使用者通常只會講活動名稱的一部分，不會知道活動編號，用 keyword 表示即可，
     系統會自動搜尋比對最接近的活動）。
@@ -251,8 +258,8 @@ async def action_agent_node(state: AgentState):
 
     請嚴格遵守以下 JSON 格式輸出，不要輸出任何其他文字：
     {{
-        "action_type": "SCHEDULE" 或 "SEARCH" 或 "HOURS" 或 "ACTIVITY_SEARCH" 或 "ACTIVITY_INFO" 或 "ACTIVITY_RECOMMEND" 或 "ACTIVITY_REGISTER" 或 "ACTIVITY_CANCEL",
-        "keyword": "搜尋關鍵字或活動名稱關鍵字（不需要時留空字串）"
+        "action_type": "SCHEDULE" 或 "SEARCH" 或 "HOURS" 或 "ACTIVITY_SEARCH" 或 "ACTIVITY_INFO" 或 "ACTIVITY_RECOMMEND" 或 "ACTIVITY_REGISTER" 或 "ACTIVITY_CANCEL" 或 "ACTIVITY_SEARCH_BY_TAG",
+        "keyword": "搜尋關鍵字或活動名稱關鍵字或時數類別名稱（不需要時留空字串）"
     }}
     """
     try:
@@ -316,6 +323,22 @@ async def action_agent_node(state: AgentState):
         except Exception as e:
             return {
                 "agent_results": [f"**Action Agent 回報**：\n查詢活動詳情時發生錯誤：{str(e)}"],
+                "pending_action": {},
+            }
+
+    if action_type == "ACTIVITY_SEARCH_BY_TAG":
+        try:
+            if not keyword:
+                return {
+                    "agent_results": ["**Action Agent 回報**：\n請告訴我你想找哪一種時數類別的活動（例如：自我探索與生涯規劃、校外服務、人文藝術、國際視野）。"],
+                    "pending_action": {},
+                }
+            matches = find_activities_by_hour_tag([keyword])
+            envelope = {"kind": "activity_tag_search", "recommendations": matches}
+            return {"agent_results": [envelope], "pending_action": {}}
+        except Exception as e:
+            return {
+                "agent_results": [f"**Action Agent 回報**：\n查詢活動時發生錯誤：{str(e)}"],
                 "pending_action": {},
             }
 
