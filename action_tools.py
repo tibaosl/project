@@ -1200,18 +1200,59 @@ class NCUSession:
             await confirm_button.first.click()
             await page.wait_for_timeout(1000)
 
-        result_text = await pane.inner_text()
+        # --------------------------------------------------------------
+        # 送出後的成功畫面（「報名成功 (正取)」+ 報名序號）不一定還在原本
+        # 抓的 pane 範圍內，所以改抓整個 body 文字來判斷結果，比較保險。
+        # --------------------------------------------------------------
+        await page.wait_for_timeout(500)
 
-        print(f"[iNCU] 報名流程執行完畢，目前該場次區塊文字：\n{result_text[:500]}")
+        body_text = await page.locator("body").inner_text()
+
+        registration_status: Optional[str] = None
+        registration_number: Optional[str] = None
+
+        status_match = re.search(r"報名成功\s*[（(]([^)）]+)[)）]", body_text)
+        if status_match:
+            registration_status = status_match.group(1)  # 正取 / 備取
+
+        number_match = re.search(r"報名序號為[：:]\s*(\S+)", body_text)
+        if number_match:
+            registration_number = number_match.group(1)
+
+        registered = registration_status is not None
+
+        # 收尾：點「返回活動報名系統」把畫面帶回列表頁，非必要動作，
+        # 找不到就略過。
+        return_button = page.get_by_role("button", name="返回活動報名系統")
+        if await return_button.count() == 0:
+            return_button = page.get_by_role("link", name="返回活動報名系統")
+        if await return_button.count() > 0:
+            await return_button.first.click()
+            await page.wait_for_timeout(500)
+
+        if registered:
+            print(
+                f"[iNCU] 報名成功！狀態：{registration_status}，"
+                f"報名序號：{registration_number}"
+            )
+        else:
+            print(
+                "[iNCU] 報名流程已跑完，但沒有在畫面上偵測到「報名成功」文字，"
+                f"請查看 result_text 確認實際結果：\n{body_text[:800]}"
+            )
 
         return {
             "would_click": matched_text,
             "success": True,
+            "registered": registered,
+            "registration_status": registration_status,
+            "registration_number": registration_number,
             "message": (
-                "報名流程已跑完（含基本資料確認表單，如果有跳出的話），"
-                "請對照 result_text 確認實際結果是否真的報名成功。"
+                f"報名成功（{registration_status}），序號：{registration_number}"
+                if registered
+                else "報名流程已跑完，但沒有偵測到成功訊息，請查看 result_text。"
             ),
-            "result_text": result_text,
+            "result_text": body_text,
         }
 
     async def close(self):
