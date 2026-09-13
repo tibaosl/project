@@ -66,8 +66,9 @@ def search_activities(
     open_signup_only: bool = False,
     start_date: str = "",
     end_date: str = "",
+    page: int = 1,
 ) -> list[dict[str, Any]]:
-    """依條件搜尋 iNCU 活動報名系統的公開活動列表。
+    """依條件搜尋 iNCU 活動報名系統的公開活動列表（單頁，每頁 20 筆）。
 
     Args:
         keyword: 活動名稱關鍵字。
@@ -79,6 +80,8 @@ def search_activities(
             代碼需對照網頁上的下拉選單，這裡不窮舉。
         open_signup_only: 是否只顯示「開放報名中」的活動。
         start_date / end_date: 篩選活動日期區間，格式 "YYYY-MM-DD"。
+        page: 頁碼（對應網頁的 ?page=N，從 1 開始）。網站一頁固定 20 筆，
+            這個函式只抓「這一頁」；要抓全部頁面請用 search_all_activities()。
 
     Returns:
         每筆活動的摘要資訊（activity_id、title、status、target_audience、
@@ -98,6 +101,8 @@ def search_activities(
         "filter_end_date": end_date,
     }
     params = {k: v for k, v in params.items() if v}
+    if page > 1:
+        params["page"] = page
 
     print(f"[Activity Tools] 查詢活動列表，條件：{params}")
 
@@ -174,6 +179,52 @@ def search_activities(
     print(f"[Activity Tools] 共找到 {len(results)} 筆活動。")
 
     return results
+
+
+def search_all_activities(
+    max_pages: int = 50,
+    **filters: Any,
+) -> list[dict[str, Any]]:
+    """依條件搜尋活動，自動翻頁抓完所有頁面（不只第一頁的 20 筆）。
+
+    網站一頁固定 20 筆，之前掃描活動只抓了 search_activities() 的第一頁，
+    範圍不夠完整。這裡用同樣的篩選條件，從 page=1 開始一直往後抓，
+    抓到某一頁沒有結果就停下來。
+
+    Args:
+        max_pages: 安全上限，避免網站行為異常時無限翻頁下去
+            （目前實測全部活動大約 5 頁，50 頁已經是很寬鬆的上限）。
+        **filters: 直接轉傳給 search_activities() 的篩選條件
+            （keyword、category、target、department_code、
+            open_signup_only、start_date、end_date）。
+
+    Returns:
+        所有頁面活動摘要的合併清單（依 activity_id 去重）。
+    """
+
+    all_results: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    for page in range(1, max_pages + 1):
+        page_results = search_activities(page=page, **filters)
+        if not page_results:
+            break
+
+        new_count = 0
+        for item in page_results:
+            if item["activity_id"] not in seen_ids:
+                seen_ids.add(item["activity_id"])
+                all_results.append(item)
+                new_count += 1
+
+        # 這一頁的活動都已經看過（代表已經翻到最後、開始重複），就停下來，
+        # 避免網站分頁行為異常時卡在原地一直重複抓同一頁。
+        if new_count == 0:
+            break
+
+    print(f"[Activity Tools] 翻頁掃描完成，共 {len(all_results)} 筆活動。")
+
+    return all_results
 
 
 def get_activity_detail(activity_id: str) -> dict[str, Any]:
@@ -286,23 +337,28 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
 
 def _scan_open_activities_for_tags(
     tag_names: list[str],
-    max_candidates: int,
+    max_candidates: Optional[int] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """核心邏輯：掃描「開放報名中」的活動，比對每個場次的學習護照時數標籤
     有沒有包含目標名稱。recommend_activities_for_categories() 跟
     find_activities_by_hour_tag() 共用這個，差別只在要不要附推薦理由。
+
+    用 search_all_activities() 自動翻頁抓完全部「開放報名中」的活動
+    （不是只抓第一頁的 20 筆）。max_candidates 是可選的安全上限，
+    預設 None 代表全部掃描，不特別截斷。
 
     每筆場次資訊都會附上報名人數/名額（capacity、waitlist_capacity、
     signup_status_text），因為使用者選活動時最在意的就是還有沒有名額，
     不能只給活動資訊卻不給名額，等到真的要報名才發現額滿。
     """
 
-    print(
-        f"[Activity Tools] 依標籤 {tag_names} 掃描開放報名中的活動"
-        f"（最多掃描 {max_candidates} 個）..."
-    )
+    candidates = search_all_activities(open_signup_only=True)
+    if max_candidates is not None:
+        candidates = candidates[:max_candidates]
 
-    candidates = search_activities(open_signup_only=True)[:max_candidates]
+    print(
+        f"[Activity Tools] 依標籤 {tag_names} 掃描 {len(candidates)} 個開放報名中的活動..."
+    )
 
     matches: dict[str, list[dict[str, Any]]] = {name: [] for name in tag_names}
 
@@ -341,7 +397,7 @@ def _scan_open_activities_for_tags(
 
 def recommend_activities_for_categories(
     deficiencies: list[dict[str, Any]],
-    max_candidates: int = 40,
+    max_candidates: Optional[int] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """依「學習護照時數缺口」，從目前開放報名中的活動找出對應場次。
 
@@ -352,8 +408,9 @@ def recommend_activities_for_categories(
             細項名稱要跟 action_tools.py 裡
             STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS 的細項名稱一致
             （例如 "校外服務"、"人文藝術"、"國際視野"）。
-        max_candidates: 因為每個候選活動都要多打一次 get_activity_detail()
-            請求，用這個限制最多掃描幾個開放報名中的活動。
+        max_candidates: 預設 None，會掃描全部「開放報名中」的活動
+            （自動翻頁，不只第一頁）。因為每個候選活動都要多打一次
+            get_activity_detail() 請求，有需要限制掃描數量時可以傳入。
 
     回傳：{細項名稱: [符合的場次資訊（含 reason 推薦理由、報名人數/名額）, ...]}
     （找不到就是空 list）
@@ -382,7 +439,7 @@ def recommend_activities_for_categories(
 
 def find_activities_by_hour_tag(
     tag_names: list[str],
-    max_candidates: int = 40,
+    max_candidates: Optional[int] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """直接依「學習護照時數標籤」名稱查詢活動，不需要登入、也不需要知道
     使用者自己的時數狀況（跟 recommend_activities_for_categories 的差別：
@@ -390,6 +447,8 @@ def find_activities_by_hour_tag(
 
     例如：使用者問「有沒有自我探索與生涯規劃時數的活動」，
     直接呼叫 find_activities_by_hour_tag(["自我探索與生涯規劃"])。
+
+    max_candidates 預設 None，會掃描全部「開放報名中」的活動（自動翻頁）。
 
     回傳：{標籤名稱: [符合的場次資訊（含報名人數/名額）, ...]}（找不到就是空 list）
     """
