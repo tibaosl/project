@@ -20,6 +20,13 @@ PORTAL_HOME_URL = "https://portal.ncu.edu.tw/"
 REGISTRATION_LOGIN_URL = "https://cis.ncu.edu.tw/Course/main/login"
 REGISTRATION_HOME_URL = "https://cis.ncu.edu.tw/Course/main/sign/selectCourse?step=3"
 
+# iNCU 服務櫃台（活動報名、時數 dashboard 等都在這裡）
+# 登入方式跟 Portal 共用 SSO：未登入時點 /iNCU/login 會被導去 portal.ncu.edu.tw 登入頁，
+# 登入完成後才會被導回 iNCU。
+INCU_HOME_URL = "https://cis.ncu.edu.tw/iNCU/home"
+INCU_LOGIN_URL = "https://cis.ncu.edu.tw/iNCU/login"
+INCU_HOURS_DASHBOARD_URL = "https://cis.ncu.edu.tw/iNCU/messageNotice/dashboard/signupDashboard"
+
 async def parse_ncu_schedule_table(
     page: Page,
 ) -> Optional[list[dict[str, Any]]]:
@@ -188,6 +195,9 @@ class NCUSession:
 
         # 選課系統
         self.registration_page: Optional[Page] = None
+
+        # iNCU 服務櫃台（活動報名、時數 dashboard）
+        self.incu_page: Optional[Page] = None
 
     async def __aenter__(self):
         await self.start()
@@ -693,6 +703,204 @@ class NCUSession:
 
         return page
 
+    async def open_incu_home(self) -> Page:
+        """開啟 iNCU 服務櫃台首頁（活動報名、時數等都在這個系統底下）。
+
+        iNCU 跟 Portal 共用 SSO，理論上 Portal 登入完成後直接開 iNCU
+        網址就會是已登入狀態；如果偵測到被導回 Portal 登入頁，
+        會嘗試用同一組帳密重新跑一次登入流程。
+        """
+
+        if self.context is None:
+            raise RuntimeError(
+                "BrowserContext 尚未建立，請先呼叫 start()。"
+            )
+
+        if self.incu_page is not None and not self.incu_page.is_closed():
+            return self.incu_page
+
+        print("[Action Agent] 正在開啟 iNCU 服務櫃台...")
+
+        self.incu_page = await self.context.new_page()
+        page = self.incu_page
+
+        await page.goto(INCU_HOME_URL, wait_until="networkidle")
+
+        if "login" in page.url:
+            print(
+                "[iNCU] SSO session 未生效，偵測到被導回登入頁，"
+                "嘗試重新登入..."
+            )
+            await self._login_on_page(page)
+            await page.goto(INCU_HOME_URL, wait_until="networkidle")
+
+            if "login" in page.url:
+                raise RuntimeError(
+                    "iNCU 登入失敗：登入後仍被導回登入頁。"
+                )
+
+        print(f"[iNCU] 已進入服務櫃台，URL: {page.url}")
+
+        return page
+
+    async def _login_on_page(self, page: Page):
+        """在既有 page 上完成一次 Portal 登入（供 SSO 轉導頁面使用）。
+
+        跟 _login_interactively 邏輯相同，差別是這裡是在背景 context
+        現有的 page 上操作，而不是另外開一個新視窗。
+        """
+
+        await page.get_by_role("textbox", name="帳號").fill(self.username)
+        await page.get_by_role("textbox", name="密碼").fill(self.password)
+
+        print(
+            "\n=======================================================\n"
+            "[Action Agent 暫停]\n"
+            "iNCU/Portal SSO 需要重新驗證，請在背景瀏覽器視窗中\n"
+            "手動打勾「我不是機器人」並解題，完成後點擊「登入 Portal」，"
+            "系統將等待 90 秒...\n"
+            "=======================================================\n"
+        )
+
+        await page.get_by_role(
+            "button", name="登入 Portal"
+        ).wait_for(state="hidden", timeout=90000)
+
+        await page.wait_for_load_state("networkidle")
+
+    async def get_hours_dashboard(self) -> dict[str, Any]:
+        """取得個人時數 dashboard 的原始資料。
+
+        對應網頁：
+        https://cis.ncu.edu.tw/iNCU/messageNotice/dashboard/signupDashboard
+
+        ⚠️ 目前這頁面的實際 DOM 結構還沒有用真實帳號驗證過，
+        這裡先抓「所有看起來像資料表格/ 統計卡片」的內容印出來，
+        方便之後對照畫面調整成精準解析。跑過一次之後，
+        把印出來的內容回報，我再把這裡改成正式的欄位解析。
+        """
+
+        page = await self.open_incu_home()
+
+        print(f"[iNCU] 正在前往時數 dashboard：{INCU_HOURS_DASHBOARD_URL}")
+
+        await page.goto(INCU_HOURS_DASHBOARD_URL, wait_until="networkidle")
+
+        if "login" in page.url:
+            raise RuntimeError(
+                "時數 dashboard 需要登入，但目前 session 無效（被導回登入頁）。"
+            )
+
+        await page.wait_for_timeout(1000)
+
+        # 先抓頁面上所有表格，格式跟 parse_ncu_schedule_table 類似的做法，
+        # 但因為還不知道實際 class name，先用泛用的 table 標籤抓。
+        tables = await page.evaluate(
+            """() => {
+                const tables = Array.from(document.querySelectorAll('table'));
+                return tables.map(t => t.innerText);
+            }"""
+        )
+
+        # 抓看起來像統計卡片 / 進度條的區塊（class 名稱常見會有 card、progress、summary 字樣）
+        summary_blocks = await page.evaluate(
+            """() => {
+                const nodes = Array.from(
+                    document.querySelectorAll(
+                        '[class*="card"], [class*="progress"], [class*="summary"], [class*="dashboard"]'
+                    )
+                );
+                return nodes
+                    .map(n => n.innerText.trim())
+                    .filter(t => t.length > 0 && t.length < 500);
+            }"""
+        )
+
+        result = {
+            "url": page.url,
+            "raw_tables": tables,
+            "raw_summary_blocks": summary_blocks,
+        }
+
+        print(
+            f"[iNCU] 時數 dashboard 原始資料擷取完成："
+            f"{len(tables)} 個表格、{len(summary_blocks)} 個統計區塊。\n"
+            "（欄位解析尚未定案，請對照實際畫面回報調整方向）"
+        )
+
+        return result
+
+    async def register_for_activity_session(
+        self,
+        activity_id: str,
+        session_id: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """實際送出活動報名（會改變學校系統上的資料，請先確認過再呼叫）。
+
+        Args:
+            activity_id: 活動編號，對應 activity_tools.get_activity_detail 的 activity_id。
+            session_id: 場次編號（tab-pane 的 id，例如 "event115A01517"）。
+                若活動只有一個場次可以留空，函式會自動選第一個。
+
+        ⚠️ 目前這個函式還沒有用真實帳號驗證過登入後的「報名」按鈕長什麼樣子
+        （未登入時看到的是連去 /iNCU/login 的按鈕），先寫成：
+        導航到活動頁 → 找登入後應該會出現的報名按鈕 → 點擊 → 回報結果。
+        跑起來如果選不到按鈕，會把頁面文字印出來方便除錯調整。
+        """
+
+        page = await self.open_incu_home()
+
+        activity_url = (
+            f"https://cis.ncu.edu.tw/iNCU/publicService/activityQuery/{activity_id}"
+        )
+
+        print(f"[iNCU] 前往活動頁準備報名：{activity_url}")
+
+        await page.goto(activity_url, wait_until="networkidle")
+
+        if session_id:
+            tab_link = page.locator(f'a[href="#{session_id}"]')
+            if await tab_link.count() > 0:
+                await tab_link.first.click()
+                await page.wait_for_timeout(300)
+            pane = page.locator(f"#{session_id}")
+        else:
+            pane = page.locator("div.tab-pane").first
+
+        signup_button = pane.get_by_role("button", name="報名").or_(
+            pane.locator("button:has-text('報名')")
+        )
+
+        if await signup_button.count() == 0:
+            page_text = await pane.inner_text()
+            print(
+                "[iNCU] 找不到「報名」按鈕，可能未達開放報名時間、"
+                "已額滿，或按鈕文字/結構跟預期不同。\n"
+                f"該場次區塊目前文字內容：\n{page_text[:1000]}"
+            )
+            return {
+                "success": False,
+                "reason": "找不到報名按鈕，請查看 log 輸出的頁面文字內容。",
+            }
+
+        await signup_button.first.click()
+        await page.wait_for_timeout(1000)
+
+        confirm_button = page.get_by_role("button", name="確認")
+        if await confirm_button.count() > 0:
+            await confirm_button.first.click()
+            await page.wait_for_timeout(1000)
+
+        result_text = await pane.inner_text()
+
+        print(f"[iNCU] 報名動作已送出，目前該場次區塊文字：\n{result_text[:500]}")
+
+        return {
+            "success": True,
+            "message": "報名動作已送出，請對照 result_text 確認實際結果。",
+            "result_text": result_text,
+        }
+
     async def close(self):
         """關閉 browser / playwright 資源。"""
 
@@ -708,6 +916,7 @@ class NCUSession:
         self.page = None
         self.course_mgr_page = None
         self.registration_page = None
+        self.incu_page = None
 
 
 async def search_courses(
