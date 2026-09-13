@@ -12,6 +12,8 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from activity_tools import get_activity_detail
+
 # Portal
 PORTAL_LOGIN_URL = "https://portal.ncu.edu.tw/login"
 PORTAL_HOME_URL = "https://portal.ncu.edu.tw/"
@@ -1120,6 +1122,40 @@ class NCUSession:
             pane = page.locator(f"#{session_id}")
         else:
             pane = page.locator("div.tab-pane").first
+
+        # --------------------------------------------------------------
+        # 送出報名前先確認這個場次是不是「現場報名」（報名時間起訖相同，
+        # 代表系統上根本沒開放事先線上報名，點按鈕多半沒有實質作用）。
+        # 這裡另外打一次公開的 get_activity_detail()（不需要登入），
+        # 拿 registration_mode 來判斷，比在這裡重新寫一次判斷邏輯乾淨。
+        # --------------------------------------------------------------
+        try:
+            public_detail = get_activity_detail(activity_id)
+            target_session = None
+            if session_id:
+                target_session = next(
+                    (s for s in public_detail.get("sessions", []) if s.get("session_id") == session_id),
+                    None,
+                )
+            elif public_detail.get("sessions"):
+                target_session = public_detail["sessions"][0]
+
+            if target_session and target_session.get("registration_mode") == "onsite":
+                print(
+                    f"[iNCU] 場次「{target_session.get('session_name')}」的報名時間"
+                    f"起訖相同（{target_session.get('signup_period')}），"
+                    "研判是現場報名，不會嘗試線上點擊報名按鈕。"
+                )
+                return {
+                    "would_click": None,
+                    "reason": (
+                        "這個場次看起來是現場報名（系統上沒有開放線上事先報名的"
+                        "時間窗口），請查看活動內容說明現場如何報到，"
+                        "不需要（也無法）用這個函式線上報名。"
+                    ),
+                }
+        except Exception as e:
+            print(f"[iNCU] 檢查是否為現場報名時發生錯誤（不影響後續流程）：{e}")
 
         # 報名按鈕可能是 <button> 也可能是 <a class="btn">（未登入時看到的
         # 「登入」就是 <a class="btn">），所以 button/link 兩種角色都要找，

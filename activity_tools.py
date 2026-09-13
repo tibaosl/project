@@ -253,6 +253,25 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
                 if field:
                     session[field] = value
 
+        # -------------------------------------------------------------
+        # 判斷這個場次是「線上報名」還是「現場報名」。
+        #
+        # 觀察到的規律（已用真實案例「107影享會」電影場次驗證）：
+        # 現場報名的場次，「報名時間」欄位的起訖時間會完全相同
+        # （例如 "2026-09-15 18:00 ~ 2026-09-15 18:00"），代表系統上
+        # 根本沒有開放事先報名的窗口，只是把活動開始時間重複填了兩次
+        # 當佔位——這種場次要嘛看活動內容說明現場怎麼報到，要嘛就是
+        # 系統紀錄用、不需要使用者自己動作。
+        # -------------------------------------------------------------
+        signup_period = session.get("signup_period", "")
+        if "~" in signup_period:
+            start, end = (p.strip() for p in signup_period.split("~", 1))
+            session["registration_mode"] = (
+                "onsite" if start and start == end else "online"
+            )
+        else:
+            session["registration_mode"] = "unknown"
+
         sessions.append(session)
 
     info["sessions"] = sessions
@@ -328,6 +347,65 @@ def recommend_activities_for_categories(
     print(f"[Activity Tools] 推薦結果 - {found_summary}")
 
     return recommendations
+
+
+def format_activity_summary(detail: dict[str, Any]) -> str:
+    """把 get_activity_detail() 的結果整理成一段人看得懂的活動摘要文字。
+
+    設計目的：使用者（或 agent）在決定要不要報名一個活動之前，
+    應該要能看到「這個活動在幹嘛、什麼時候、在哪裡、有沒有時數、
+    是線上報名還是要現場報名」，而不是只看到一個活動名稱就被要求報名。
+    """
+
+    lines = [f"【{detail.get('title', '未知活動')}】"]
+
+    if detail.get("department"):
+        lines.append(f"承辦單位：{detail['department']}")
+    if detail.get("contact_person"):
+        contact = detail["contact_person"]
+        if detail.get("contact_email"):
+            contact += f"（{detail['contact_email']}）"
+        lines.append(f"承辦人：{contact}")
+
+    sessions = detail.get("sessions", [])
+    lines.append(f"\n共 {len(sessions)} 個場次：")
+
+    for session in sessions:
+        mode = session.get("registration_mode")
+        mode_text = {
+            "online": "線上報名",
+            "onsite": "⚠️ 現場報名（系統上的報名時間起訖相同，代表無法事先線上報名）",
+            "unknown": "報名方式不明，請查看活動內容說明",
+        }.get(mode, "報名方式不明")
+
+        lines.append(f"\n  ● {session.get('session_name', '（未命名場次）')}")
+        if session.get("instructor"):
+            lines.append(f"    講師/負責單位：{session['instructor']}")
+        if session.get("location"):
+            lines.append(f"    地點：{session['location']}")
+        if session.get("event_period"):
+            lines.append(f"    活動時間：{session['event_period']}")
+        if session.get("signup_period"):
+            lines.append(f"    報名時間：{session['signup_period']}")
+        lines.append(f"    報名方式：{mode_text}")
+        if session.get("signup_status_text"):
+            lines.append(f"    {session['signup_status_text']}")
+
+        hour_tags = [
+            (label, session.get(field))
+            for field, label in [
+                ("hours_tag", "一般時數"),
+                ("passport_hours_tag", "學習護照時數"),
+                ("soft_skill_hours_tag", "軟實力時數"),
+            ]
+            if session.get(field) and "不提供時數" not in session.get(field, "")
+        ]
+        if hour_tags:
+            lines.append(
+                "    可獲得時數：" + "；".join(f"{label} {tag}" for label, tag in hour_tags)
+            )
+
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":

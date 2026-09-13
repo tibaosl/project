@@ -42,6 +42,7 @@ from activity_tools import (
     search_activities,
     get_activity_detail,
     recommend_activities_for_categories,
+    format_activity_summary,
 )
 
 load_dotenv()
@@ -63,17 +64,19 @@ def test_activity_query():
 
     if results:
         first_id = results[0]["activity_id"]
-        print(f"\n查看第一筆活動詳情（id={first_id}）：")
+        print(f"\n查看第一筆活動詳情（id={first_id}）的摘要格式：\n")
         detail = get_activity_detail(first_id)
-        print(f"活動名稱：{detail.get('title')}")
-        print(f"承辦單位：{detail.get('department')}")
-        for session in detail.get("sessions", []):
-            print(
-                f"  場次「{session.get('session_name')}」："
-                f"{session.get('event_period')} | "
-                f"軟實力時數：{session.get('soft_skill_hours_tag')} | "
-                f"需登入報名：{session.get('requires_login_to_register')}"
-            )
+        print(format_activity_summary(detail))
+
+    # 順便驗證「現場報名」偵測：107影享會(2047)是已知的現場報名案例
+    print("\n" + "-" * 70)
+    print("驗證現場報名偵測（id=2047，107影享會）：")
+    onsite_detail = get_activity_detail("2047")
+    for session in onsite_detail.get("sessions", []):
+        print(
+            f"  {session.get('session_name')}："
+            f"registration_mode={session.get('registration_mode')}"
+        )
 
 
 async def test_hours_dashboard(session):
