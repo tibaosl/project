@@ -1,4 +1,8 @@
 import asyncio
+import os
+
+from dotenv import load_dotenv
+
 from action_tools import (
     NCUSession,
     build_schedule_occupied_slots,
@@ -11,12 +15,14 @@ from action_tools import (
     tool_search_available_courses,
 )
 
+load_dotenv()
+
 
 async def main():
     init_db()
 
-    username = "113502564"
-    password = "0928027067aB"
+    username = os.environ["NCU_USERNAME"]
+    password = os.environ["NCU_PASSWORD"]
 
     # ==========================================
     # 步驟 1：爬取學生課表與目標課程資料庫
