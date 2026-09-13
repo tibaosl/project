@@ -211,6 +211,59 @@ async def action_agent_node(state: AgentState):
             }
 
     # ------------------------------------------------------------------
+    # 處理「繼續 / 還要更多 / 全部列出」：活動推薦、依標籤查詢預設只找滿
+    # 5 筆就停止（避免掃描太多活動浪費請求），使用者想看更多時接續上次
+    # 已經看過的活動（exclude_activity_ids），不重複推薦。這個不需要
+    # 登入，用簡單關鍵字判斷而不是再問一次 LLM，行為才可預期。
+    # ------------------------------------------------------------------
+    continuation_pending_types = ("ACTIVITY_RECOMMEND", "ACTIVITY_SEARCH_BY_TAG")
+    wants_all = any(kw in user_input for kw in ["全部列出", "列出全部", "都列出", "全部顯示", "都給我"])
+    wants_more = wants_all or any(kw in user_input for kw in ["繼續", "更多", "還有", "再多", "再幾個", "再找"])
+
+    if pending_action.get("type") in continuation_pending_types and wants_more:
+        tag_names = pending_action.get("tag_names", [])
+        deficiencies = pending_action.get("deficiencies")
+        exclude_ids = set(pending_action.get("shown_activity_ids", []))
+        next_limit = None if wants_all else 5
+
+        try:
+            if pending_action["type"] == "ACTIVITY_RECOMMEND":
+                more_matches = recommend_activities_for_categories(
+                    deficiencies, limit_per_tag=next_limit, exclude_activity_ids=exclude_ids
+                )
+                envelope_kind = "activity_recommendations"
+            else:
+                more_matches = find_activities_by_hour_tag(
+                    tag_names, limit_per_tag=next_limit, exclude_activity_ids=exclude_ids
+                )
+                envelope_kind = "activity_tag_search"
+
+            new_ids = {item["activity_id"] for items in more_matches.values() for item in items}
+            has_more = (not wants_all) and any(len(items) >= 5 for items in more_matches.values())
+
+            envelope = {
+                "kind": envelope_kind,
+                "recommendations": more_matches,
+                "has_more": has_more,
+            }
+
+            new_pending_action = (
+                {}
+                if not has_more
+                else {
+                    **pending_action,
+                    "shown_activity_ids": list(exclude_ids | new_ids),
+                }
+            )
+
+            return {"agent_results": [envelope], "pending_action": new_pending_action}
+        except Exception as e:
+            return {
+                "agent_results": [f"**Action Agent 回報**：\n查詢活動時發生錯誤：{str(e)}"],
+                "pending_action": {},
+            }
+
+    # ------------------------------------------------------------------
     # 不是確認動作，走意圖判斷流程
     # ------------------------------------------------------------------
     history = state.get("past_queries", [])
@@ -333,9 +386,19 @@ async def action_agent_node(state: AgentState):
                     "agent_results": ["**Action Agent 回報**：\n請告訴我你想找哪一種時數類別的活動（例如：自我探索與生涯規劃、校外服務、人文藝術、國際視野）。"],
                     "pending_action": {},
                 }
-            matches = find_activities_by_hour_tag([keyword])
-            envelope = {"kind": "activity_tag_search", "recommendations": matches}
-            return {"agent_results": [envelope], "pending_action": {}}
+            tag_names = [keyword]
+            matches = find_activities_by_hour_tag(tag_names, limit_per_tag=5)
+
+            shown_ids = {item["activity_id"] for items in matches.values() for item in items}
+            has_more = any(len(items) >= 5 for items in matches.values())
+
+            envelope = {"kind": "activity_tag_search", "recommendations": matches, "has_more": has_more}
+            new_pending_action = (
+                {"type": "ACTIVITY_SEARCH_BY_TAG", "tag_names": tag_names, "shown_activity_ids": list(shown_ids)}
+                if has_more
+                else {}
+            )
+            return {"agent_results": [envelope], "pending_action": new_pending_action}
         except Exception as e:
             return {
                 "agent_results": [f"**Action Agent 回報**：\n查詢活動時發生錯誤：{str(e)}"],
@@ -395,13 +458,29 @@ async def action_agent_node(state: AgentState):
                     "pending_action": {},
                 }
 
-            recommendations = recommend_activities_for_categories(deficiencies)
+            recommendations = recommend_activities_for_categories(deficiencies, limit_per_tag=5)
+
+            shown_ids = {
+                item["activity_id"] for items in recommendations.values() for item in items
+            }
+            has_more = any(len(items) >= 5 for items in recommendations.values())
+
             envelope = {
                 "kind": "activity_recommendations",
                 "deficiencies": deficiencies,
                 "recommendations": recommendations,
+                "has_more": has_more,
             }
-            return {"agent_results": [envelope], "pending_action": {}}
+            new_pending_action = (
+                {
+                    "type": "ACTIVITY_RECOMMEND",
+                    "deficiencies": deficiencies,
+                    "shown_activity_ids": list(shown_ids),
+                }
+                if has_more
+                else {}
+            )
+            return {"agent_results": [envelope], "pending_action": new_pending_action}
 
         elif action_type in ("ACTIVITY_REGISTER", "ACTIVITY_CANCEL"):
             activity_id = _find_activity_id_by_keyword(keyword)

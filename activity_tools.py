@@ -338,31 +338,55 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
 def _scan_open_activities_for_tags(
     tag_names: list[str],
     max_candidates: Optional[int] = None,
+    limit_per_tag: Optional[int] = 5,
+    exclude_activity_ids: Optional[set[str]] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """核心邏輯：掃描「開放報名中」的活動，比對每個場次的學習護照時數標籤
     有沒有包含目標名稱。recommend_activities_for_categories() 跟
     find_activities_by_hour_tag() 共用這個，差別只在要不要附推薦理由。
 
     用 search_all_activities() 自動翻頁抓完全部「開放報名中」的活動
-    （不是只抓第一頁的 20 筆）。max_candidates 是可選的安全上限，
-    預設 None 代表全部掃描，不特別截斷。
+    （不是只抓第一頁的 20 筆）。
+
+    Args:
+        max_candidates: 可選的安全上限，預設 None 代表候選活動不特別截斷。
+        limit_per_tag: 每個標籤最多收集幾筆就提早停止（預設 5）。
+            因為每個候選活動都要多打一次 get_activity_detail() 請求，
+            如果使用者只是想看幾個選項，掃完全部 40~50 個活動才截斷顯示
+            很浪費——找滿數量就提早跳出迴圈，需要看更多時再用
+            exclude_activity_ids 排除已經看過的，繼續往下找。
+            傳 None 代表不限制，掃描到全部候選活動結束為止。
+        exclude_activity_ids: 已經回報過的活動 id，掃描時跳過，
+            用於「使用者說繼續/還要更多」時接續上次的結果。
 
     每筆場次資訊都會附上報名人數/名額（capacity、waitlist_capacity、
     signup_status_text），因為使用者選活動時最在意的就是還有沒有名額，
     不能只給活動資訊卻不給名額，等到真的要報名才發現額滿。
     """
 
+    exclude_activity_ids = exclude_activity_ids or set()
+
     candidates = search_all_activities(open_signup_only=True)
     if max_candidates is not None:
         candidates = candidates[:max_candidates]
 
     print(
-        f"[Activity Tools] 依標籤 {tag_names} 掃描 {len(candidates)} 個開放報名中的活動..."
+        f"[Activity Tools] 依標籤 {tag_names} 掃描最多 {len(candidates)} 個開放報名中的活動"
+        f"（每個標籤找滿 {limit_per_tag if limit_per_tag is not None else '不限'} 筆就停止）..."
     )
 
     matches: dict[str, list[dict[str, Any]]] = {name: [] for name in tag_names}
 
+    def _tag_satisfied(name: str) -> bool:
+        return limit_per_tag is not None and len(matches[name]) >= limit_per_tag
+
     for activity in candidates:
+        if activity["activity_id"] in exclude_activity_ids:
+            continue
+
+        if all(_tag_satisfied(name) for name in tag_names):
+            break
+
         try:
             detail = get_activity_detail(activity["activity_id"])
         except Exception as e:
@@ -375,6 +399,8 @@ def _scan_open_activities_for_tags(
                 continue
 
             for name in tag_names:
+                if _tag_satisfied(name):
+                    continue
                 if name in tag:
                     matches[name].append(
                         {
@@ -398,6 +424,8 @@ def _scan_open_activities_for_tags(
 def recommend_activities_for_categories(
     deficiencies: list[dict[str, Any]],
     max_candidates: Optional[int] = None,
+    limit_per_tag: Optional[int] = 5,
+    exclude_activity_ids: Optional[set[str]] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """依「學習護照時數缺口」，從目前開放報名中的活動找出對應場次。
 
@@ -408,9 +436,13 @@ def recommend_activities_for_categories(
             細項名稱要跟 action_tools.py 裡
             STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS 的細項名稱一致
             （例如 "校外服務"、"人文藝術"、"國際視野"）。
-        max_candidates: 預設 None，會掃描全部「開放報名中」的活動
-            （自動翻頁，不只第一頁）。因為每個候選活動都要多打一次
-            get_activity_detail() 請求，有需要限制掃描數量時可以傳入。
+        max_candidates: 預設 None，候選活動不特別截斷（會自動翻頁抓全部
+            「開放報名中」的活動）。
+        limit_per_tag: 每個細項最多找幾筆就提早停止（預設 5），
+            避免每次都要掃完全部候選活動才截斷顯示，浪費請求。
+            傳 None 代表掃描全部候選活動、不限制筆數。
+        exclude_activity_ids: 已經回報過的活動 id，用於使用者說
+            「繼續」「還要更多」時接續上次的結果，避免重複推薦。
 
     回傳：{細項名稱: [符合的場次資訊（含 reason 推薦理由、報名人數/名額）, ...]}
     （找不到就是空 list）
@@ -425,7 +457,9 @@ def recommend_activities_for_categories(
         for d in deficiencies
     }
 
-    matches = _scan_open_activities_for_tags(subcategory_names, max_candidates)
+    matches = _scan_open_activities_for_tags(
+        subcategory_names, max_candidates, limit_per_tag, exclude_activity_ids
+    )
 
     for name, items in matches.items():
         for item in items:
@@ -440,6 +474,8 @@ def recommend_activities_for_categories(
 def find_activities_by_hour_tag(
     tag_names: list[str],
     max_candidates: Optional[int] = None,
+    limit_per_tag: Optional[int] = 5,
+    exclude_activity_ids: Optional[set[str]] = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """直接依「學習護照時數標籤」名稱查詢活動，不需要登入、也不需要知道
     使用者自己的時數狀況（跟 recommend_activities_for_categories 的差別：
@@ -448,12 +484,15 @@ def find_activities_by_hour_tag(
     例如：使用者問「有沒有自我探索與生涯規劃時數的活動」，
     直接呼叫 find_activities_by_hour_tag(["自我探索與生涯規劃"])。
 
-    max_candidates 預設 None，會掃描全部「開放報名中」的活動（自動翻頁）。
+    limit_per_tag 預設 5，找滿就提早停止（傳 None 代表掃描全部候選活動）；
+    exclude_activity_ids 用於使用者說「繼續/還要更多」時接續上次的結果。
 
     回傳：{標籤名稱: [符合的場次資訊（含報名人數/名額）, ...]}（找不到就是空 list）
     """
 
-    matches = _scan_open_activities_for_tags(tag_names, max_candidates)
+    matches = _scan_open_activities_for_tags(
+        tag_names, max_candidates, limit_per_tag, exclude_activity_ids
+    )
 
     for name, items in matches.items():
         for item in items:

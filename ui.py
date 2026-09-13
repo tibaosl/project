@@ -166,9 +166,12 @@ def render_activity_recommendations(data):
         if not items:
             continue
 
+        # 後端（activity_tools）已經依 limit_per_tag 提早停止掃描，
+        # 這裡顯示的就是實際找到的筆數，不再另外截斷——
+        # 避免「標題寫找到 8 個，卡片卻只顯示 5 個」這種不一致。
         st.markdown(f"**【{name}】找到 {len(items)} 個場次**")
 
-        for item in items[:5]:
+        for item in items:
             headcount = item.get("signup_status_text")
             if not headcount and item.get("capacity") is not None:
                 headcount = f"名額上限：{item['capacity']}"
@@ -190,6 +193,9 @@ def render_activity_recommendations(data):
                 """,
                 unsafe_allow_html=True,
             )
+
+    if data.get("has_more"):
+        st.caption("還有更多符合的活動——回覆「繼續」再看幾個，或「全部列出」看完整清單。")
 
 
 def render_activity_card(session):
