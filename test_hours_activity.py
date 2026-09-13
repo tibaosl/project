@@ -136,7 +136,21 @@ def test_recommend_activities(subcategory_names: list[str]):
     print(f"【測試 0】依時數缺口推薦活動（不需登入）：{subcategory_names}")
     print("=" * 70)
 
-    recommendations = recommend_activities_for_categories(subcategory_names)
+    # 這裡是離線測試用的假缺口資料（沒有真的登入查 dashboard），
+    # remaining/confirmed_hours/required 只是為了讓 reason 文字看起來合理，
+    # 不代表真實時數。
+    fake_deficiencies = [
+        {
+            "group": name,
+            "subcategory": name,
+            "confirmed_hours": 0,
+            "required": 0,
+            "remaining": 0,
+        }
+        for name in subcategory_names
+    ]
+
+    recommendations = recommend_activities_for_categories(fake_deficiencies)
     for name, items in recommendations.items():
         print(f"\n【{name}】找到 {len(items)} 場：")
         for item in items:

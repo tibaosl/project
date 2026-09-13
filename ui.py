@@ -6,13 +6,76 @@ import json
 
 st.set_page_config(page_title="NCUXplore 校園助手", page_icon="🎓")
 st.title("NCUXplore 智慧校園代理系統")
-st.caption("歡迎使用！我可以幫你查詢校園法規，或是自動幫你登入 Portal 喔！")
+st.caption("歡迎使用！我可以幫你查詢校園法規、時數進度，還有活動查詢與報名喔！")
 
 st.sidebar.header("Portal 登入設定")
 st.sidebar.caption("若要請 AI 幫忙登入 Portal，請先在此輸入帳密：")
 user_id = st.sidebar.text_input("帳號")
 user_pwd = st.sidebar.text_input("密碼", type="password")
 st.sidebar.warning("僅供本次測試使用，重整網頁後即會清除。")
+
+# ------------------------------------------------------------------
+# 共用卡片樣式（時數進度、活動推薦、活動詳情都會用到）。
+# ------------------------------------------------------------------
+st.markdown(
+    """
+    <style>
+        .ncux-card {
+            background: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 14px 16px;
+            margin: 10px 0;
+            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+        }
+        .ncux-card-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 4px;
+        }
+        .ncux-card-meta {
+            font-size: 12.5px;
+            color: #64748b;
+            margin-bottom: 2px;
+        }
+        .ncux-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 11.5px;
+            font-weight: 600;
+            margin-right: 6px;
+        }
+        .ncux-badge-ok { background: #dcfce7; color: #166534; }
+        .ncux-badge-warn { background: #ffedd5; color: #9a3412; }
+        .ncux-badge-info { background: #dbeafe; color: #1e40af; }
+        .ncux-reason {
+            font-size: 12.5px;
+            color: #7c3aed;
+            margin-top: 4px;
+        }
+        .ncux-banner {
+            border-radius: 10px;
+            padding: 12px 16px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+        .ncux-banner-ok { background: #dcfce7; color: #166534; }
+        .ncux-banner-warn { background: #fef3c7; color: #92400e; }
+        .ncux-confirm-box {
+            background: #fff7ed;
+            border: 1px solid #fdba74;
+            border-radius: 10px;
+            padding: 12px 16px;
+            margin-top: 12px;
+            font-weight: 600;
+            color: #9a3412;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def format_course_cell(details):
@@ -42,6 +105,153 @@ def format_course_cell(details):
     return "<div class='course-divider'></div>".join(courses_html)
 
 
+def render_hours_dashboard(data):
+    """渲染時數 dashboard：整體達標狀態 + 每個大類別/細項的進度條。"""
+
+    graduated = data.get("graduated")
+    banner_class = "ncux-banner-ok" if graduated else "ncux-banner-warn"
+    banner_text = "✅ 學習護照時數已達畢業門檻！" if graduated else "⚠️ 學習護照時數尚未達畢業門檻"
+    st.markdown(f"<div class='ncux-banner {banner_class}'>{banner_text}</div>", unsafe_allow_html=True)
+
+    for group, cat in data.get("categories", {}).items():
+        status_ok = cat.get("passed_graduation")
+        badge_class = "ncux-badge-ok" if status_ok else "ncux-badge-warn"
+        badge_text = "已達標" if status_ok else "尚未達標"
+
+        # 用有背景色的卡片包住標題列，不要把深色文字直接放在頁面背景上——
+        # Streamlit 深色主題下會整段看不見。
+        st.markdown(
+            f"""
+            <div class="ncux-card" style="padding: 8px 16px; margin-bottom: 4px;">
+                <span class="ncux-card-title">{group}</span>
+                <span class="ncux-badge {badge_class}">{badge_text}</span>
+                <span class="ncux-card-meta">門檻總計 {cat.get('graduation_required')} 小時</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        for sub_name, sub in cat.get("subcategories", {}).items():
+            required = sub.get("required") or 0
+            confirmed = sub.get("confirmed_hours") or 0
+            ratio = min(1.0, confirmed / required) if required else 1.0
+
+            sub_icon = "✅" if sub.get("passed") else "⚠️"
+            caption = f"{sub_icon} {sub_name}：{confirmed}/{required} 小時"
+            if not sub.get("passed"):
+                caption += f"（還差 {sub.get('remaining')} 小時）"
+            if sub.get("pending_hours"):
+                caption += f"，另有 {sub['pending_hours']} 小時待核發"
+
+            st.progress(ratio, text=caption)
+
+        st.markdown("<div style='margin-bottom: 8px;'></div>", unsafe_allow_html=True)
+
+
+def render_activity_recommendations(data):
+    """渲染依時數缺口推薦的活動清單，每張卡片附上推薦理由。"""
+
+    recommendations = data.get("recommendations", {})
+    any_found = any(items for items in recommendations.values())
+
+    if not any_found:
+        st.info("目前開放報名中的活動裡沒有找到符合的場次，之後可以再查一次。")
+        return
+
+    for name, items in recommendations.items():
+        if not items:
+            continue
+
+        st.markdown(f"**【{name}】找到 {len(items)} 個場次**")
+
+        for item in items[:5]:
+            st.markdown(
+                f"""
+                <div class="ncux-card">
+                    <div class="ncux-card-title">{item.get('activity_title', '')}</div>
+                    <div class="ncux-card-meta">場次：{item.get('session_name', '')}</div>
+                    <div class="ncux-card-meta">🕒 活動時間：{item.get('event_period', '')}</div>
+                    <div class="ncux-card-meta">📝 報名時間：{item.get('signup_period', '')}</div>
+                    <div class="ncux-card-meta">🎖️ 時數標籤：{item.get('tag', '')}</div>
+                    <div class="ncux-reason">💡 {item.get('reason', '')}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+
+def render_activity_card(session):
+    """渲染單一場次的資訊卡片（活動詳情、報名確認都會用到）。"""
+
+    mode = session.get("registration_mode")
+    mode_badge = {
+        "online": ("線上報名", "ncux-badge-ok"),
+        "onsite": ("⚠️ 現場報名", "ncux-badge-warn"),
+    }.get(mode, ("報名方式不明", "ncux-badge-info"))
+
+    hour_tags = [
+        (label, session.get(field))
+        for field, label in [
+            ("passport_hours_tag", "學習護照時數"),
+            ("soft_skill_hours_tag", "軟實力時數"),
+        ]
+        if session.get(field) and "不提供時數" not in session.get(field, "")
+    ]
+    hour_line = (
+        "".join(f"<div class='ncux-card-meta'>🎖️ {label}：{tag}</div>" for label, tag in hour_tags)
+        if hour_tags
+        else ""
+    )
+
+    st.markdown(
+        f"""
+        <div class="ncux-card">
+            <div class="ncux-card-title">{session.get('session_name', '（未命名場次）')}
+                <span class="ncux-badge {mode_badge[1]}">{mode_badge[0]}</span>
+            </div>
+            <div class="ncux-card-meta">👤 {session.get('instructor', '')}</div>
+            <div class="ncux-card-meta">📍 地點：{session.get('location', '')}</div>
+            <div class="ncux-card-meta">🕒 活動時間：{session.get('event_period', '')}</div>
+            <div class="ncux-card-meta">📝 報名時間：{session.get('signup_period', '')}</div>
+            {hour_line}
+            <div class="ncux-card-meta">{session.get('signup_status_text', '')}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_activity_detail(data, confirmation_label=None):
+    """渲染活動詳情（也用於報名/取消報名前的確認畫面）。"""
+
+    st.markdown(f"### {data.get('title', '未知活動')}")
+
+    meta_bits = []
+    if data.get("department"):
+        meta_bits.append(f"承辦單位：{data['department']}")
+    if data.get("contact_person"):
+        contact = data["contact_person"]
+        if data.get("contact_email"):
+            contact += f"（{data['contact_email']}）"
+        meta_bits.append(f"承辦人：{contact}")
+    if meta_bits:
+        st.caption(" ｜ ".join(meta_bits))
+
+    for session in data.get("sessions", []):
+        render_activity_card(session)
+
+    if confirmation_label:
+        st.markdown(
+            f"""
+            <div class="ncux-confirm-box">
+                ⚠️ 確定要{confirmation_label}這個活動嗎？這個動作會真的改變你在學校系統上的報名紀錄，
+                請回覆「確定{confirmation_label}」來送出。
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def render_agent_reply(content):
     """判斷並渲染文字或結構化的課表資料"""
     if isinstance(content, str):
@@ -58,6 +268,25 @@ def render_agent_reply(content):
                         content = parsed
                 except Exception:
                     pass
+
+    if isinstance(content, dict) and content.get("kind"):
+        kind = content["kind"]
+        if kind == "hours_dashboard":
+            render_hours_dashboard(content)
+            return
+        if kind == "activity_recommendations":
+            render_activity_recommendations(content)
+            return
+        if kind == "activity_detail":
+            render_activity_detail(content)
+            return
+        if kind == "activity_confirmation":
+            render_activity_detail(content, confirmation_label=content.get("action_label"))
+            return
+        # 沒對到已知的 kind，降級成印出原始資料方便除錯
+        st.write(content)
+        return
+
     while (
         isinstance(content, list)
         and len(content) > 0

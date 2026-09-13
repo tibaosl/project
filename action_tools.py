@@ -1776,41 +1776,22 @@ def filter_available_courses(
     return available_courses, conflicted_courses
 
 
-def format_hours_summary(dashboard_data: dict[str, Any]) -> str:
-    """把 get_hours_dashboard() 的結果整理成一段人看得懂的時數進度摘要。"""
 
-    lines = []
-    graduated = dashboard_data.get("graduated")
-    lines.append(
-        "✅ 學習護照時數已達畢業門檻！" if graduated else "⚠️ 學習護照時數尚未達畢業門檻。"
-    )
+def get_deficiency_details(dashboard_data: dict[str, Any]) -> list[dict[str, Any]]:
+    """從 get_hours_dashboard() 的結果裡，整理出所有「還沒達標」細項的詳細資訊。
 
-    for group, data in dashboard_data.get("categories", {}).items():
-        status = "✅ 已達標" if data["passed_graduation"] else "⚠️ 尚未達標"
-        lines.append(f"\n【{group}】{status}（門檻總計 {data['graduation_required']} 小時）")
-
-        for sub_name, sub in data["subcategories"].items():
-            sub_status = "✅" if sub["passed"] else "⚠️"
-            extra = f"，待核發 {sub['pending_hours']} 小時" if sub["pending_hours"] else ""
-            if sub["passed"]:
-                lines.append(f"  {sub_status} {sub_name}：{sub['confirmed_hours']}/{sub['required']} 小時{extra}")
-            else:
-                lines.append(
-                    f"  {sub_status} {sub_name}：{sub['confirmed_hours']}/{sub['required']} 小時"
-                    f"（還差 {sub['remaining']} 小時{extra}）"
-                )
-
-    return "\n".join(lines)
-
-
-def get_deficient_subcategories(dashboard_data: dict[str, Any]) -> list[str]:
-    """從 get_hours_dashboard() 的結果裡，抓出所有「還沒達標」的細項名稱清單。
-
-    給 activity_tools.recommend_activities_for_categories() 用。
+    給 activity_tools.recommend_activities_for_categories() 用，
+    好讓推薦結果可以附上「為什麼推薦這個」的理由（還差幾小時、屬於哪個大類別）。
     """
     return [
-        sub_name
-        for cat in dashboard_data.get("categories", {}).values()
+        {
+            "group": group,
+            "subcategory": sub_name,
+            "confirmed_hours": sub["confirmed_hours"],
+            "required": sub["required"],
+            "remaining": sub["remaining"],
+        }
+        for group, cat in dashboard_data.get("categories", {}).items()
         for sub_name, sub in cat["subcategories"].items()
         if not sub["passed"]
     ]

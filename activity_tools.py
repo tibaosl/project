@@ -285,23 +285,35 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
 
 
 def recommend_activities_for_categories(
-    subcategory_names: list[str],
+    deficiencies: list[dict[str, Any]],
     max_candidates: int = 40,
 ) -> dict[str, list[dict[str, Any]]]:
-    """依「學習護照時數標籤」的細項名稱，從目前開放報名中的活動找出對應場次。
+    """依「學習護照時數缺口」，從目前開放報名中的活動找出對應場次。
 
-    subcategory_names 用的名稱要跟 action_tools.py 裡
-    STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS 的細項名稱一致
-    （例如 "校外服務"、"人文藝術"、"國際視野"），通常是拿
-    get_hours_dashboard() 回傳結果裡「還沒達標的細項」去查。
+    Args:
+        deficiencies: 每筆為 {"group": 大類別, "subcategory": 細項名稱,
+            "confirmed_hours": 已核發, "required": 門檻, "remaining": 還差多少}，
+            通常直接拿 action_tools.get_deficiency_details() 的回傳值。
+            細項名稱要跟 action_tools.py 裡
+            STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS 的細項名稱一致
+            （例如 "校外服務"、"人文藝術"、"國際視野"）。
+        max_candidates: 因為每個候選活動都要多打一次 get_activity_detail()
+            請求，用這個限制最多掃描幾個開放報名中的活動。
 
-    做法：先抓「開放報名中」的活動列表，再逐一呼叫 get_activity_detail()
+    做法：先抓「開放報名中」的活動列表，再逐一查詳情，
     比對每個場次的 passport_hours_tag 有沒有包含目標細項名稱。
-    因為每個候選活動都要多打一次請求，用 max_candidates 限制最多掃描
-    幾個活動，避免一次打太多次。
 
-    回傳：{細項名稱: [符合的場次資訊, ...]}（找不到就是空 list）
+    回傳：{細項名稱: [符合的場次資訊（含 reason 推薦理由）, ...]}（找不到就是空 list）
     """
+
+    subcategory_names = [d["subcategory"] for d in deficiencies]
+    reason_by_name = {
+        d["subcategory"]: (
+            f"「{d['group']}」類別的「{d['subcategory']}」還差 "
+            f"{d['remaining']} 小時（目前 {d['confirmed_hours']}/{d['required']}）"
+        )
+        for d in deficiencies
+    }
 
     print(
         f"[Activity Tools] 依細項 {subcategory_names} 尋找推薦活動"
@@ -338,6 +350,7 @@ def recommend_activities_for_categories(
                             "event_period": sess.get("event_period"),
                             "signup_period": sess.get("signup_period"),
                             "url": detail.get("url"),
+                            "reason": f"推薦原因：{reason_by_name[name]}",
                         }
                     )
 

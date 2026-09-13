@@ -5,14 +5,12 @@ from action_tools import (
     NCUSession,
     get_schedule,
     search_courses,
-    format_hours_summary,
-    get_deficient_subcategories,
+    get_deficiency_details,
 )
 from activity_tools import (
     search_activities,
     get_activity_detail,
     recommend_activities_for_categories,
-    format_activity_summary,
 )
 from academic_agent import query_academic_knowledge
 import os
@@ -27,6 +25,11 @@ llm_fast = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 memory = MemorySaver()
 
 global_ncu_session = None
+
+# 對話歷史要往回看幾輪，餵給各個 node 的 prompt 當上下文。
+# 原本只取 3 輪，多輪任務（例如活動報名的確認流程、選課的來回釐清）
+# 很容易就把最相關的那句話擠出視窗，所以放大一點。
+HISTORY_WINDOW = 12
 
 class AgentState(TypedDict):
     user_input: str
@@ -47,7 +50,7 @@ class AgentState(TypedDict):
 async def supervisor_node(state: AgentState):
     user_input = state['user_input']
     history = state.get("past_queries", [])
-    history_str = " -> ".join(history[-3:]) if history else "無"
+    history_str = " -> ".join(history[-HISTORY_WINDOW:]) if history else "無"
 
     print(f"\n[Supervisor Agent] 收到使用者需求：「{user_input}」")
     print(f"[Supervisor Agent] 參考對話歷史：「{history_str}」")
@@ -111,7 +114,7 @@ async def clarification_node(state: AgentState):
     print("\n[Clarification Agent] 發現問題範圍太大，準備引導使用者...")
     user_input = state['user_input']
     history = state.get("past_queries", [])
-    history_str = " -> ".join(history[-3:]) if history else "無"
+    history_str = " -> ".join(history[-HISTORY_WINDOW:]) if history else "無"
 
     prompt = f"""
     你是一個親切的中央大學 NCUXplore 校園助手。
@@ -210,7 +213,7 @@ async def action_agent_node(state: AgentState):
     # 不是確認動作，走意圖判斷流程
     # ------------------------------------------------------------------
     history = state.get("past_queries", [])
-    history_str = " -> ".join(history[-3:]) if history else "無"
+    history_str = " -> ".join(history[-HISTORY_WINDOW:]) if history else "無"
 
     extraction_prompt = f"""
     分析以下使用者的輸入，判斷他想要執行的網頁自動化動作：
@@ -286,7 +289,7 @@ async def action_agent_node(state: AgentState):
                 }
             detail = get_activity_detail(activity_id)
             return {
-                "agent_results": [f"**Action Agent 回報**：\n{format_activity_summary(detail)}"],
+                "agent_results": [{"kind": "activity_detail", **detail}],
                 "pending_action": {},
             }
         except Exception as e:
@@ -331,37 +334,30 @@ async def action_agent_node(state: AgentState):
 
         elif action_type == "HOURS":
             dashboard_data = await global_ncu_session.get_hours_dashboard()
-            return {
-                "agent_results": [f"**Action Agent 回報**：\n{format_hours_summary(dashboard_data)}"],
-                "pending_action": {},
+            envelope = {
+                "kind": "hours_dashboard",
+                "graduated": dashboard_data["graduated"],
+                "categories": dashboard_data["categories"],
             }
+            return {"agent_results": [envelope], "pending_action": {}}
 
         elif action_type == "ACTIVITY_RECOMMEND":
             dashboard_data = await global_ncu_session.get_hours_dashboard()
-            deficient = get_deficient_subcategories(dashboard_data)
+            deficiencies = get_deficiency_details(dashboard_data)
 
-            if not deficient:
+            if not deficiencies:
                 return {
                     "agent_results": ["**Action Agent 回報**：\n你的學習護照時數已經全部達標了，沒有需要補的細項！"],
                     "pending_action": {},
                 }
 
-            recommendations = recommend_activities_for_categories(deficient)
-            lines = [f"**依你目前還缺的細項（{'、'.join(deficient)}）推薦活動：**"]
-            any_found = False
-            for name, items in recommendations.items():
-                if items:
-                    any_found = True
-                    lines.append(f"\n【{name}】")
-                    for item in items[:3]:
-                        lines.append(
-                            f"- [{item['activity_id']}] {item['activity_title']} / "
-                            f"{item['session_name']}｜{item['tag']}｜報名期間：{item['signup_period']}"
-                        )
-            if not any_found:
-                lines.append("\n目前開放報名中的活動裡沒有找到符合的場次，之後可以再查一次。")
-
-            return {"agent_results": ["\n".join(lines)], "pending_action": {}}
+            recommendations = recommend_activities_for_categories(deficiencies)
+            envelope = {
+                "kind": "activity_recommendations",
+                "deficiencies": deficiencies,
+                "recommendations": recommendations,
+            }
+            return {"agent_results": [envelope], "pending_action": {}}
 
         elif action_type in ("ACTIVITY_REGISTER", "ACTIVITY_CANCEL"):
             activity_id = _find_activity_id_by_keyword(keyword)
@@ -390,14 +386,13 @@ async def action_agent_node(state: AgentState):
                 }
 
             detail = get_activity_detail(activity_id)
-            summary = format_activity_summary(detail)
-            message = (
-                f"**Action Agent 回報**：\n{summary}\n\n"
-                f"⚠️ 確定要{action_label}這個活動嗎？這個動作會真的改變你在學校系統上的報名紀錄，"
-                f"請回覆「確定{action_label}」來送出。"
-            )
+            envelope = {
+                "kind": "activity_confirmation",
+                "action_label": action_label,
+                **detail,
+            }
             return {
-                "agent_results": [message],
+                "agent_results": [envelope],
                 "pending_action": {
                     "type": action_type,
                     "activity_id": activity_id,
@@ -443,7 +438,7 @@ def academic_agent_node(state: AgentState):
     print("\n[Academic Agent] 被喚醒了！準備去翻找法規...")
     user_question = state["user_input"]
     history = state.get("past_queries", [])
-    history_str = " -> ".join(history[-3:]) if history else "無"
+    history_str = " -> ".join(history[-HISTORY_WINDOW:]) if history else "無"
     
     try:
         result_dict = query_academic_knowledge(user_question, history_str)
