@@ -789,7 +789,7 @@ class NCUSession:
         await page.wait_for_timeout(500)
 
         candidate_texts = [
-            "同意", "授權", "允許", "確認", "同意並繼續",
+            "前往", "同意", "授權", "允許", "確認", "同意並繼續",
             "Authorize", "Allow", "Accept", "Continue",
         ]
 
