@@ -79,23 +79,20 @@ async def test_hours_dashboard():
         dashboard_data = await session.get_hours_dashboard()
 
         print(f"\n目前頁面 URL：{dashboard_data['url']}")
-        print(
-            f"已核發共 {dashboard_data['total_confirmed_hours']} 小時、"
-            f"待核發共 {dashboard_data['total_pending_hours']} 小時"
-        )
-        print(f"是否已達畢業門檻（四類都達標）：{dashboard_data['graduated']}")
+        print(f"是否已達畢業門檻（四大類別都要達標）：{dashboard_data['graduated']}")
 
-        print("\n各類別進度：")
         for category, data in dashboard_data["categories"].items():
             status = "✅ 已達標" if data["passed_graduation"] else "⚠️ 尚未達標"
+            print(f"\n【{category}】{status}（門檻總計 {data['graduation_required']} 小時）")
+            for sub_name, sub in data["subcategories"].items():
+                sub_status = "✅" if sub["passed"] else "⚠️"
+                print(
+                    f"    {sub_status} {sub_name}：{sub['confirmed_hours']}/"
+                    f"{sub['required']} 小時"
+                    f"（還差 {sub['remaining']}，待核發 {sub['pending_hours']}）"
+                )
             print(
-                f"  - {category}：{data['confirmed_hours']}/"
-                f"{data['graduation_required']} 小時 {status}"
-                f"（還差 {data['remaining_to_graduate']} 小時"
-                f"，另有 {data['pending_hours']} 小時待核發）"
-            )
-            print(
-                f"      里程碑：畢業門檻 {data['milestones']['畢業門檻']} / "
+                f"    里程碑：畢業門檻 {data['milestones']['畢業門檻']} / "
                 f"銀質獎 {data['milestones']['銀質獎']} / "
                 f"金質獎 {data['milestones']['金質獎']}"
             )

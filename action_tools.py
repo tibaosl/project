@@ -27,21 +27,44 @@ INCU_HOME_URL = "https://cis.ncu.edu.tw/iNCU/home"
 INCU_LOGIN_URL = "https://cis.ncu.edu.tw/iNCU/login"
 INCU_HOURS_DASHBOARD_URL = "https://cis.ncu.edu.tw/iNCU/messageNotice/dashboard/signupDashboard"
 
-# 學習護照系統畫面上的四大類別，以及各自涵蓋哪些細項子類別
+# 學習護照系統畫面上的四大類別，各自底下的細項子類別「畢業門檻」需要的時數
 # （子類別名稱是時數紀錄表格裡實際出現的名稱）。
 # 只處理學習護照，不處理軟實力時數（校方目前用不到）。
-STUDY_PASSPORT_CATEGORY_GROUPS = {
-    "服務學習": ["服務學習課程", "校外服務"],
-    "生活知能": ["其他生活知能", "自我探索與生涯規劃", "院週會", "大一週會", "大一CPR"],
-    "人文藝術": ["人文藝術"],
-    "國際視野": ["國際視野"],
+#
+# ⚠️ 重要：細項門檻不能互相流用——例如「其他生活知能」門檻只要 8 小時，
+# 就算實際修了 14 小時，多的 6 小時也不能拿去補「自我探索與生涯規劃」的
+# 缺口。每個細項都必須「各自」達到自己的門檻，該大類別才算完成
+# （這點是使用者用畫面截圖實測驗證過的行為，不是用猜的）。
+#
+# 這幾組數字是從「儀表板」畫面點進「服務學習」「生活知能」卡片後看到的
+# 細項清單（方案1）讀出來的，屬於全校共通的制度規則，不是每個學生會
+# 不同的資料，所以直接寫死。「人文藝術」「國際視野」目前沒看到有再往下
+# 分細項，視為只有一個跟大類別同名的細項。
+# ⚠️ 畫面上另外還有「方案2」，門檻數字可能不同；如果之後發現帳號適用的
+# 是方案2，這裡要改成方案2 的數字。
+STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS: dict[str, dict[str, float]] = {
+    "服務學習": {
+        "服務學習課程": 30,
+        "校外服務": 10,
+    },
+    "生活知能": {
+        "大一週會": 8,
+        "院週會": 4,
+        "大一CPR": 5,
+        "自我探索與生涯規劃": 10,
+        "其他生活知能": 8,
+    },
+    "人文藝術": {
+        "人文藝術": 20,
+    },
+    "國際視野": {
+        "國際視野": 5,
+    },
 }
 
-# 畢業門檻 / 銀質獎 / 金質獎，每個類別各自需要的時數。
-# 這是從「儀表板」畫面「里程碑」表格（方案1）讀出來的固定門檻值，
-# 屬於全校共通的制度規則，不是每個學生會不同的資料，所以直接寫死。
-# ⚠️ 畫面上另外還有「方案2」，門檻數字不同；如果之後發現帳號適用的是
-# 方案2，這裡要改成方案2 的數字。
+# 畢業門檻 / 銀質獎 / 金質獎，每個「大類別」總計各自需要的時數
+# （= 該類別底下所有細項門檻的總和，用來對照「儀表板」畫面上的總覽數字）。
+# 銀質獎、金質獎目前沒有看到細項層級的拆分畫面，先只留大類別總數參考用。
 STUDY_PASSPORT_MILESTONES = {
     "服務學習": {"畢業門檻": 40, "銀質獎": 65, "金質獎": 90},
     "生活知能": {"畢業門檻": 35, "銀質獎": 60, "金質獎": 85},
@@ -859,20 +882,30 @@ class NCUSession:
         print(f"[iNCU] 授權完成，導回 URL：{page.url}")
 
     async def get_hours_dashboard(self) -> dict[str, Any]:
-        """取得個人「學習護照」時數，並對照畢業門檻計算每個類別還差多少。
+        """取得個人「學習護照」時數，並對照畢業門檻計算還差多少。
 
         對應網頁：
         https://cis.ncu.edu.tw/iNCU/messageNotice/dashboard/signupDashboard
 
         只處理學習護照時數，不處理軟實力時數（校方用不到，直接忽略）。
 
+        ⚠️ 細項門檻不能互相流用：例如「生活知能」底下的「其他生活知能」
+        門檻只要 8 小時，就算實際修了 14 小時，多出來的 6 小時也不會拿去
+        補「自我探索與生涯規劃」的缺口——每個細項都要「各自」達標，
+        該大類別才算完成。所以這裡是先算每個細項的達標狀況，
+        大類別的數字是細項達標狀況彙總出來的，而不是把細項時數直接加總
+        再跟大類別門檻比較。
+
         回傳內容：
         - categories：依畫面上的四大類別（服務學習/生活知能/人文藝術/國際視野）
-          分組，每組含 confirmed_hours（已核發）、pending_hours（待核發）、
-          graduation_required（畢業門檻）、remaining_to_graduate（還差多少）、
-          passed_graduation（是否已達門檻）、milestones（該類別的三個等級門檻）
-        - total_confirmed_hours / total_pending_hours：四類加總
-        - graduated：四個類別是否都已達畢業門檻
+          分組，每組含：
+            - subcategories：底下每個細項的 confirmed_hours（已核發）、
+              pending_hours（待核發）、required（該細項門檻）、
+              remaining（還差多少）、passed（是否達標）
+            - passed_graduation：底下所有細項是否「全部」達標
+            - graduation_required：該大類別的門檻總和（＝所有細項門檻加總）
+            - milestones：該大類別的三個等級門檻（畢業門檻/銀質獎/金質獎）
+        - graduated：四大類別是否都已達畢業門檻
         - hour_records：解析出來的學習護照時數紀錄清單
         - raw_tables：原始表格 cell 資料，供例外狀況時對照除錯
         """
@@ -939,18 +972,19 @@ class NCUSession:
                 )
 
         # ------------------------------------------------------------------
-        # 把細項子類別歸到畫面上的四大類別，加總已核發／待核發，
-        # 再對照 STUDY_PASSPORT_MILESTONES 算出離畢業門檻還差多少。
+        # 先把每個「細項」自己的已核發／待核發時數加總起來，
+        # 再對照 STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS 判斷該細項是否達標。
         # ------------------------------------------------------------------
-        subcategory_to_group = {
+        subcategory_to_group: dict[str, str] = {
             sub: group
-            for group, subs in STUDY_PASSPORT_CATEGORY_GROUPS.items()
+            for group, subs in STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS.items()
             for sub in subs
         }
 
-        categories: dict[str, dict[str, Any]] = {
-            group: {"confirmed_hours": 0.0, "pending_hours": 0.0}
-            for group in STUDY_PASSPORT_CATEGORY_GROUPS
+        subcategory_hours: dict[str, dict[str, float]] = {
+            sub: {"confirmed_hours": 0.0, "pending_hours": 0.0}
+            for subs in STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS.values()
+            for sub in subs
         }
 
         unmapped_categories: set[str] = set()
@@ -961,48 +995,70 @@ class NCUSession:
             except (TypeError, ValueError):
                 continue
 
-            group = subcategory_to_group.get(record["category"])
-            if group is None:
-                unmapped_categories.add(record["category"])
+            category = record["category"]
+            if category not in subcategory_hours:
+                unmapped_categories.add(category)
                 continue
 
             if "待核發" in record["status"]:
-                categories[group]["pending_hours"] += hours_value
+                subcategory_hours[category]["pending_hours"] += hours_value
             elif "已核發" in record["status"]:
-                categories[group]["confirmed_hours"] += hours_value
+                subcategory_hours[category]["confirmed_hours"] += hours_value
 
         if unmapped_categories:
             print(
-                "[iNCU] 有時數類別沒對應到畫面上的四大分類，"
-                f"STUDY_PASSPORT_CATEGORY_GROUPS 可能要更新：{unmapped_categories}"
+                "[iNCU] 有時數類別沒對應到已知的細項清單，"
+                f"STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS 可能要更新："
+                f"{unmapped_categories}"
             )
 
-        for group, data in categories.items():
-            required = STUDY_PASSPORT_MILESTONES[group]["畢業門檻"]
-            data["graduation_required"] = required
-            data["remaining_to_graduate"] = max(
-                0.0, required - data["confirmed_hours"]
-            )
-            data["passed_graduation"] = data["confirmed_hours"] >= required
-            data["milestones"] = STUDY_PASSPORT_MILESTONES[group]
+        # ------------------------------------------------------------------
+        # 組回「大類別 -> 細項」的結構，大類別是否達標＝底下細項是否全部達標。
+        # ------------------------------------------------------------------
+        categories: dict[str, dict[str, Any]] = {}
 
-        total_confirmed_hours = sum(c["confirmed_hours"] for c in categories.values())
-        total_pending_hours = sum(c["pending_hours"] for c in categories.values())
+        for group, requirements in STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS.items():
+            subcategories: dict[str, dict[str, Any]] = {}
+
+            for sub_name, required in requirements.items():
+                raw = subcategory_hours[sub_name]
+                confirmed = raw["confirmed_hours"]
+                subcategories[sub_name] = {
+                    "confirmed_hours": confirmed,
+                    "pending_hours": raw["pending_hours"],
+                    "required": required,
+                    "remaining": max(0.0, required - confirmed),
+                    "passed": confirmed >= required,
+                }
+
+            categories[group] = {
+                "subcategories": subcategories,
+                "graduation_required": sum(requirements.values()),
+                "passed_graduation": all(
+                    s["passed"] for s in subcategories.values()
+                ),
+                "milestones": STUDY_PASSPORT_MILESTONES[group],
+            }
+
         graduated = all(c["passed_graduation"] for c in categories.values())
 
         result = {
             "url": page.url,
             "categories": categories,
-            "total_confirmed_hours": total_confirmed_hours,
-            "total_pending_hours": total_pending_hours,
             "graduated": graduated,
             "hour_records": hour_records,
             "raw_tables": raw_tables,
         }
 
+        not_yet_passed = [
+            f"{group}（{', '.join(s for s, d in cat['subcategories'].items() if not d['passed'])}）"
+            for group, cat in categories.items()
+            if not cat["passed_graduation"]
+        ]
+
         print(
-            f"[iNCU] 學習護照時數解析完成：已核發共 {total_confirmed_hours} 小時、"
-            f"待核發 {total_pending_hours} 小時、是否已達畢業門檻：{graduated}"
+            f"[iNCU] 學習護照時數解析完成：是否已達畢業門檻：{graduated}"
+            + (f"，尚未達標：{'; '.join(not_yet_passed)}" if not_yet_passed else "")
         )
 
         return result
