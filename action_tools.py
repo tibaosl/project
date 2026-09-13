@@ -837,15 +837,17 @@ class NCUSession:
         print(f"[iNCU] 授權完成，導回 URL：{page.url}")
 
     async def get_hours_dashboard(self) -> dict[str, Any]:
-        """取得個人時數 dashboard 的原始資料。
+        """取得個人時數 dashboard 的結構化資料。
 
         對應網頁：
         https://cis.ncu.edu.tw/iNCU/messageNotice/dashboard/signupDashboard
 
-        ⚠️ 目前這頁面的實際 DOM 結構還沒有用真實帳號驗證過，
-        這裡先抓「所有看起來像資料表格/ 統計卡片」的內容印出來，
-        方便之後對照畫面調整成精準解析。跑過一次之後，
-        把印出來的內容回報，我再把這裡改成正式的欄位解析。
+        已用真實帳號實測過畫面結構，回傳內容包含：
+        - total_hours / basic_hours：頁面上「時數總計」「基本時數」數字
+        - pending_applications：還在申請中、尚未核發時數的活動清單
+        - hour_records：已經有時數紀錄的清單（每筆含類型、類別、時數、狀態）
+        - raw_tables：所有表格的原始 cell 資料（list of rows of cell texts），
+          保留下來是為了在畫面改版或有例外資料時，還能對照除錯。
         """
 
         page = await self.open_incu_home()
@@ -863,17 +865,21 @@ class NCUSession:
 
         await page.wait_for_timeout(1000)
 
-        # 先抓頁面上所有表格，格式跟 parse_ncu_schedule_table 類似的做法，
-        # 但因為還不知道實際 class name，先用泛用的 table 標籤抓。
-        tables = await page.evaluate(
+        # 逐一取出每個 table 的 cell 資料（而不是整塊 innerText），
+        # 這樣不管欄位有沒有留空、縮排多亂，都能照 DOM 結構準確切出每個欄位。
+        raw_tables: list[list[list[str]]] = await page.evaluate(
             """() => {
                 const tables = Array.from(document.querySelectorAll('table'));
-                return tables.map(t => t.innerText);
+                return tables.map(t =>
+                    Array.from(t.querySelectorAll('tr')).map(tr =>
+                        Array.from(tr.querySelectorAll('th, td'))
+                            .map(cell => cell.innerText.trim())
+                    ).filter(row => row.length > 0)
+                );
             }"""
         )
 
-        # 抓看起來像統計卡片 / 進度條的區塊（class 名稱常見會有 card、progress、summary 字樣）
-        summary_blocks = await page.evaluate(
+        summary_blocks: list[str] = await page.evaluate(
             """() => {
                 const nodes = Array.from(
                     document.querySelectorAll(
@@ -886,16 +892,89 @@ class NCUSession:
             }"""
         )
 
+        # ------------------------------------------------------------------
+        # 解析「時數總計」「基本時數」：從統計區塊文字裡用正規表示式撈數字。
+        # ------------------------------------------------------------------
+        total_hours: Optional[float] = None
+        basic_hours: Optional[float] = None
+
+        for block in summary_blocks:
+            if total_hours is None:
+                m = re.search(r"時數總計[：:]\s*([\d.]+)", block)
+                if m:
+                    total_hours = float(m.group(1))
+            if basic_hours is None:
+                m = re.search(r"基本時數[：:]\s*([\d.]+)", block)
+                if m:
+                    basic_hours = float(m.group(1))
+
+        # ------------------------------------------------------------------
+        # 解析每個 table：
+        # - 第一列若像是表頭（含「活動名稱」或「申請單位」等字樣），
+        #   視為「申請中活動清單」表格。
+        # - 其餘的表格，每一列固定是 [時數類型, 類別, 時數, 狀態] 四欄，
+        #   視為「時數紀錄」，可能一個活動同時有學習護照＋軟實力兩筆。
+        # ------------------------------------------------------------------
+        pending_applications: list[dict[str, str]] = []
+        hour_records: list[dict[str, str]] = []
+
+        for table in raw_tables:
+            if not table:
+                continue
+
+            first_row = table[0]
+            first_row_text = "".join(first_row)
+
+            is_header_table = (
+                "活動名稱" in first_row_text or "申請單位" in first_row_text
+            )
+
+            if is_header_table:
+                data_rows = table[1:] if len(table) > 1 else []
+                for row in data_rows:
+                    if not row:
+                        continue
+                    pending_applications.append(
+                        {
+                            "activity_name": row[0] if len(row) > 0 else "",
+                            "unit": row[1] if len(row) > 1 else "",
+                            "apply_type": row[2] if len(row) > 2 else "",
+                            "event_time": row[3] if len(row) > 3 else "",
+                            "hours_status": row[4] if len(row) > 4 else "",
+                        }
+                    )
+                continue
+
+            for row in table:
+                if len(row) == 4:
+                    hour_records.append(
+                        {
+                            "hour_type": row[0],
+                            "category": row[1],
+                            "hours": row[2],
+                            "status": row[3],
+                        }
+                    )
+                else:
+                    # 欄位數不是預期的 4 欄，原始資料保留在 raw_tables 裡，
+                    # 這裡先跳過避免塞進錯誤對應的欄位。
+                    print(f"[iNCU] 略過一列非預期格式的時數資料：{row}")
+
         result = {
             "url": page.url,
-            "raw_tables": tables,
+            "total_hours": total_hours,
+            "basic_hours": basic_hours,
+            "pending_applications": pending_applications,
+            "hour_records": hour_records,
+            "raw_tables": raw_tables,
             "raw_summary_blocks": summary_blocks,
         }
 
         print(
-            f"[iNCU] 時數 dashboard 原始資料擷取完成："
-            f"{len(tables)} 個表格、{len(summary_blocks)} 個統計區塊。\n"
-            "（欄位解析尚未定案，請對照實際畫面回報調整方向）"
+            f"[iNCU] 時數 dashboard 解析完成："
+            f"總時數 {total_hours}、基本時數 {basic_hours}、"
+            f"申請中 {len(pending_applications)} 筆、"
+            f"時數紀錄 {len(hour_records)} 筆。"
         )
 
         return result

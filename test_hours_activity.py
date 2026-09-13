@@ -79,22 +79,29 @@ async def test_hours_dashboard():
         dashboard_data = await session.get_hours_dashboard()
 
         print(f"\n目前頁面 URL：{dashboard_data['url']}")
+        print(f"時數總計：{dashboard_data['total_hours']} 小時")
+        print(f"基本時數：{dashboard_data['basic_hours']} 小時")
 
-        print(f"\n共擷取到 {len(dashboard_data['raw_tables'])} 個表格：")
-        for i, table_text in enumerate(dashboard_data["raw_tables"], 1):
-            print(f"\n--- 表格 {i} ---")
-            print(table_text[:1000])
+        pending = dashboard_data["pending_applications"]
+        print(f"\n申請中活動（{len(pending)} 筆）：")
+        for item in pending:
+            print(
+                f"  - {item['activity_name']} | {item['unit']} | "
+                f"{item['apply_type']} | {item['event_time']} | "
+                f"{item['hours_status']}"
+            )
+
+        records = dashboard_data["hour_records"]
+        print(f"\n時數紀錄（{len(records)} 筆）：")
+        for r in records:
+            print(
+                f"  - [{r['hour_type']}] {r['category']}："
+                f"{r['hours']} 小時 ({r['status']})"
+            )
 
         print(
-            f"\n共擷取到 {len(dashboard_data['raw_summary_blocks'])} 個統計/卡片區塊："
-        )
-        for i, block_text in enumerate(dashboard_data["raw_summary_blocks"][:10], 1):
-            print(f"\n--- 區塊 {i} ---")
-            print(block_text[:300])
-
-        print(
-            "\n[提示] 把上面印出來的內容回報給我，"
-            "我就能把 get_hours_dashboard() 改成正式的欄位解析。"
+            f"\n（若解析結果跟畫面對不上，raw_tables 裡還保留了 "
+            f"{len(dashboard_data['raw_tables'])} 個表格的原始 cell 資料可以對照除錯）"
         )
 
 
