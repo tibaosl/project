@@ -1255,6 +1255,129 @@ class NCUSession:
             "result_text": body_text,
         }
 
+    async def cancel_activity_registration(
+        self,
+        activity_id: str,
+        session_id: Optional[str] = None,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """取消活動報名。用法跟 register_for_activity_session 對稱。
+
+        Args:
+            activity_id: 活動編號。
+            session_id: 場次編號，留空則取第一個場次。
+            confirm: ⚠️ 預設 False（dry-run），只找「取消報名」按鈕、
+                回報找不找得到，不會真的點擊。確定要取消才傳 confirm=True。
+
+        ⚠️ 目前還沒有用真實帳號驗證過取消報名之後的畫面文字、
+        是否有二次確認彈窗，如果跟預期不同會印出頁面文字方便除錯調整
+        （這點做法跟 register_for_activity_session 剛推出時一樣，
+        需要先用 dry-run + 實際案例校正一輪）。
+        """
+
+        page = await self.open_incu_home()
+
+        activity_url = (
+            f"https://cis.ncu.edu.tw/iNCU/publicService/activityQuery/{activity_id}"
+        )
+
+        print(f"[iNCU] 前往活動頁準備取消報名：{activity_url}")
+
+        await page.goto(activity_url, wait_until="networkidle")
+
+        await self._handle_oauth_consent_if_present(page)
+
+        if session_id:
+            tab_link = page.locator(f'a[href="#{session_id}"]')
+            if await tab_link.count() > 0:
+                await tab_link.first.click()
+                await page.wait_for_timeout(300)
+            pane = page.locator(f"#{session_id}")
+        else:
+            pane = page.locator("div.tab-pane").first
+
+        candidate_texts = ["取消報名", "取消", "退出報名"]
+
+        cancel_control = None
+        matched_text = None
+
+        for text in candidate_texts:
+            btn = pane.get_by_role("button", name=text)
+            if await btn.count() > 0:
+                cancel_control = btn.first
+                matched_text = text
+                break
+
+            link = pane.get_by_role("link", name=text)
+            if await link.count() > 0:
+                cancel_control = link.first
+                matched_text = text
+                break
+
+        if cancel_control is None:
+            page_text = await pane.inner_text()
+            buttons = await pane.locator(
+                "button, input[type=submit], a.btn, a[role=button]"
+            ).all_inner_texts()
+            print(
+                "[iNCU] 找不到取消報名按鈕，可能根本沒有報名過這個場次，"
+                "或按鈕文字跟預期不同。\n"
+                f"該場次區塊找到的按鈕/連結文字：{buttons}\n"
+                f"該場次區塊文字內容：\n{page_text[:1000]}"
+            )
+            return {
+                "would_click": None,
+                "reason": "找不到取消報名按鈕，請查看 log 輸出的按鈕清單與頁面文字。",
+            }
+
+        if not confirm:
+            print(
+                f"[iNCU] [dry-run] 找到取消報名按鈕「{matched_text}」，"
+                "但 confirm=False 所以不會真的點擊。"
+                "確定要取消時請帶 confirm=True 再呼叫一次。"
+            )
+            return {
+                "would_click": matched_text,
+                "message": "dry-run 模式，尚未實際取消。confirm=True 才會真的點擊。",
+            }
+
+        print(f"[iNCU] confirm=True，點擊取消報名按鈕「{matched_text}」...")
+
+        await cancel_control.click()
+        await page.wait_for_timeout(1000)
+
+        # 可能會跳出二次確認彈窗（是/確認之類的按鈕），有的話點掉。
+        for confirm_text in ["確認", "是", "確定取消"]:
+            confirm_button = page.get_by_role("button", name=confirm_text)
+            if await confirm_button.count() > 0:
+                await confirm_button.first.click()
+                await page.wait_for_timeout(1000)
+                break
+
+        body_text = await page.locator("body").inner_text()
+
+        cancelled = any(
+            phrase in body_text for phrase in ["取消成功", "已取消", "取消報名成功"]
+        )
+
+        if cancelled:
+            print("[iNCU] 取消報名成功。")
+        else:
+            print(
+                "[iNCU] 取消報名流程已跑完，但沒有在畫面上偵測到明確的成功文字，"
+                f"請查看 result_text 確認實際結果：\n{body_text[:800]}"
+            )
+
+        return {
+            "would_click": matched_text,
+            "success": True,
+            "cancelled": cancelled,
+            "message": (
+                "已取消報名。" if cancelled else "取消流程已跑完，但沒有偵測到明確成功訊息，請查看 result_text。"
+            ),
+            "result_text": body_text,
+        }
+
     async def close(self):
         """關閉 browser / playwright 資源。"""
 

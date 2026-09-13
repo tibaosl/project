@@ -23,6 +23,13 @@
 ⚠️ 只有「同時」加上 --confirm-registration，才會真的點下報名按鈕送出報名，
    請確定你真的想報名該活動再加這個旗標：
     python test_hours_activity.py --with-login --test-registration=2123 --confirm-registration
+
+取消報名測試，用法對稱，一樣預設 dry-run，要加 --confirm-cancel 才會真的取消：
+    python test_hours_activity.py --with-login --test-cancel=2123
+    python test_hours_activity.py --with-login --test-cancel=2123 --confirm-cancel
+
+依時數缺口推薦活動（不需登入，公開資料）：
+    python test_hours_activity.py --recommend=人文藝術,國際視野,校外服務
 """
 
 import asyncio
@@ -31,7 +38,11 @@ import sys
 
 from dotenv import load_dotenv
 
-from activity_tools import search_activities, get_activity_detail
+from activity_tools import (
+    search_activities,
+    get_activity_detail,
+    recommend_activities_for_categories,
+)
 
 load_dotenv()
 
@@ -107,6 +118,32 @@ async def test_activity_registration(session, activity_id: str, confirm: bool):
     print(f"\n結果：{result}")
 
 
+async def test_activity_cancellation(session, activity_id: str, confirm: bool):
+    print("\n" + "=" * 70)
+    title = "【測試 4】取消報名" + ("（confirm=True，會真的取消！）" if confirm else "（dry-run，不會真的取消）")
+    print(title)
+    print("=" * 70)
+
+    result = await session.cancel_activity_registration(activity_id, confirm=confirm)
+    print(f"\n結果：{result}")
+
+
+def test_recommend_activities(subcategory_names: list[str]):
+    print("\n" + "=" * 70)
+    print(f"【測試 0】依時數缺口推薦活動（不需登入）：{subcategory_names}")
+    print("=" * 70)
+
+    recommendations = recommend_activities_for_categories(subcategory_names)
+    for name, items in recommendations.items():
+        print(f"\n【{name}】找到 {len(items)} 場：")
+        for item in items:
+            print(
+                f"  - [{item['activity_id']}] {item['activity_title']} / "
+                f"{item['session_name']} | {item['tag']} | "
+                f"報名期間：{item['signup_period']}"
+            )
+
+
 async def run_login_tests():
     username = os.environ.get("NCU_USERNAME", "")
     password = os.environ.get("NCU_PASSWORD", "")
@@ -138,14 +175,31 @@ async def run_login_tests():
                 session, target_activity_id, confirm_registration
             )
 
+        cancel_arg = next(
+            (a for a in sys.argv if a.startswith("--test-cancel=")), None
+        )
+        if cancel_arg:
+            target_activity_id = cancel_arg.split("=", 1)[1]
+            confirm_cancel = "--confirm-cancel" in sys.argv
+            await test_activity_cancellation(
+                session, target_activity_id, confirm_cancel
+            )
+
 
 if __name__ == "__main__":
-    test_activity_query()
+    recommend_arg = next(
+        (a for a in sys.argv if a.startswith("--recommend=")), None
+    )
+    if recommend_arg:
+        names = recommend_arg.split("=", 1)[1].split(",")
+        test_recommend_activities(names)
+    else:
+        test_activity_query()
 
     if "--with-login" not in sys.argv:
         print(
-            "\n(略過時數 dashboard / 活動報名測試；要測試請加上 --with-login 並設定 "
-            "NCU_USERNAME / NCU_PASSWORD 環境變數)"
+            "\n(略過時數 dashboard / 活動報名 / 取消報名測試；要測試請加上 "
+            "--with-login 並設定 NCU_USERNAME / NCU_PASSWORD 環境變數)"
         )
     else:
         asyncio.run(run_login_tests())

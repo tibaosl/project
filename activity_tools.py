@@ -265,6 +265,71 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
     return info
 
 
+def recommend_activities_for_categories(
+    subcategory_names: list[str],
+    max_candidates: int = 40,
+) -> dict[str, list[dict[str, Any]]]:
+    """依「學習護照時數標籤」的細項名稱，從目前開放報名中的活動找出對應場次。
+
+    subcategory_names 用的名稱要跟 action_tools.py 裡
+    STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS 的細項名稱一致
+    （例如 "校外服務"、"人文藝術"、"國際視野"），通常是拿
+    get_hours_dashboard() 回傳結果裡「還沒達標的細項」去查。
+
+    做法：先抓「開放報名中」的活動列表，再逐一呼叫 get_activity_detail()
+    比對每個場次的 passport_hours_tag 有沒有包含目標細項名稱。
+    因為每個候選活動都要多打一次請求，用 max_candidates 限制最多掃描
+    幾個活動，避免一次打太多次。
+
+    回傳：{細項名稱: [符合的場次資訊, ...]}（找不到就是空 list）
+    """
+
+    print(
+        f"[Activity Tools] 依細項 {subcategory_names} 尋找推薦活動"
+        f"（最多掃描 {max_candidates} 個開放報名中的活動）..."
+    )
+
+    candidates = search_activities(open_signup_only=True)[:max_candidates]
+
+    recommendations: dict[str, list[dict[str, Any]]] = {
+        name: [] for name in subcategory_names
+    }
+
+    for activity in candidates:
+        try:
+            detail = get_activity_detail(activity["activity_id"])
+        except Exception as e:
+            print(f"[Activity Tools] 查詢活動 {activity['activity_id']} 詳情失敗：{e}")
+            continue
+
+        for sess in detail.get("sessions", []):
+            tag = sess.get("passport_hours_tag") or ""
+            if not tag or "不提供時數" in tag:
+                continue
+
+            for name in subcategory_names:
+                if name in tag:
+                    recommendations[name].append(
+                        {
+                            "activity_id": activity["activity_id"],
+                            "activity_title": detail.get("title"),
+                            "session_id": sess.get("session_id"),
+                            "session_name": sess.get("session_name"),
+                            "tag": tag,
+                            "event_period": sess.get("event_period"),
+                            "signup_period": sess.get("signup_period"),
+                            "url": detail.get("url"),
+                        }
+                    )
+
+    found_summary = ", ".join(
+        f"{name}：{len(items)} 場" for name, items in recommendations.items()
+    )
+    print(f"[Activity Tools] 推薦結果 - {found_summary}")
+
+    return recommendations
+
+
 if __name__ == "__main__":
     # 簡單手動測試：搜尋 + 看第一筆的詳情
     found = search_activities(keyword="糖霜")
