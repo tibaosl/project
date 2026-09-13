@@ -3,10 +3,18 @@
 活動查詢是公開的，不需要帳密，可以直接跑：
     python test_hours_activity.py
 
-時數 dashboard 需要登入，請用環境變數提供帳密（不要寫死在程式碼裡）：
+時數 dashboard 需要登入，帳密請用下面任一種方式提供（不要寫死在程式碼裡）：
+
+1. 在專案根目錄的 .env 裡加兩行（.env 已經在 .gitignore，不會被 push 上去）：
+    NCU_USERNAME=你的學號
+    NCU_PASSWORD=你的密碼
+   然後執行：
+    python test_hours_activity.py --with-login
+
+2. 或是直接用環境變數（不寫進任何檔案）：
     NCU_USERNAME=你的學號 NCU_PASSWORD=你的密碼 python test_hours_activity.py --with-login
 
-（PowerShell 版本）
+   （PowerShell 版本）
     $env:NCU_USERNAME="你的學號"; $env:NCU_PASSWORD="你的密碼"; python test_hours_activity.py --with-login
 """
 
@@ -14,7 +22,11 @@ import asyncio
 import os
 import sys
 
+from dotenv import load_dotenv
+
 from activity_tools import search_activities, get_activity_detail
+
+load_dotenv()
 
 
 def test_activity_query():
