@@ -16,6 +16,13 @@
 
    （PowerShell 版本）
     $env:NCU_USERNAME="你的學號"; $env:NCU_PASSWORD="你的密碼"; python test_hours_activity.py --with-login
+
+活動報名測試（預設 dry-run，不會真的送出報名）：
+    python test_hours_activity.py --with-login --test-registration=2123
+
+⚠️ 只有「同時」加上 --confirm-registration，才會真的點下報名按鈕送出報名，
+   請確定你真的想報名該活動再加這個旗標：
+    python test_hours_activity.py --with-login --test-registration=2123 --confirm-registration
 """
 
 import asyncio
@@ -103,13 +110,45 @@ async def test_hours_dashboard():
         )
 
 
+async def test_activity_registration(activity_id: str, confirm: bool):
+    print("\n" + "=" * 70)
+    title = "【測試 3】活動報名" + ("（confirm=True，會真的送出！）" if confirm else "（dry-run，不會真的送出）")
+    print(title)
+    print("=" * 70)
+
+    username = os.environ.get("NCU_USERNAME", "")
+    password = os.environ.get("NCU_PASSWORD", "")
+
+    if not username or not password:
+        print("沒有偵測到 NCU_USERNAME / NCU_PASSWORD 環境變數，跳過這項測試。")
+        return
+
+    from action_tools import NCUSession
+
+    async with NCUSession(username, password) as session:
+        result = await session.register_for_activity_session(
+            activity_id, confirm=confirm
+        )
+        print(f"\n結果：{result}")
+
+
 if __name__ == "__main__":
     test_activity_query()
 
-    if "--with-login" in sys.argv:
-        asyncio.run(test_hours_dashboard())
-    else:
+    if "--with-login" not in sys.argv:
         print(
-            "\n(略過時數 dashboard 測試；要測試請加上 --with-login 並設定 "
+            "\n(略過時數 dashboard / 活動報名測試；要測試請加上 --with-login 並設定 "
             "NCU_USERNAME / NCU_PASSWORD 環境變數)"
         )
+    else:
+        asyncio.run(test_hours_dashboard())
+
+        registration_arg = next(
+            (a for a in sys.argv if a.startswith("--test-registration=")), None
+        )
+        if registration_arg:
+            target_activity_id = registration_arg.split("=", 1)[1]
+            confirm_registration = "--confirm-registration" in sys.argv
+            asyncio.run(
+                test_activity_registration(target_activity_id, confirm_registration)
+            )

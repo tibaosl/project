@@ -1067,18 +1067,21 @@ class NCUSession:
         self,
         activity_id: str,
         session_id: Optional[str] = None,
+        confirm: bool = False,
     ) -> dict[str, Any]:
-        """實際送出活動報名（會改變學校系統上的資料，請先確認過再呼叫）。
+        """幫活動場次報名。
 
         Args:
             activity_id: 活動編號，對應 activity_tools.get_activity_detail 的 activity_id。
             session_id: 場次編號（tab-pane 的 id，例如 "event115A01517"）。
                 若活動只有一個場次可以留空，函式會自動選第一個。
+            confirm: ⚠️ 預設 False（僅模擬/dry-run）。False 時只會導航到活動頁、
+                找到報名按鈕、回報「找得到/找不到」，**不會真的點下去**——
+                避免測試時不小心真的報名到不想參加的活動。
+                確定要真的送出報名時，才明確傳入 confirm=True。
 
-        ⚠️ 目前這個函式還沒有用真實帳號驗證過登入後的「報名」按鈕長什麼樣子
-        （未登入時看到的是連去 /iNCU/login 的按鈕），先寫成：
-        導航到活動頁 → 找登入後應該會出現的報名按鈕 → 點擊 → 回報結果。
-        跑起來如果選不到按鈕，會把頁面文字印出來方便除錯調整。
+        回傳的 dict 一定會有 "would_click"（找到的按鈕文字，None 表示沒找到）；
+        只有 confirm=True 且成功點擊後，才會有 "success"/"result_text"。
         """
 
         page = await self.open_incu_home()
@@ -1087,7 +1090,7 @@ class NCUSession:
             f"https://cis.ncu.edu.tw/iNCU/publicService/activityQuery/{activity_id}"
         )
 
-        print(f"[iNCU] 前往活動頁準備報名：{activity_url}")
+        print(f"[iNCU] 前往活動頁：{activity_url}")
 
         await page.goto(activity_url, wait_until="networkidle")
 
@@ -1102,23 +1105,57 @@ class NCUSession:
         else:
             pane = page.locator("div.tab-pane").first
 
-        signup_button = pane.get_by_role("button", name="報名").or_(
-            pane.locator("button:has-text('報名')")
-        )
+        # 報名按鈕可能是 <button> 也可能是 <a class="btn">（未登入時看到的
+        # 「登入」就是 <a class="btn">），所以 button/link 兩種角色都要找，
+        # 文字也可能不只「報名」一種說法。
+        candidate_texts = ["報名", "我要報名", "立即報名", "確定報名"]
 
-        if await signup_button.count() == 0:
+        signup_control = None
+        matched_text = None
+
+        for text in candidate_texts:
+            btn = pane.get_by_role("button", name=text)
+            if await btn.count() > 0:
+                signup_control = btn.first
+                matched_text = text
+                break
+
+            link = pane.get_by_role("link", name=text)
+            if await link.count() > 0:
+                signup_control = link.first
+                matched_text = text
+                break
+
+        if signup_control is None:
             page_text = await pane.inner_text()
+            buttons = await pane.locator(
+                "button, input[type=submit], a.btn, a[role=button]"
+            ).all_inner_texts()
             print(
-                "[iNCU] 找不到「報名」按鈕，可能未達開放報名時間、"
-                "已額滿，或按鈕文字/結構跟預期不同。\n"
-                f"該場次區塊目前文字內容：\n{page_text[:1000]}"
+                "[iNCU] 找不到報名按鈕，可能未達開放報名時間、已額滿、"
+                "已經報名過，或按鈕文字跟預期不同。\n"
+                f"該場次區塊找到的按鈕/連結文字：{buttons}\n"
+                f"該場次區塊文字內容：\n{page_text[:1000]}"
             )
             return {
-                "success": False,
-                "reason": "找不到報名按鈕，請查看 log 輸出的頁面文字內容。",
+                "would_click": None,
+                "reason": "找不到報名按鈕，請查看 log 輸出的按鈕清單與頁面文字。",
             }
 
-        await signup_button.first.click()
+        if not confirm:
+            print(
+                f"[iNCU] [dry-run] 找到報名按鈕「{matched_text}」，"
+                "但 confirm=False 所以不會真的點擊。"
+                "確定要報名時請帶 confirm=True 再呼叫一次。"
+            )
+            return {
+                "would_click": matched_text,
+                "message": "dry-run 模式，尚未實際送出報名。confirm=True 才會真的點擊。",
+            }
+
+        print(f"[iNCU] confirm=True，點擊報名按鈕「{matched_text}」...")
+
+        await signup_control.click()
         await page.wait_for_timeout(1000)
 
         confirm_button = page.get_by_role("button", name="確認")
@@ -1131,6 +1168,7 @@ class NCUSession:
         print(f"[iNCU] 報名動作已送出，目前該場次區塊文字：\n{result_text[:500]}")
 
         return {
+            "would_click": matched_text,
             "success": True,
             "message": "報名動作已送出，請對照 result_text 確認實際結果。",
             "result_text": result_text,
