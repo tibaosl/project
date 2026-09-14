@@ -32,6 +32,14 @@ global_ncu_session = None
 # 很容易就把最相關的那句話擠出視窗，所以放大一點。
 HISTORY_WINDOW = 12
 
+# 「確認/繼續」這類回覆用簡單關鍵字判斷，不靠 LLM（見 action_agent_node
+# 開頭的說明）。Supervisor 也要認得同一組關鍵字，才能在還有 pending_action
+# 時把這類極短、脫離上下文看不出意圖的訊息正確導去 Action Agent，
+# 而不是被誤判成 FALLBACK。
+CONFIRM_KEYWORDS = ["確定"]
+CONTINUE_ALL_KEYWORDS = ["全部列出", "列出全部", "都列出", "全部顯示", "都給我"]
+CONTINUE_MORE_KEYWORDS = ["繼續", "更多", "還有", "再多", "再幾個", "再找"]
+
 class AgentState(TypedDict):
     user_input: str
     username: str
@@ -55,7 +63,26 @@ async def supervisor_node(state: AgentState):
 
     print(f"\n[Supervisor Agent] 收到使用者需求：「{user_input}」")
     print(f"[Supervisor Agent] 參考對話歷史：「{history_str}」")
-    
+
+    # ------------------------------------------------------------------
+    # 如果上一輪還有「待確認/待續」的動作（pending_action 非空），
+    # 而這一輪的回覆剛好是確認/繼續類的關鍵字，直接指派給 Action Agent，
+    # 不要再讓 LLM 重新判斷意圖。
+    #
+    # 原因：pending_action 只有 Action Agent 自己會設定，也只有它知道
+    # 怎麼處理這類回覆（例如「確定報名」「繼續」「全部列出」）。
+    # 這種很短、脫離上下文完全看不出意圖的訊息交給 LLM 重新分類，
+    # 常常會被判斷成 FALLBACK，導致整個確認/接續的流程斷掉。
+    #
+    # 只在關鍵字命中時才短路，不是只要 pending_action 存在就整批導去
+    # Action Agent——否則使用者若趁著待確認的空檔問一個完全無關的法規
+    # 問題，會被錯誤地塞進 Action Agent（它不會查法規）。
+    # ------------------------------------------------------------------
+    pending_reply_keywords = CONFIRM_KEYWORDS + CONTINUE_ALL_KEYWORDS + CONTINUE_MORE_KEYWORDS
+    if state.get("pending_action") and any(kw in user_input for kw in pending_reply_keywords):
+        print("[Supervisor Agent] 偵測到針對 pending_action 的確認/繼續回覆，直接指派給 Action Agent")
+        return {"current_step": "supervisor_decided", "next_agent": "Action Agent"}
+
     system_prompt = f"""
     你是中央大學 NCUXplore 系統的最高階任務調度員 (Router)。
     你的任務是精準判斷使用者的意圖。請結合對話歷史，依照以下【核心決策樹】嚴格分類：
@@ -167,7 +194,7 @@ async def action_agent_node(state: AgentState):
     # 用簡單的關鍵字比對而不是再問一次 LLM，是為了確保這個會改變學校
     # 系統資料的動作只在使用者明確表態時才會發生，行為要可預期。
     # ------------------------------------------------------------------
-    if pending_action and "確定" in user_input:
+    if pending_action and any(kw in user_input for kw in CONFIRM_KEYWORDS):
         if not username or not password:
             return {
                 "agent_results": ["[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先在左側邊欄輸入帳號密碼！"],
@@ -217,8 +244,8 @@ async def action_agent_node(state: AgentState):
     # 登入，用簡單關鍵字判斷而不是再問一次 LLM，行為才可預期。
     # ------------------------------------------------------------------
     continuation_pending_types = ("ACTIVITY_RECOMMEND", "ACTIVITY_SEARCH_BY_TAG")
-    wants_all = any(kw in user_input for kw in ["全部列出", "列出全部", "都列出", "全部顯示", "都給我"])
-    wants_more = wants_all or any(kw in user_input for kw in ["繼續", "更多", "還有", "再多", "再幾個", "再找"])
+    wants_all = any(kw in user_input for kw in CONTINUE_ALL_KEYWORDS)
+    wants_more = wants_all or any(kw in user_input for kw in CONTINUE_MORE_KEYWORDS)
 
     if pending_action.get("type") in continuation_pending_types and wants_more:
         tag_names = pending_action.get("tag_names", [])
