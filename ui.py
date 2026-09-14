@@ -1,4 +1,5 @@
 import os
+import html
 import streamlit as st
 import requests
 import urllib.parse
@@ -267,6 +268,18 @@ def render_activity_detail(data, confirmation_label=None):
         meta_bits.append(f"承辦人：{contact}")
     if meta_bits:
         st.caption(" ｜ ".join(meta_bits))
+
+    if data.get("description"):
+        safe_description = html.escape(data["description"])
+        st.markdown(
+            f"""
+            <div class="ncux-card">
+                <div class="ncux-card-title">活動內容</div>
+                <div class="ncux-card-meta" style="white-space: pre-wrap;">{safe_description}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
     for session in data.get("sessions", []):
         render_activity_card(session)

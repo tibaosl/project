@@ -10,6 +10,7 @@ GET + query string，不是 AJAX API），跟 crawler_tools.py 的作法一致�
 請見 action_tools.py 裡 NCUSession 的 iNCU 相關方法。
 """
 
+import re
 from typing import Any, Optional
 from urllib.parse import urljoin
 
@@ -256,6 +257,35 @@ def search_all_activities(
     return all_results
 
 
+def _extract_rich_text(container) -> str:
+    """把「活動內容」那種富文字區塊轉成乾淨的純文字。
+
+    這種內容通常是從 Word 貼上來的 HTML，同一段文字裡的數字/英文
+    常被拆成一堆零碎的 <span>。逐段（<p>）取文字、段落內不加分隔符
+    （span 裡該有的空格本來就在文字節點裡），只在段落之間換行；
+    <br> 另外轉成換行符號保留段落內部的換行（例如「時間：...\n地點：...」）。
+    """
+
+    if container is None:
+        return ""
+
+    for br in container.find_all("br"):
+        br.replace_with("\n")
+
+    def _clean(text: str) -> str:
+        # 只壓縮空白跟 tab，不要動到 \n（那是我們自己特意保留的段落/換行）。
+        return re.sub(r"[ \t]+", " ", text).strip()
+
+    # 段落用 <p>，條列式內容常見用 <ul>/<li>（例如活動場次用清單列出），
+    # 兩種都當作獨立一行處理；find_all(["p", "li"]) 會照文件順序回傳。
+    blocks = container.find_all(["p", "li"])
+    if blocks:
+        lines = [_clean(b.get_text("")) for b in blocks]
+        return "\n".join(line for line in lines if line)
+
+    return _clean(container.get_text(""))
+
+
 def get_activity_detail(activity_id: str) -> dict[str, Any]:
     """取得單一活動的詳細資訊，包含所有場次(session)資料。
 
@@ -290,6 +320,20 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
                 info["contact_person"] = value
             elif label == "承辦人e-mail":
                 info["contact_email"] = value
+
+        # 「活動內容」這個 dt 後面接的是一個空的 dd（class col-sm-10），
+        # 真正的說明文字放在再下一個 dd（class col-sm-12）裡，不是用
+        # 一般的 dt/dd 一對一配對，所以要另外抓，抓不到就是空字串。
+        #
+        # 這段內容通常是從 Word 貼上來的 HTML，同一段文字裡的數字/英文
+        # 常被拆成一堆零碎的 <span>（Word 貼上的常見產物）。如果直接用
+        # get_text(separator) 會在每個 span 之間硬塞分隔符號，把
+        # 「2026年第13屆」拆成「2026 年第 13 屆」這種破碎的樣子——
+        # 所以改成逐段（<p>）取文字、段落內不加分隔符（span 裡該有的
+        # 空格本來就在文字節點裡，直接接起來就對了），只在段落「之間」
+        # 換行；<br> 另外轉成換行符號保留段內的換行。
+        content_dd = main_dl.select_one("dd.col-sm-12")
+        info["description"] = _extract_rich_text(content_dd)
 
     sessions: list[dict[str, Any]] = []
 
@@ -599,6 +643,9 @@ def format_activity_summary(detail: dict[str, Any]) -> str:
         if detail.get("contact_email"):
             contact += f"（{detail['contact_email']}）"
         lines.append(f"承辦人：{contact}")
+
+    if detail.get("description"):
+        lines.append(f"\n活動內容：\n{detail['description']}")
 
     sessions = detail.get("sessions", [])
     lines.append(f"\n共 {len(sessions)} 個場次：")
