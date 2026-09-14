@@ -57,6 +57,29 @@ ACTIVITY_TARGET_MAP = {
     "校外人士": "NETIDISREAD",
 }
 
+# 對應「進階搜尋」裡「時數標籤」欄位的 filter_tag 值（格式：mainTag_subTag）。
+# 這是「學習護照時數標籤」在網站後台的標籤代碼，用瀏覽器開發者工具在
+# 進階搜尋的標籤下拉選單裡點開「服務學習發展中心」分類後，逐一點擊每個
+# 標籤按鈕、讀取其 data-main-tag / data-sub-tag 屬性後記錄下來的
+# （這組代碼不太可能常態變動，但如果校方調整了標籤分類，需要重新抓）。
+#
+# 有這組代碼，就能直接請伺服器端依標籤篩選活動列表，不用像
+# _scan_open_activities_for_tags() 原本的做法一樣，掃過所有開放報名中
+# 的活動、逐一打 get_activity_detail() 檢查有沒有該標籤——那種做法在
+# 標籤稀有時要掃過大量完全不相關的活動（例如 Zumba 社課、輔導股長訓練），
+# 非常浪費。
+STUDY_PASSPORT_TAG_FILTER_MAP = {
+    "大一週會": "217_443",
+    "院週會": "217_444",
+    "大一CPR": "217_445",
+    "自我探索與生涯規劃": "217_446",
+    "其他生活知能": "217_447",
+    "服務學習課程": "218_448",
+    "校外服務": "218_449",
+    "人文藝術": "219_442",
+    "國際視野": "220_452",
+}
+
 
 def search_activities(
     keyword: str = "",
@@ -66,6 +89,7 @@ def search_activities(
     open_signup_only: bool = False,
     start_date: str = "",
     end_date: str = "",
+    tag_filter: str = "",
     page: int = 1,
 ) -> list[dict[str, Any]]:
     """依條件搜尋 iNCU 活動報名系統的公開活動列表（單頁，每頁 20 筆）。
@@ -80,6 +104,10 @@ def search_activities(
             代碼需對照網頁上的下拉選單，這裡不窮舉。
         open_signup_only: 是否只顯示「開放報名中」的活動。
         start_date / end_date: 篩選活動日期區間，格式 "YYYY-MM-DD"。
+        tag_filter: 「進階搜尋」裡「時數標籤」欄位的值，格式
+            "mainTag_subTag"（見 STUDY_PASSPORT_TAG_FILTER_MAP）。
+            這是伺服器端直接支援的篩選，比自己抓全部活動再逐一檢查
+            passport_hours_tag 快很多，找學習護照時數類別的活動時優先用這個。
         page: 頁碼（對應網頁的 ?page=N，從 1 開始）。網站一頁固定 20 筆，
             這個函式只抓「這一頁」；要抓全部頁面請用 search_all_activities()。
 
@@ -99,6 +127,7 @@ def search_activities(
         "filter_open_signup": "Y" if open_signup_only else "",
         "filter_start_date": start_date,
         "filter_end_date": end_date,
+        "filter_tag": tag_filter,
     }
     params = {k: v for k, v in params.items() if v}
     if page > 1:
@@ -335,64 +364,52 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
     return info
 
 
-def _scan_open_activities_for_tags(
-    tag_names: list[str],
-    max_candidates: Optional[int] = None,
-    limit_per_tag: Optional[int] = 5,
-    start_index: int = 0,
-) -> tuple[dict[str, list[dict[str, Any]]], int, bool]:
-    """核心邏輯：掃描「開放報名中」的活動，比對每個場次的學習護照時數標籤
-    有沒有包含目標名稱。recommend_activities_for_categories() 跟
-    find_activities_by_hour_tag() 共用這個，差別只在要不要附推薦理由。
+def _scan_activities_for_tag(
+    tag_name: str,
+    max_candidates: Optional[int],
+    limit: Optional[int],
+    start_index: int,
+) -> tuple[list[dict[str, Any]], int, bool]:
+    """單一標籤的核心掃描邏輯。
 
-    用 search_all_activities() 自動翻頁抓完全部「開放報名中」的活動
-    （不是只抓第一頁的 20 筆）。
-
-    Args:
-        max_candidates: 可選的安全上限，預設 None 代表候選活動不特別截斷。
-        limit_per_tag: 每個標籤最多收集幾筆就提早停止（預設 5）。
-            因為每個候選活動都要多打一次 get_activity_detail() 請求，
-            如果使用者只是想看幾個選項，掃完全部 40~50 個活動才截斷顯示
-            很浪費——找滿數量就提早跳出迴圈。傳 None 代表不限制，
-            掃描到全部候選活動結束為止。
-        start_index: 從候選活動清單的第幾筆開始掃描（0-based）。
-            使用者說「繼續」時，把上次回傳的 next_index 原封不動傳進來，
-            就能接著往下掃描剩下的活動，不用重新掃過前面已經看過、
-            但沒有中的活動（這些也都各自要打一次 get_activity_detail()，
-            重掃很浪費）。
+    優先用伺服器端的「時數標籤」篩選（STUDY_PASSPORT_TAG_FILTER_MAP）
+    直接縮小候選活動範圍——例如篩「人文藝術」伺服器只會回傳 10 筆左右，
+    而不是像以前那樣要掃過全部 40~50 筆開放報名中的活動（其中大多數
+    跟目標標籤完全無關，例如 Zumba 社課、輔導股長訓練）。如果標籤不在
+    對照表裡（代碼未知），才退回掃全部活動、逐一用 get_activity_detail()
+    檢查 passport_hours_tag 的舊做法。
 
     每筆場次資訊都會附上報名人數/名額（capacity、waitlist_capacity、
     signup_status_text），因為使用者選活動時最在意的就是還有沒有名額，
     不能只給活動資訊卻不給名額，等到真的要報名才發現額滿。
 
     Returns:
-        (matches, next_index, exhausted)
-        - matches: {標籤名稱: [符合的場次資訊, ...]}
-        - next_index: 下次要從候選清單的第幾筆繼續掃描（下次呼叫時
-          原封不動傳給 start_index 即可）
-        - exhausted: 是否已經掃到候選清單最後一筆（True 代表沒有更多
-          可以繼續掃了）
+        (items, next_index, exhausted) — next_index/exhausted 的意義：
+        下次要從候選清單第幾筆繼續掃描、是否已經掃到候選清單最後一筆。
     """
 
-    candidates = search_all_activities(open_signup_only=True)
+    tag_filter = STUDY_PASSPORT_TAG_FILTER_MAP.get(tag_name, "")
+
+    if tag_filter:
+        candidates = search_all_activities(open_signup_only=True, tag_filter=tag_filter)
+    else:
+        print(f"[Activity Tools] 標籤「{tag_name}」沒有已知的伺服器篩選代碼，退回掃描全部活動。")
+        candidates = search_all_activities(open_signup_only=True)
+
     if max_candidates is not None:
         candidates = candidates[:max_candidates]
 
     print(
-        f"[Activity Tools] 依標籤 {tag_names} 從第 {start_index} 筆開始掃描"
-        f"（候選活動共 {len(candidates)} 個，每個標籤找滿 "
-        f"{limit_per_tag if limit_per_tag is not None else '不限'} 筆就停止）..."
+        f"[Activity Tools] 標籤「{tag_name}」從第 {start_index} 筆開始掃描"
+        f"（候選活動共 {len(candidates)} 個{'（伺服器已篩選）' if tag_filter else ''}，"
+        f"找滿 {limit if limit is not None else '不限'} 筆就停止）..."
     )
 
-    matches: dict[str, list[dict[str, Any]]] = {name: [] for name in tag_names}
-
-    def _tag_satisfied(name: str) -> bool:
-        return limit_per_tag is not None and len(matches[name]) >= limit_per_tag
-
+    items: list[dict[str, Any]] = []
     index = start_index
 
     while index < len(candidates):
-        if all(_tag_satisfied(name) for name in tag_names):
+        if limit is not None and len(items) >= limit:
             break
 
         activity = candidates[index]
@@ -406,40 +423,84 @@ def _scan_open_activities_for_tags(
 
         for sess in detail.get("sessions", []):
             tag = sess.get("passport_hours_tag") or ""
-            if not tag or "不提供時數" in tag:
+            if not tag or "不提供時數" in tag or tag_name not in tag:
                 continue
 
-            for name in tag_names:
-                if _tag_satisfied(name):
-                    continue
-                if name in tag:
-                    matches[name].append(
-                        {
-                            "activity_id": activity["activity_id"],
-                            "activity_title": detail.get("title"),
-                            "session_id": sess.get("session_id"),
-                            "session_name": sess.get("session_name"),
-                            "tag": tag,
-                            "event_period": sess.get("event_period"),
-                            "signup_period": sess.get("signup_period"),
-                            "capacity": sess.get("capacity"),
-                            "waitlist_capacity": sess.get("waitlist_capacity"),
-                            "signup_status_text": sess.get("signup_status_text"),
-                            "url": detail.get("url"),
-                        }
-                    )
+            items.append(
+                {
+                    "activity_id": activity["activity_id"],
+                    "activity_title": detail.get("title"),
+                    "session_id": sess.get("session_id"),
+                    "session_name": sess.get("session_name"),
+                    "tag": tag,
+                    "event_period": sess.get("event_period"),
+                    "signup_period": sess.get("signup_period"),
+                    "capacity": sess.get("capacity"),
+                    "waitlist_capacity": sess.get("waitlist_capacity"),
+                    "signup_status_text": sess.get("signup_status_text"),
+                    "url": detail.get("url"),
+                }
+            )
+
+            if limit is not None and len(items) >= limit:
+                break
 
     exhausted = index >= len(candidates)
 
-    return matches, index, exhausted
+    return items, index, exhausted
+
+
+def _scan_open_activities_for_tags(
+    tag_names: list[str],
+    max_candidates: Optional[int] = None,
+    limit_per_tag: Optional[int] = 5,
+    start_indices: Optional[dict[str, int]] = None,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], bool]:
+    """依標籤名稱清單分別查詢，每個標籤各自獨立掃描（各自的候選清單、
+    各自的進度游標）。recommend_activities_for_categories() 跟
+    find_activities_by_hour_tag() 共用這個，差別只在要不要附推薦理由。
+
+    Args:
+        max_candidates: 可選的安全上限，預設 None 代表候選活動不特別截斷。
+        limit_per_tag: 每個標籤最多收集幾筆就提早停止（預設 5）。
+            傳 None 代表不限制，掃描到候選活動結束為止。
+        start_indices: {標籤名稱: 上次停在候選清單第幾筆}，使用者說
+            「繼續」時，把上次回傳的 next_indices 原封不動傳進來。
+
+    Returns:
+        (matches, next_indices, all_exhausted)
+        - matches: {標籤名稱: [符合的場次資訊, ...]}
+        - next_indices: {標籤名稱: 下次要從候選清單第幾筆繼續掃描}，
+          下次呼叫時原封不動傳給 start_indices 即可
+        - all_exhausted: 是否「每個」標籤都已經掃到候選清單最後一筆
+          （True 代表沒有任何標籤還能繼續掃了）
+    """
+
+    start_indices = start_indices or {}
+
+    matches: dict[str, list[dict[str, Any]]] = {}
+    next_indices: dict[str, int] = {}
+    exhausted_flags: dict[str, bool] = {}
+
+    for name in tag_names:
+        items, next_index, exhausted = _scan_activities_for_tag(
+            name, max_candidates, limit_per_tag, start_indices.get(name, 0)
+        )
+        matches[name] = items
+        next_indices[name] = next_index
+        exhausted_flags[name] = exhausted
+
+    all_exhausted = all(exhausted_flags.values())
+
+    return matches, next_indices, all_exhausted
 
 
 def recommend_activities_for_categories(
     deficiencies: list[dict[str, Any]],
     max_candidates: Optional[int] = None,
     limit_per_tag: Optional[int] = 5,
-    start_index: int = 0,
-) -> tuple[dict[str, list[dict[str, Any]]], int, bool]:
+    start_indices: Optional[dict[str, int]] = None,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], bool]:
     """依「學習護照時數缺口」，從目前開放報名中的活動找出對應場次。
 
     Args:
@@ -449,18 +510,17 @@ def recommend_activities_for_categories(
             細項名稱要跟 action_tools.py 裡
             STUDY_PASSPORT_SUBCATEGORY_REQUIREMENTS 的細項名稱一致
             （例如 "校外服務"、"人文藝術"、"國際視野"）。
-        max_candidates: 預設 None，候選活動不特別截斷（會自動翻頁抓全部
-            「開放報名中」的活動）。
-        limit_per_tag: 每個細項最多找幾筆就提早停止（預設 5），
-            避免每次都要掃完全部候選活動才截斷顯示，浪費請求。
+        max_candidates: 預設 None，候選活動不特別截斷。
+        limit_per_tag: 每個細項最多找幾筆就提早停止（預設 5）。
             傳 None 代表掃描全部候選活動、不限制筆數。
-        start_index: 從候選活動清單第幾筆開始掃描，使用者說「繼續」時，
-            把上次回傳的 next_index 傳進來，接續掃描剩下的活動。
+        start_indices: {細項名稱: 上次停在候選清單第幾筆}，使用者說
+            「繼續」時，把上次回傳的 next_indices 傳進來，
+            接續掃描剩下的活動。
 
     Returns:
-        (matches, next_index, exhausted)——matches 是
+        (matches, next_indices, all_exhausted)——matches 是
         {細項名稱: [符合的場次資訊（含 reason 推薦理由、報名人數/名額）, ...]}，
-        next_index/exhausted 的意義見 _scan_open_activities_for_tags()。
+        next_indices/all_exhausted 的意義見 _scan_open_activities_for_tags()。
     """
 
     subcategory_names = [d["subcategory"] for d in deficiencies]
@@ -472,8 +532,8 @@ def recommend_activities_for_categories(
         for d in deficiencies
     }
 
-    matches, next_index, exhausted = _scan_open_activities_for_tags(
-        subcategory_names, max_candidates, limit_per_tag, start_index
+    matches, next_indices, all_exhausted = _scan_open_activities_for_tags(
+        subcategory_names, max_candidates, limit_per_tag, start_indices
     )
 
     for name, items in matches.items():
@@ -483,15 +543,15 @@ def recommend_activities_for_categories(
     found_summary = ", ".join(f"{name}：{len(items)} 場" for name, items in matches.items())
     print(f"[Activity Tools] 推薦結果 - {found_summary}")
 
-    return matches, next_index, exhausted
+    return matches, next_indices, all_exhausted
 
 
 def find_activities_by_hour_tag(
     tag_names: list[str],
     max_candidates: Optional[int] = None,
     limit_per_tag: Optional[int] = 5,
-    start_index: int = 0,
-) -> tuple[dict[str, list[dict[str, Any]]], int, bool]:
+    start_indices: Optional[dict[str, int]] = None,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], bool]:
     """直接依「學習護照時數標籤」名稱查詢活動，不需要登入、也不需要知道
     使用者自己的時數狀況（跟 recommend_activities_for_categories 的差別：
     這個是使用者自己指名想找哪個類別，不是系統依缺口主動推薦）。
@@ -500,16 +560,16 @@ def find_activities_by_hour_tag(
     直接呼叫 find_activities_by_hour_tag(["自我探索與生涯規劃"])。
 
     limit_per_tag 預設 5，找滿就提早停止（傳 None 代表掃描全部候選活動）；
-    start_index 用於使用者說「繼續/還要更多」時接續上次的掃描位置。
+    start_indices 用於使用者說「繼續/還要更多」時接續上次的掃描位置。
 
     Returns:
-        (matches, next_index, exhausted)——matches 是
+        (matches, next_indices, all_exhausted)——matches 是
         {標籤名稱: [符合的場次資訊（含報名人數/名額）, ...]}，
-        next_index/exhausted 的意義見 _scan_open_activities_for_tags()。
+        next_indices/all_exhausted 的意義見 _scan_open_activities_for_tags()。
     """
 
-    matches, next_index, exhausted = _scan_open_activities_for_tags(
-        tag_names, max_candidates, limit_per_tag, start_index
+    matches, next_indices, all_exhausted = _scan_open_activities_for_tags(
+        tag_names, max_candidates, limit_per_tag, start_indices
     )
 
     for name, items in matches.items():
@@ -519,7 +579,7 @@ def find_activities_by_hour_tag(
     found_summary = ", ".join(f"{name}：{len(items)} 場" for name, items in matches.items())
     print(f"[Activity Tools] 查詢結果 - {found_summary}")
 
-    return matches, next_index, exhausted
+    return matches, next_indices, all_exhausted
 
 
 def format_activity_summary(detail: dict[str, Any]) -> str:

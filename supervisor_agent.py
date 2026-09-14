@@ -240,9 +240,9 @@ async def action_agent_node(state: AgentState):
     # ------------------------------------------------------------------
     # 處理「繼續 / 還要更多 / 全部列出」：活動推薦、依標籤查詢預設只找滿
     # 5 筆就停止（避免掃描太多活動浪費請求）。使用者想看更多時，從上次
-    # 停下來的索引位置（next_index）繼續掃描剩下的候選活動，不用重新
-    # 掃過前面已經看過、但沒有中的活動。這個不需要登入，用簡單關鍵字
-    # 判斷而不是再問一次 LLM，行為才可預期。
+    # 每個標籤各自停下來的索引位置（next_indices）繼續掃描剩下的候選
+    # 活動，不用重新掃過前面已經看過、但沒有中的活動。這個不需要登入，
+    # 用簡單關鍵字判斷而不是再問一次 LLM，行為才可預期。
     # ------------------------------------------------------------------
     continuation_pending_types = ("ACTIVITY_RECOMMEND", "ACTIVITY_SEARCH_BY_TAG")
     wants_all = any(kw in user_input for kw in CONTINUE_ALL_KEYWORDS)
@@ -251,22 +251,22 @@ async def action_agent_node(state: AgentState):
     if pending_action.get("type") in continuation_pending_types and wants_more:
         tag_names = pending_action.get("tag_names", [])
         deficiencies = pending_action.get("deficiencies")
-        resume_index = pending_action.get("next_index", 0)
+        resume_indices = pending_action.get("next_indices", {})
         next_limit = None if wants_all else 5
 
         try:
             if pending_action["type"] == "ACTIVITY_RECOMMEND":
-                more_matches, next_index, exhausted = recommend_activities_for_categories(
-                    deficiencies, limit_per_tag=next_limit, start_index=resume_index
+                more_matches, next_indices, all_exhausted = recommend_activities_for_categories(
+                    deficiencies, limit_per_tag=next_limit, start_indices=resume_indices
                 )
                 envelope_kind = "activity_recommendations"
             else:
-                more_matches, next_index, exhausted = find_activities_by_hour_tag(
-                    tag_names, limit_per_tag=next_limit, start_index=resume_index
+                more_matches, next_indices, all_exhausted = find_activities_by_hour_tag(
+                    tag_names, limit_per_tag=next_limit, start_indices=resume_indices
                 )
                 envelope_kind = "activity_tag_search"
 
-            has_more = (not wants_all) and not exhausted
+            has_more = (not wants_all) and not all_exhausted
 
             envelope = {
                 "kind": envelope_kind,
@@ -277,7 +277,7 @@ async def action_agent_node(state: AgentState):
             new_pending_action = (
                 {}
                 if not has_more
-                else {**pending_action, "next_index": next_index}
+                else {**pending_action, "next_indices": next_indices}
             )
 
             return {"agent_results": [envelope], "pending_action": new_pending_action}
@@ -411,12 +411,12 @@ async def action_agent_node(state: AgentState):
                     "pending_action": {},
                 }
             tag_names = [keyword]
-            matches, next_index, exhausted = find_activities_by_hour_tag(tag_names, limit_per_tag=5)
-            has_more = not exhausted
+            matches, next_indices, all_exhausted = find_activities_by_hour_tag(tag_names, limit_per_tag=5)
+            has_more = not all_exhausted
 
             envelope = {"kind": "activity_tag_search", "recommendations": matches, "has_more": has_more}
             new_pending_action = (
-                {"type": "ACTIVITY_SEARCH_BY_TAG", "tag_names": tag_names, "next_index": next_index}
+                {"type": "ACTIVITY_SEARCH_BY_TAG", "tag_names": tag_names, "next_indices": next_indices}
                 if has_more
                 else {}
             )
@@ -480,10 +480,10 @@ async def action_agent_node(state: AgentState):
                     "pending_action": {},
                 }
 
-            recommendations, next_index, exhausted = recommend_activities_for_categories(
+            recommendations, next_indices, all_exhausted = recommend_activities_for_categories(
                 deficiencies, limit_per_tag=5
             )
-            has_more = not exhausted
+            has_more = not all_exhausted
 
             envelope = {
                 "kind": "activity_recommendations",
@@ -495,7 +495,7 @@ async def action_agent_node(state: AgentState):
                 {
                     "type": "ACTIVITY_RECOMMEND",
                     "deficiencies": deficiencies,
-                    "next_index": next_index,
+                    "next_indices": next_indices,
                 }
                 if has_more
                 else {}
