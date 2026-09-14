@@ -156,6 +156,7 @@ def render_activity_recommendations(data):
     """
 
     recommendations = data.get("recommendations", {})
+    exhausted_by_tag = data.get("exhausted_by_tag", {})
     any_found = any(items for items in recommendations.values())
 
     if not any_found:
@@ -166,10 +167,16 @@ def render_activity_recommendations(data):
         if not items:
             continue
 
-        # 後端（activity_tools）已經依 limit_per_tag 提早停止掃描，
-        # 這裡顯示的就是實際找到的筆數，不再另外截斷——
-        # 避免「標題寫找到 8 個，卡片卻只顯示 5 個」這種不一致。
-        st.markdown(f"**【{name}】找到 {len(items)} 個場次**")
+        # 後端（activity_tools）找滿 limit_per_tag 就會提早停止掃描，
+        # 這裡顯示的就是實際找到的筆數，不再另外截斷。但這不代表「總共
+        # 只有這些」——如果這個標籤還沒掃完候選清單（exhausted=False），
+        # 標題要講清楚是「目前顯示」而不是「找到的全部」，
+        # 不然會誤導成好像總共就只有這幾個。
+        tag_exhausted = exhausted_by_tag.get(name, True)
+        if tag_exhausted:
+            st.markdown(f"**【{name}】共找到 {len(items)} 個符合的場次**")
+        else:
+            st.markdown(f"**【{name}】目前顯示 {len(items)} 個符合的場次（可能還有更多）**")
 
         for item in items:
             headcount = item.get("signup_status_text")

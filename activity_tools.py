@@ -455,7 +455,7 @@ def _scan_open_activities_for_tags(
     max_candidates: Optional[int] = None,
     limit_per_tag: Optional[int] = 5,
     start_indices: Optional[dict[str, int]] = None,
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], bool]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], dict[str, bool]]:
     """依標籤名稱清單分別查詢，每個標籤各自獨立掃描（各自的候選清單、
     各自的進度游標）。recommend_activities_for_categories() 跟
     find_activities_by_hour_tag() 共用這個，差別只在要不要附推薦理由。
@@ -468,19 +468,21 @@ def _scan_open_activities_for_tags(
             「繼續」時，把上次回傳的 next_indices 原封不動傳進來。
 
     Returns:
-        (matches, next_indices, all_exhausted)
+        (matches, next_indices, exhausted_by_tag)
         - matches: {標籤名稱: [符合的場次資訊, ...]}
         - next_indices: {標籤名稱: 下次要從候選清單第幾筆繼續掃描}，
           下次呼叫時原封不動傳給 start_indices 即可
-        - all_exhausted: 是否「每個」標籤都已經掃到候選清單最後一筆
-          （True 代表沒有任何標籤還能繼續掃了）
+        - exhausted_by_tag: {標籤名稱: 是否已經掃到該標籤候選清單最後一筆}。
+          True 代表 matches[name] 就是全部符合的場次（沒有再多了）；
+          False 代表是因為找滿 limit_per_tag 才提早停止，可能還有更多，
+          呼叫端顯示筆數時不該講成「總共只有這些」。
     """
 
     start_indices = start_indices or {}
 
     matches: dict[str, list[dict[str, Any]]] = {}
     next_indices: dict[str, int] = {}
-    exhausted_flags: dict[str, bool] = {}
+    exhausted_by_tag: dict[str, bool] = {}
 
     for name in tag_names:
         items, next_index, exhausted = _scan_activities_for_tag(
@@ -488,11 +490,9 @@ def _scan_open_activities_for_tags(
         )
         matches[name] = items
         next_indices[name] = next_index
-        exhausted_flags[name] = exhausted
+        exhausted_by_tag[name] = exhausted
 
-    all_exhausted = all(exhausted_flags.values())
-
-    return matches, next_indices, all_exhausted
+    return matches, next_indices, exhausted_by_tag
 
 
 def recommend_activities_for_categories(
@@ -500,7 +500,7 @@ def recommend_activities_for_categories(
     max_candidates: Optional[int] = None,
     limit_per_tag: Optional[int] = 5,
     start_indices: Optional[dict[str, int]] = None,
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], bool]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], dict[str, bool]]:
     """依「學習護照時數缺口」，從目前開放報名中的活動找出對應場次。
 
     Args:
@@ -518,9 +518,9 @@ def recommend_activities_for_categories(
             接續掃描剩下的活動。
 
     Returns:
-        (matches, next_indices, all_exhausted)——matches 是
+        (matches, next_indices, exhausted_by_tag)——matches 是
         {細項名稱: [符合的場次資訊（含 reason 推薦理由、報名人數/名額）, ...]}，
-        next_indices/all_exhausted 的意義見 _scan_open_activities_for_tags()。
+        next_indices/exhausted_by_tag 的意義見 _scan_open_activities_for_tags()。
     """
 
     subcategory_names = [d["subcategory"] for d in deficiencies]
@@ -532,7 +532,7 @@ def recommend_activities_for_categories(
         for d in deficiencies
     }
 
-    matches, next_indices, all_exhausted = _scan_open_activities_for_tags(
+    matches, next_indices, exhausted_by_tag = _scan_open_activities_for_tags(
         subcategory_names, max_candidates, limit_per_tag, start_indices
     )
 
@@ -543,7 +543,7 @@ def recommend_activities_for_categories(
     found_summary = ", ".join(f"{name}：{len(items)} 場" for name, items in matches.items())
     print(f"[Activity Tools] 推薦結果 - {found_summary}")
 
-    return matches, next_indices, all_exhausted
+    return matches, next_indices, exhausted_by_tag
 
 
 def find_activities_by_hour_tag(
@@ -551,7 +551,7 @@ def find_activities_by_hour_tag(
     max_candidates: Optional[int] = None,
     limit_per_tag: Optional[int] = 5,
     start_indices: Optional[dict[str, int]] = None,
-) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], bool]:
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, int], dict[str, bool]]:
     """直接依「學習護照時數標籤」名稱查詢活動，不需要登入、也不需要知道
     使用者自己的時數狀況（跟 recommend_activities_for_categories 的差別：
     這個是使用者自己指名想找哪個類別，不是系統依缺口主動推薦）。
@@ -563,12 +563,12 @@ def find_activities_by_hour_tag(
     start_indices 用於使用者說「繼續/還要更多」時接續上次的掃描位置。
 
     Returns:
-        (matches, next_indices, all_exhausted)——matches 是
+        (matches, next_indices, exhausted_by_tag)——matches 是
         {標籤名稱: [符合的場次資訊（含報名人數/名額）, ...]}，
-        next_indices/all_exhausted 的意義見 _scan_open_activities_for_tags()。
+        next_indices/exhausted_by_tag 的意義見 _scan_open_activities_for_tags()。
     """
 
-    matches, next_indices, all_exhausted = _scan_open_activities_for_tags(
+    matches, next_indices, exhausted_by_tag = _scan_open_activities_for_tags(
         tag_names, max_candidates, limit_per_tag, start_indices
     )
 
@@ -579,7 +579,7 @@ def find_activities_by_hour_tag(
     found_summary = ", ".join(f"{name}：{len(items)} 場" for name, items in matches.items())
     print(f"[Activity Tools] 查詢結果 - {found_summary}")
 
-    return matches, next_indices, all_exhausted
+    return matches, next_indices, exhausted_by_tag
 
 
 def format_activity_summary(detail: dict[str, Any]) -> str:

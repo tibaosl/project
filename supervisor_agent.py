@@ -256,21 +256,22 @@ async def action_agent_node(state: AgentState):
 
         try:
             if pending_action["type"] == "ACTIVITY_RECOMMEND":
-                more_matches, next_indices, all_exhausted = recommend_activities_for_categories(
+                more_matches, next_indices, exhausted_by_tag = recommend_activities_for_categories(
                     deficiencies, limit_per_tag=next_limit, start_indices=resume_indices
                 )
                 envelope_kind = "activity_recommendations"
             else:
-                more_matches, next_indices, all_exhausted = find_activities_by_hour_tag(
+                more_matches, next_indices, exhausted_by_tag = find_activities_by_hour_tag(
                     tag_names, limit_per_tag=next_limit, start_indices=resume_indices
                 )
                 envelope_kind = "activity_tag_search"
 
-            has_more = (not wants_all) and not all_exhausted
+            has_more = (not wants_all) and not all(exhausted_by_tag.values())
 
             envelope = {
                 "kind": envelope_kind,
                 "recommendations": more_matches,
+                "exhausted_by_tag": exhausted_by_tag,
                 "has_more": has_more,
             }
 
@@ -411,10 +412,15 @@ async def action_agent_node(state: AgentState):
                     "pending_action": {},
                 }
             tag_names = [keyword]
-            matches, next_indices, all_exhausted = find_activities_by_hour_tag(tag_names, limit_per_tag=5)
-            has_more = not all_exhausted
+            matches, next_indices, exhausted_by_tag = find_activities_by_hour_tag(tag_names, limit_per_tag=5)
+            has_more = not all(exhausted_by_tag.values())
 
-            envelope = {"kind": "activity_tag_search", "recommendations": matches, "has_more": has_more}
+            envelope = {
+                "kind": "activity_tag_search",
+                "recommendations": matches,
+                "exhausted_by_tag": exhausted_by_tag,
+                "has_more": has_more,
+            }
             new_pending_action = (
                 {"type": "ACTIVITY_SEARCH_BY_TAG", "tag_names": tag_names, "next_indices": next_indices}
                 if has_more
@@ -480,15 +486,16 @@ async def action_agent_node(state: AgentState):
                     "pending_action": {},
                 }
 
-            recommendations, next_indices, all_exhausted = recommend_activities_for_categories(
+            recommendations, next_indices, exhausted_by_tag = recommend_activities_for_categories(
                 deficiencies, limit_per_tag=5
             )
-            has_more = not all_exhausted
+            has_more = not all(exhausted_by_tag.values())
 
             envelope = {
                 "kind": "activity_recommendations",
                 "deficiencies": deficiencies,
                 "recommendations": recommendations,
+                "exhausted_by_tag": exhausted_by_tag,
                 "has_more": has_more,
             }
             new_pending_action = (

@@ -150,8 +150,8 @@ def test_recommend_activities(subcategory_names: list[str]):
         for name in subcategory_names
     ]
 
-    recommendations, next_indices, all_exhausted = recommend_activities_for_categories(fake_deficiencies)
-    print(f"（各標籤掃描進度：{next_indices}，all_exhausted={all_exhausted}）")
+    recommendations, next_indices, exhausted_by_tag = recommend_activities_for_categories(fake_deficiencies)
+    print(f"（各標籤掃描進度：{next_indices}，exhausted_by_tag={exhausted_by_tag}）")
     for name, items in recommendations.items():
         print(f"\n【{name}】找到 {len(items)} 場：")
         for item in items:
