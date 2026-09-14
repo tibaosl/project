@@ -290,6 +290,37 @@ class NCUSession:
 
         print("[Action Agent] Portal session 建立完成。")
 
+    async def _captcha_challenge_present(self, page: Page) -> bool:
+        """檢查頁面上是否出現需要使用者手動處理的人機驗證挑戰。
+
+        ⚠️ 這裡的偵測方式是根據 reCAPTCHA/hCaptcha 常見的 DOM 結構寫的
+        （驗證用的 iframe，或是核取方塊上有「我不是機器人」字樣），
+        還沒有用真實帳號實測過中大 Portal 實際跳出來的驗證畫面長什麼樣、
+        什麼條件下才會出現。如果偵測不準（該停卻沒停、或不該停卻一直
+        停在那裡），需要對照實際畫面調整這裡的判斷條件。
+        """
+
+        try:
+            challenge_iframe = page.locator(
+                'iframe[title*="recaptcha" i], iframe[title*="captcha" i], '
+                'iframe[src*="recaptcha" i], iframe[src*="hcaptcha" i]'
+            )
+            if await challenge_iframe.count() > 0:
+                return True
+
+            challenge_checkbox = page.get_by_role(
+                "checkbox", name="我不是機器人"
+            )
+            if await challenge_checkbox.count() > 0:
+                return True
+
+        except Exception:
+            # 偵測本身失敗時，寧可保守當作「有挑戰」，停下來讓使用者確認，
+            # 也不要在不確定的情況下悶著頭自動送出登入。
+            return True
+
+        return False
+
     async def _login_interactively(self):
         """用可見瀏覽器完成需要使用者操作的 Portal 登入。"""
 
@@ -320,19 +351,33 @@ class NCUSession:
                 name="密碼",
             ).fill(self.password)
 
-            print(
-                "\n=======================================================\n"
-                "[Action Agent 暫停]\n"
-                "請手動打勾「我不是機器人」並解題。\n"
-                "完成後請手動點擊「登入 Portal」按鈕，"
-                "系統將等待 90 秒...\n"
-                "=======================================================\n"
-            )
-
-            await page_ui.get_by_role(
+            login_button = page_ui.get_by_role(
                 "button",
                 name="登入 Portal",
-            ).wait_for(
+            )
+
+            # 驗證挑戰是按下登入之後才「可能」跳出來的（不是每次都有），
+            # 所以流程是：先自己按登入，按完再檢查有沒有跳出驗證挑戰——
+            # 沒有的話就自動繼續往下跑，不用使用者介入。
+            print("[Action Agent] 自動點擊登入...")
+            await login_button.click()
+
+            challenge_present = await self._captcha_challenge_present(page_ui)
+
+            if challenge_present:
+                print(
+                    "\n=======================================================\n"
+                    "[Action Agent 暫停]\n"
+                    "偵測到需要額外的人機驗證，請手動完成驗證挑戰\n"
+                    "（例如打勾「我不是機器人」並視需要解題），"
+                    "完成後請手動點擊「登入 Portal」按鈕。\n"
+                    "系統將等待 90 秒...\n"
+                    "=======================================================\n"
+                )
+            else:
+                print("[Action Agent] 沒有偵測到額外驗證挑戰，繼續自動往下跑...")
+
+            await login_button.wait_for(
                 state="hidden",
                 timeout=90000,
             )
@@ -813,18 +858,25 @@ class NCUSession:
         await page.get_by_role("textbox", name="帳號").fill(self.username)
         await page.get_by_role("textbox", name="密碼").fill(self.password)
 
-        print(
-            "\n=======================================================\n"
-            "[Action Agent 暫停]\n"
-            "iNCU/Portal SSO 需要重新驗證，請在背景瀏覽器視窗中\n"
-            "手動打勾「我不是機器人」並解題，完成後點擊「登入 Portal」，"
-            "系統將等待 90 秒...\n"
-            "=======================================================\n"
-        )
+        login_button = page.get_by_role("button", name="登入 Portal")
 
-        await page.get_by_role(
-            "button", name="登入 Portal"
-        ).wait_for(state="hidden", timeout=90000)
+        print("[Action Agent] iNCU/Portal SSO 需要重新驗證，自動點擊登入...")
+        await login_button.click()
+
+        if await self._captcha_challenge_present(page):
+            print(
+                "\n=======================================================\n"
+                "[Action Agent 暫停]\n"
+                "偵測到需要額外的人機驗證，請在背景瀏覽器視窗中手動完成\n"
+                "驗證挑戰（例如打勾「我不是機器人」並視需要解題），"
+                "完成後請手動點擊「登入 Portal」按鈕。\n"
+                "系統將等待 90 秒...\n"
+                "=======================================================\n"
+            )
+        else:
+            print("[Action Agent] 沒有偵測到額外驗證挑戰，繼續自動往下跑...")
+
+        await login_button.wait_for(state="hidden", timeout=90000)
 
         await page.wait_for_load_state("networkidle")
 
