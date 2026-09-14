@@ -1,8 +1,12 @@
+import os
 import streamlit as st
 import requests
 import urllib.parse
 import ast
 import json
+from dotenv import load_dotenv
+
+load_dotenv()
 
 st.set_page_config(page_title="NCUXplore 校園助手", page_icon="🎓")
 st.title("NCUXplore 智慧校園代理系統")
@@ -10,9 +14,11 @@ st.caption("歡迎使用！我可以幫你查詢校園法規、時數進度，�
 
 st.sidebar.header("Portal 登入設定")
 st.sidebar.caption("若要請 AI 幫忙登入 Portal，請先在此輸入帳密：")
-user_id = st.sidebar.text_input("帳號")
-user_pwd = st.sidebar.text_input("密碼", type="password")
-st.sidebar.warning("僅供本次測試使用，重整網頁後即會清除。")
+# 開發方便用：預設值從 .env 的 NCU_USERNAME / NCU_PASSWORD 帶入，
+# 不用每次重開網頁都重打一次。.env 已經在 .gitignore 排除，不會被 push 上去。
+user_id = st.sidebar.text_input("帳號", value=os.environ.get("NCU_USERNAME", ""))
+user_pwd = st.sidebar.text_input("密碼", value=os.environ.get("NCU_PASSWORD", ""), type="password")
+st.sidebar.warning("帳密預設從 .env 帶入僅供本機開發使用，欄位內容不會保存到別處。")
 
 # ------------------------------------------------------------------
 # 共用卡片樣式（時數進度、活動推薦、活動詳情都會用到）。
