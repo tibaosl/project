@@ -1,33 +1,63 @@
+"""校園法規 RAG。
+
+這個檔案負責兩件事：
+1. Ingestion（load_documents / get_or_create_index）：把 data/ 底下的 PDF、
+   DOCX 轉成一份份「結構完整」的 chunk（一個表格 = 一個 chunk、一個條文/
+   Q&A = 一個 chunk），再建立向量索引 + BM25 索引。
+2. Retrieval（query_academic_knowledge）：deterministic 的系所/學院 mapping
+   + FAQ/正式法規意圖判斷 + dense/BM25 hybrid 檢索 + scope 過濾 + LLM
+   rerank，最後餵給 LLM 生成有引用來源的答案。
+
+跟舊版最大的差異在 ingestion：舊版用「有沒有表格」這個不可靠的啟發式決定
+要不要跑 Vision OCR，再用通用的 SentenceSplitter/SentenceWindowNodeParser
+按字數切 chunk——這會把表格從中間切開、把跨頁表格拆成兩個各自看不懂的
+chunk、把長答案的 FAQ 誤判成「沒有表格」而整份拆散。現在改成：
+- 每一頁一律先转成 Markdown（不再用不可靠的啟發式決定要不要 OCR）。
+- 依 Markdown 自身的結構（標題／條文／表格）切 chunk，表格永遠不被切開。
+- 偵測「表格在頁尾被截斷」時，把下一頁的延續內容合併回同一個 chunk。
+- 每個 chunk 前面加一段身份前綴（檔名／類型／所屬段落）再拿去 embedding，
+  避免不同文件的內容在檢索/生成時被混在一起。
+
+Retrieval 這一側（系所/學院 mapping、FAQ 優先、scope 過濾、hybrid 融合、
+LLM rerank、附引用來源的回答 prompt）延續既有版本已經驗證過的設計，
+只把手刻的線性掃描 lexical scorer 換成真正的 BM25。
+"""
+
 import os
 import io
 import re
 import json
-import shutil
 import base64
-from pathlib import Path
+import hashlib
+import pickle
+import shutil
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional
 
 from dotenv import load_dotenv
 from pdf2image import convert_from_path
 from openai import OpenAI
 import pdfplumber
+import docx as python_docx
+from rank_bm25 import BM25Okapi
 
 from llama_index.core import (
     VectorStoreIndex,
     StorageContext,
     load_index_from_storage,
     Settings,
-    Document,
     QueryBundle,
 )
-from llama_index.core.schema import NodeWithScore
+from llama_index.core.schema import NodeWithScore, TextNode
 from llama_index.llms.openai import OpenAI as LlamaOpenAI
-from llama_index.core.node_parser import SentenceWindowNodeParser, SentenceSplitter
-from llama_index.core.postprocessor import MetadataReplacementPostProcessor, LLMRerank
-from llama_index.readers.file import DocxReader
+from llama_index.core.postprocessor import LLMRerank
 from llama_index.core.llms import ChatMessage, MessageRole
-from llama_index.core.prompts import PromptTemplate
 from llama_index.embeddings.openai import OpenAIEmbedding
+
+from logging_config import make_print_logger
+
+print = make_print_logger(__name__)
 
 load_dotenv()
 
@@ -36,24 +66,19 @@ Settings.llm = LlamaOpenAI(
     temperature=0,
     max_tokens=1000,
 )
-
 llm_smart = LlamaOpenAI(
     model=os.getenv("RAG_RERANK_MODEL", "gpt-4o-mini"),
     temperature=0,
     max_tokens=1200,
 )
-
-Settings.embed_model = OpenAIEmbedding(
-    model="text-embedding-3-small",
-    dimensions=1536,
-)
-
+Settings.embed_model = OpenAIEmbedding(model="text-embedding-3-small", dimensions=1536)
 openai_client = OpenAI()
 
 CACHE_MD_DIR = "./parsed_markdown_cache"
 PERSIST_DIR = "./storage"
 DATA_DIR = "data"
 POPPLER_PATH = os.getenv("POPPLER_PATH", None)
+BM25_INDEX_PATH = os.path.join(PERSIST_DIR, "bm25.pkl")
 
 VECTOR_TOP_K = int(os.getenv("VECTOR_TOP_K", "15"))
 LEXICAL_TOP_K = int(os.getenv("LEXICAL_TOP_K", "15"))
@@ -61,15 +86,14 @@ RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "5"))
 RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "3"))
 RERANK_MAX_CHARS = int(os.getenv("RERANK_MAX_CHARS", "1800"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
-SCOPE_FALLBACK_UNKNOWN = os.getenv("SCOPE_FALLBACK_UNKNOWN", "1") == "1"
+MAX_SECTION_CHUNK_CHARS = int(os.getenv("MAX_SECTION_CHUNK_CHARS", "1000"))
+
 SCOPE_UNKNOWN_PENALTY = float(os.getenv("SCOPE_UNKNOWN_PENALTY", "0.15"))
 
-# V3.3 Intent-First Retrieval
 FAQ_BOOST = float(os.getenv("FAQ_BOOST", "0.30"))
 FAQ_ONLY_IF_MATCH = os.getenv("FAQ_ONLY_IF_MATCH", "1") == "1"
 FAQ_FILENAME_PATTERNS = ("常見問題", "faq", "問答", "q&a", "qa", "常見問答")
 
-# 問題意圖關鍵詞：先用 deterministic rules，避免每次都讓 LLM 決定 scope。
 FAQ_INTENT_PATTERNS = (
     "常見問題", "常見問答", "faq", "可不可以", "能不能", "可以不用",
     "是否可以", "可以嗎", "能嗎", "行不行", "怎麼辦", "如果", "那麼我可以",
@@ -81,91 +105,64 @@ ACADEMIC_INTENT_PATTERNS = (
     "學位", "畢業規定", "課程規定",
 )
 
+TABLE_CONTINUES_MARKER = "<!--TABLE_CONTINUES-->"
+
 
 # ============================================================
-# V3.1 Conservative Academic Entity / Scope Resolution
+# 系所 / 學院 mapping（可審核的 JSON，不讓 LLM 自己猜 hierarchy）
 # ============================================================
-#
-# 原則：
-# 1. 不讓 LLM 自己猜「系所 → 學院」。
-# 2. mapping 必須是明確、可審核的資料。
-# 3. mapping 只用來擴展 retrieval，不直接證明法規適用。
-# 4. 最終是否能把「學院規定」套到「系所」，仍要由文件 scope 判斷。
-#
-# 可以在環境變數 ACADEMIC_MAPPING_FILE 指定 JSON。
-# 若沒有外部 mapping，程式仍可正常運作，但不會自行推導 hierarchy。
 _BASE_DIR = Path(__file__).resolve().parent
 _ACADEMIC_MAPPING_ENV = os.getenv("ACADEMIC_MAPPING_FILE", "academic_hierarchy.json")
-ACADEMIC_MAPPING_FILE = str(Path(_ACADEMIC_MAPPING_ENV) if Path(_ACADEMIC_MAPPING_ENV).is_absolute() else (_BASE_DIR / _ACADEMIC_MAPPING_ENV))
-
+ACADEMIC_MAPPING_FILE = str(
+    Path(_ACADEMIC_MAPPING_ENV)
+    if Path(_ACADEMIC_MAPPING_ENV).is_absolute()
+    else (_BASE_DIR / _ACADEMIC_MAPPING_ENV)
+)
 ACADEMIC_MAPPING_SCHEMA_VERSION = "1"
-
-# 只允許人工/官方確認後放入的 mapping。
-# 預設故意留空，避免模型或程式自行猜測。
-DEFAULT_ACADEMIC_HIERARCHY = {
-    "schema_version": ACADEMIC_MAPPING_SCHEMA_VERSION,
-    "departments": {},
-}
+DEFAULT_ACADEMIC_HIERARCHY = {"schema_version": ACADEMIC_MAPPING_SCHEMA_VERSION, "departments": {}}
 
 
-def load_academic_hierarchy():
-    """載入可審核的系所 → 學院 mapping；失敗時安全退回空 mapping。"""
+def load_academic_hierarchy() -> dict:
+    """載入可審核的系所 -> 學院 mapping；失敗時安全退回空 mapping。"""
     if not os.path.exists(ACADEMIC_MAPPING_FILE):
-        print(f"[Academic Agent] academic mapping 不存在：{ACADEMIC_MAPPING_FILE}")
-        return DEFAULT_ACADEMIC_HIERARCHY.copy()
+        print(f"academic mapping 不存在：{ACADEMIC_MAPPING_FILE}")
+        return dict(DEFAULT_ACADEMIC_HIERARCHY)
 
     try:
         with open(ACADEMIC_MAPPING_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        if not isinstance(data, dict):
-            raise ValueError("mapping 必須是 JSON object")
-
-        if data.get("schema_version") != ACADEMIC_MAPPING_SCHEMA_VERSION:
-            raise ValueError("mapping schema version 不相容")
+        if not isinstance(data, dict) or data.get("schema_version") != ACADEMIC_MAPPING_SCHEMA_VERSION:
+            raise ValueError("mapping 格式或 schema version 不符")
 
         departments = data.get("departments", {})
         if not isinstance(departments, dict):
             raise ValueError("departments 必須是 object")
 
-        # 僅保留格式正確的 entry。
-        clean = {
-            "schema_version": ACADEMIC_MAPPING_SCHEMA_VERSION,
-            "departments": {},
-        }
-
+        clean = {"schema_version": ACADEMIC_MAPPING_SCHEMA_VERSION, "departments": {}}
         for canonical, entry in departments.items():
-            if not isinstance(canonical, str) or not canonical.strip():
+            if not isinstance(canonical, str) or not canonical.strip() or not isinstance(entry, dict):
                 continue
-            if not isinstance(entry, dict):
-                continue
-
             college = entry.get("college", "")
             aliases = entry.get("aliases", [])
-
-            if college and not isinstance(college, str):
-                continue
-            if not isinstance(aliases, list):
-                aliases = []
-
             clean["departments"][canonical] = {
-                "college": college.strip(),
-                "aliases": [
-                    str(x).strip()
-                    for x in aliases
-                    if str(x).strip()
-                ],
+                "college": college.strip() if isinstance(college, str) else "",
+                "aliases": [str(x).strip() for x in aliases if str(x).strip()] if isinstance(aliases, list) else [],
             }
 
-        print(f"[Academic Agent] academic mapping loaded: {len(clean['departments'])} departments")
+        print(f"academic mapping loaded: {len(clean['departments'])} departments")
         return clean
-
     except Exception as e:
-        print(f"[Academic Agent] academic mapping 載入失敗，停用 hierarchy expansion: {e}")
-        return DEFAULT_ACADEMIC_HIERARCHY.copy()
+        print(f"academic mapping 載入失敗，停用 hierarchy expansion：{e}")
+        return dict(DEFAULT_ACADEMIC_HIERARCHY)
 
 
-def resolve_academic_entities(query: str, hierarchy: dict):
+def normalize_for_search(text: str) -> str:
+    text = (text or "").lower()
+    return re.sub(r"\s+", "", text)
+
+
+def resolve_academic_entities(query: str, hierarchy: dict) -> list[dict]:
     """只做人工 mapping 的 exact/alias match，不讓 LLM 猜 hierarchy。"""
     query_norm = normalize_for_search(query)
     matches = []
@@ -174,11 +171,7 @@ def resolve_academic_entities(query: str, hierarchy: dict):
         for name in sorted(names, key=len, reverse=True):
             name_norm = normalize_for_search(name)
             if name_norm and name_norm in query_norm:
-                matches.append({
-                    "department": canonical,
-                    "matched_alias": name,
-                    "college": entry.get("college", ""),
-                })
+                matches.append({"department": canonical, "matched_alias": name, "college": entry.get("college", "")})
                 break
     unique = {}
     for item in matches:
@@ -186,12 +179,9 @@ def resolve_academic_entities(query: str, hierarchy: dict):
     return list(unique.values())
 
 
-def detect_query_intent(query: str):
-    """
-    V3.3：先判斷問題型態，再決定是否啟用 academic scope。
-
-    FAQ 類問題即使提到多個系所，也不能把所有提及的系所當成使用者的
-    scope。這是為了處理「我是電機的，如果我修了資管的演算法...」這類跨系 FAQ。
+def detect_query_intent(query: str) -> dict:
+    """FAQ 類問題即使提到多個系所，也不能把提及的系所當成使用者的 scope
+    （例如「我是電機的，如果我修了資管的演算法...」這類跨系 FAQ）。
     """
     q = normalize_for_search(query)
     faq_hits = [p for p in FAQ_INTENT_PATTERNS if normalize_for_search(p) in q]
@@ -206,18 +196,12 @@ def detect_query_intent(query: str):
     else:
         intent = "general"
 
-    return {
-        "intent": intent,
-        "faq_hits": faq_hits,
-        "academic_hits": academic_hits,
-    }
+    return {"intent": intent, "faq_hits": faq_hits, "academic_hits": academic_hits}
 
 
-def _extract_role_aware_entities(query: str, hierarchy: dict):
-    """
-    將命中的系所分成 user_department / referenced_department / target_department。
-    只有 target/user scope 才有資格進入 academic scope filter。
-    referenced/course department 絕不能單獨改變 scope。
+def _extract_role_aware_entities(query: str, hierarchy: dict) -> list[dict]:
+    """把命中的系所分成 user_department / referenced_department / target_department。
+    只有 user/target scope 才有資格進入 academic scope filter。
     """
     entities = resolve_academic_entities(query, hierarchy)
     q = normalize_for_search(query)
@@ -227,11 +211,15 @@ def _extract_role_aware_entities(query: str, hierarchy: dict):
         canonical = e["department"]
         names = [canonical, e.get("matched_alias", "")]
         name_pattern = max((normalize_for_search(x) for x in names if x), key=len, default="")
-        before = q[:q.find(name_pattern)] if name_pattern and name_pattern in q else q
+        idx = q.find(name_pattern) if name_pattern else -1
+        before = q[:idx] if idx >= 0 else q
 
         if any(x in before[-12:] for x in ("我是", "我為", "我在", "本系", "我的系")):
             role = "user_department"
-        elif any(x in q[max(0, q.find(name_pattern)-8):q.find(name_pattern)+len(name_pattern)+8] for x in ("的演算法", "的課程", "的課", "別系", "他系")):
+        elif idx >= 0 and any(
+            x in q[max(0, idx - 8):idx + len(name_pattern) + 8]
+            for x in ("的演算法", "的課程", "的課", "別系", "他系")
+        ):
             role = "referenced_department"
         else:
             role = "target_department"
@@ -243,32 +231,24 @@ def _extract_role_aware_entities(query: str, hierarchy: dict):
     return results
 
 
-def build_faq_retrieval_queries(user_query: str, rewritten_query: str):
-    queries = []
-    for q in (user_query, rewritten_query):
-        if q and q.strip() and q.strip() not in queries:
-            queries.append(q.strip())
-    extras = [
-        f"常見問題 {user_query}",
-        f"常見問答 {user_query}",
-        f"FAQ {user_query}",
-    ]
-    for q in extras:
-        if q not in queries:
-            queries.append(q)
+def build_faq_retrieval_queries(user_query: str, rewritten_query: str) -> list[str]:
+    queries = [q.strip() for q in (user_query, rewritten_query) if q and q.strip()]
+    queries = list(dict.fromkeys(queries))
+    for extra in (f"常見問題 {user_query}", f"常見問答 {user_query}", f"FAQ {user_query}"):
+        if extra not in queries:
+            queries.append(extra)
     return queries
 
 
-def is_faq_metadata(metadata: dict):
+def is_faq_metadata(metadata: dict) -> bool:
     meta = metadata or {}
-    doc_type = str(meta.get("document_type", "")).strip().lower()
-    if doc_type == "faq":
+    if str(meta.get("document_type", "")).strip().lower() == "faq":
         return True
     file_name = str(meta.get("file_name", "")).lower()
     return any(p.lower() in file_name for p in FAQ_FILENAME_PATTERNS)
 
 
-def filter_faq_candidates(candidates):
+def filter_faq_candidates(candidates: list) -> list:
     faq = []
     for c in candidates:
         if is_faq_metadata(c.metadata):
@@ -282,41 +262,30 @@ def filter_faq_candidates(candidates):
 
 def build_retrieval_queries(user_query: str, rewritten_query: str, hierarchy: dict):
     """建立 retrieval variants；mapping 只用於搜尋擴張，不直接當答案證據。"""
-    queries = []
-    for q in (user_query, rewritten_query):
-        if q and q.strip() and q.strip() not in queries:
-            queries.append(q.strip())
+    queries = [q.strip() for q in (user_query, rewritten_query) if q and q.strip()]
+    queries = list(dict.fromkeys(queries))
 
     entities = _extract_role_aware_entities(user_query, hierarchy)
     scope_entities = [e for e in entities if e.get("role") in {"user_department", "target_department"}]
     for entity in scope_entities:
-        department = entity["department"]
-        college = entity["college"]
-        variants = [
-            f"{department} {user_query}",
-            f"{department} {rewritten_query}",
-        ]
+        department, college = entity["department"], entity["college"]
+        variants = [f"{department} {user_query}", f"{department} {rewritten_query}"]
         if college:
-            variants.extend([
-                f"{college} {user_query}",
-                f"{college} {rewritten_query}",
-                f"{department} {college} {user_query}",
-            ])
-        for variant in variants:
-            if variant.strip() and variant.strip() not in queries:
-                queries.append(variant.strip())
+            variants += [f"{college} {user_query}", f"{college} {rewritten_query}", f"{department} {college} {user_query}"]
+        for v in variants:
+            if v.strip() and v.strip() not in queries:
+                queries.append(v.strip())
     return queries, entities
 
 
-def _known_colleges_from_hierarchy(hierarchy: dict):
-    return sorted({
-        str(entry.get("college", "")).strip()
-        for entry in hierarchy.get("departments", {}).values()
-        if isinstance(entry, dict) and str(entry.get("college", "")).strip()
-    }, key=len, reverse=True)
+def _known_colleges_from_hierarchy(hierarchy: dict) -> list[str]:
+    return sorted(
+        {str(e.get("college", "")).strip() for e in hierarchy.get("departments", {}).values() if isinstance(e, dict) and str(e.get("college", "")).strip()},
+        key=len, reverse=True,
+    )
 
 
-def _known_departments_from_hierarchy(hierarchy: dict):
+def _known_departments_from_hierarchy(hierarchy: dict) -> list[str]:
     names = []
     for canonical, entry in hierarchy.get("departments", {}).items():
         names.append(canonical)
@@ -325,26 +294,18 @@ def _known_departments_from_hierarchy(hierarchy: dict):
     return sorted({str(x).strip() for x in names if str(x).strip()}, key=len, reverse=True)
 
 
-def detect_document_scope(node):
+def detect_document_scope(node) -> dict:
     """只讀 ingestion 已寫入的 scope metadata；不從正文猜 applicability。"""
     metadata = _node_metadata(node)
-    scope = str(metadata.get("document_scope") or metadata.get("scope") or "").strip().lower()
-    academic_unit = str(
-        metadata.get("academic_unit") or metadata.get("college") or ""
-    ).strip()
-    department = str(
-        metadata.get("department") or metadata.get("department_name") or ""
-    ).strip()
-    university_wide = bool(metadata.get("university_wide", False))
     return {
-        "scope": scope,
-        "academic_unit": academic_unit,
-        "department": department,
-        "university_wide": university_wide,
+        "scope": str(metadata.get("document_scope") or "").strip().lower(),
+        "academic_unit": str(metadata.get("academic_unit") or "").strip(),
+        "department": str(metadata.get("department") or "").strip(),
+        "university_wide": bool(metadata.get("university_wide", False)),
     }
 
 
-def _scope_rank(candidate, entities):
+def _scope_rank(candidate, entities: list[dict]):
     """回傳 applicability 類型與分數；明確不相符的 scope 直接淘汰。"""
     if not entities:
         return "unknown", 0.0
@@ -359,132 +320,554 @@ def _scope_rank(candidate, entities):
         return "college", 0.95
     if info["university_wide"] or info["scope"] in {"university", "university_wide", "school"}:
         return "university", 0.90
-
-    # 已知 metadata 指向其他系/院：hard reject。
     if info["department"] or info["academic_unit"]:
         return "mismatch", -1.0
-
     return "unknown", SCOPE_UNKNOWN_PENALTY
 
 
-def validate_candidate_scope(candidate, entities):
-    match, _ = _scope_rank(candidate, entities)
-    return match
-
-
-def annotate_and_filter_by_scope(candidates, entities):
+def annotate_and_filter_by_scope(candidates: list, entities: list[dict]) -> list:
     """Scope-first：先排除明確錯誤 scope，再讓 hybrid/reranker 排相關性。"""
     if not entities:
         for c in candidates:
-            c.scope_match = "unknown"
-            c.scope_score = 0.0
+            c.scope_match, c.scope_score = "unknown", 0.0
         return candidates
 
-    accepted = []
-    unknown = []
-    rejected = 0
-
+    accepted, unknown, rejected = [], [], 0
     for c in candidates:
         match, score = _scope_rank(c, entities)
-        c.scope_match = match
-        c.scope_score = score
-
+        c.scope_match, c.scope_score = match, score
         if match == "mismatch":
             rejected += 1
-            continue
-        if match == "unknown":
+        elif match == "unknown":
             unknown.append(c)
         else:
             accepted.append(c)
 
-    # 有明確 applicability 時，unknown 不污染主候選池。
-    if accepted:
-        accepted.sort(key=lambda c: (c.scope_score, c.fused_score), reverse=True)
-        print(
-            f"[Academic Agent] Scope filter：保留 {len(accepted)}，"
-            f"排除 {rejected} 個明確不適用文件"
-        )
-        return accepted
-
-    if SCOPE_FALLBACK_UNKNOWN and unknown:
-        unknown.sort(key=lambda c: c.fused_score, reverse=True)
-        print(
-            f"[Academic Agent] Scope filter：沒有明確適用文件，"
-            f"fallback unknown={len(unknown)}，排除 {rejected}"
-        )
-        return unknown
-
-    print(f"[Academic Agent] Scope filter：沒有可接受文件，排除 {rejected}")
-    return []
+    print(f"scope 過濾：accepted={len(accepted)} unknown={len(unknown)} rejected={rejected}")
+    return accepted + unknown if (accepted or unknown) else candidates
 
 
 def clean_markdown_output(text: str) -> str:
-    """清掉 OCR 模型偶爾產生的包裝語句，但不改動正文。"""
+    """砍掉 GPT 的廢話開場白、警語與 Markdown 區塊標籤。"""
     if not text:
         return ""
     text = re.sub(r"^```markdown\s*", "", text, flags=re.MULTILINE)
     text = re.sub(r"^```\s*$", "", text, flags=re.MULTILINE)
-    text = re.sub(
-        r"^(I'm unable to|However, I can|Please adjust|Here's a|Here is|這是一份).*?\n+",
-        "",
-        text,
-        flags=re.IGNORECASE | re.MULTILINE,
-    )
-    text = re.sub(
-        r"\n+(Please adjust|Hope this helps|如需修改|希望這對您有幫助).*?$",
-        "",
-        text,
-        flags=re.IGNORECASE | re.MULTILINE,
-    )
+    text = re.sub(r"^(I'm unable to|However, I can|Please adjust|Here's a|Here is|這是一份).*?\n+", "", text, flags=re.IGNORECASE | re.MULTILINE)
+    text = re.sub(r"\n+(Please adjust|Hope this helps|如需修改|希望這對您有幫助).*?$", "", text, flags=re.IGNORECASE | re.MULTILINE)
     return text.strip()
 
 
-def normalize_for_search(text: str) -> str:
-    text = (text or "").lower()
-    text = re.sub(r"\s+", "", text)
-    return text
+# ============================================================
+# 結構化 Markdown 切塊：表格/條文/Q&A 各自成一個不可分割的 chunk
+# ============================================================
+@dataclass
+class Block:
+    kind: str  # "table" | "section"
+    text: str
+    heading: str = ""
 
 
-def search_terms(text: str):
+_HEADING_RE = re.compile(r"^#{1,6}\s+\S")
+_ARTICLE_RE = re.compile(r"^第[一二三四五六七八九十百千0-9]+[條章節款]\s*")
+
+
+def _is_table_line(line: str) -> bool:
+    s = line.strip()
+    return s.startswith("|") and s.count("|") >= 2
+
+
+def _is_heading_line(line: str) -> bool:
+    s = line.strip()
+    return bool(_HEADING_RE.match(s)) or bool(_ARTICLE_RE.match(s))
+
+
+def _heading_label(line: str) -> str:
+    s = line.strip()
+    if _HEADING_RE.match(s):
+        return re.sub(r"^#{1,6}\s+", "", s)
+    m = _ARTICLE_RE.match(s)
+    return m.group(0).strip() if m else s
+
+
+def parse_markdown_blocks(text: str) -> list[Block]:
+    """依 Markdown 自身結構（標題/條文、表格）切成區塊。
+
+    設計原則：一個表格永遠是一整個區塊，不會被從中間切開；一個標題（或
+    「第X條」）到下一個標題/表格之前的所有內容算同一個區塊——這剛好對應
+    到 Vision OCR prompt 原本就要求的排版規則（Q&A 用標題+純文字、表格
+    用 Markdown 表格），不需要另外寫 Q&A 專用的判斷邏輯。
     """
-    不依賴 jieba 的輕量 lexical retrieval：
-    - 中文：使用 2-gram
-    - 英文/數字：保留完整 token
-    - 保留原始詞組做 exact phrase bonus
+    blocks: list[Block] = []
+    buffer: list[str] = []
+    buffer_kind: Optional[str] = None
+    current_heading = ""
+
+    def flush():
+        nonlocal buffer, buffer_kind
+        content = "\n".join(buffer).strip()
+        if content:
+            blocks.append(Block(kind=buffer_kind or "section", text=content, heading=current_heading))
+        buffer, buffer_kind = [], None
+
+    for raw_line in (text or "").split("\n"):
+        line = raw_line.rstrip()
+
+        if _is_heading_line(line):
+            flush()
+            current_heading = _heading_label(line)
+            buffer, buffer_kind = [line], "section"
+            continue
+
+        if _is_table_line(line):
+            if buffer_kind != "table":
+                flush()
+                buffer_kind = "table"
+            buffer.append(line)
+            continue
+
+        if buffer_kind == "table":
+            flush()
+        if buffer_kind is None:
+            buffer_kind = "section"
+        buffer.append(line)
+
+    flush()
+    return blocks
+
+
+def _split_long_section(block: Block, max_chars: int) -> list[Block]:
+    """只有「一般段落」區塊太長時才在空行處切，表格永遠不切。"""
+    if block.kind == "table" or len(block.text) <= max_chars:
+        return [block]
+
+    paragraphs = [p for p in re.split(r"\n\s*\n", block.text) if p.strip()]
+    if len(paragraphs) <= 1:
+        return [block]
+
+    chunks: list[str] = []
+    current = ""
+    for p in paragraphs:
+        candidate = f"{current}\n\n{p}" if current else p
+        if len(candidate) > max_chars and current:
+            chunks.append(current)
+            current = p
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    total = len(chunks)
+    return [
+        Block(kind="section", text=c, heading=f"{block.heading} ({i}/{total})" if total > 1 else block.heading)
+        for i, c in enumerate(chunks, 1)
+    ]
+
+
+def has_table_continuation(page_markdown: str) -> bool:
+    """判斷這一頁是否以「被截斷的表格」結尾（表格會延續到下一頁）。
+
+    優先看 OCR 自己標的 TABLE_CONTINUES_MARKER（prompt 有要求它在偵測到
+    表格被頁面截斷時輸出這個標記）；OCR 沒標的話，退回一個保守的備援
+    判斷：整頁最後一個區塊是表格，且看起來沒有「總計/簽章/以上」這類
+    收尾字樣，就當作可能被截斷，交給下一頁開頭是否也是表格來決定。
+    """
+    stripped = (page_markdown or "").strip()
+    if stripped.endswith(TABLE_CONTINUES_MARKER):
+        return True
+
+    blocks = parse_markdown_blocks(stripped)
+    if not blocks or blocks[-1].kind != "table":
+        return False
+    tail_text = blocks[-1].text
+    closing_hints = ("合計", "總計", "簽章", "簽名", "以上", "備註")
+    return not any(h in tail_text for h in closing_hints)
+
+
+def _strip_marker(text: str) -> str:
+    return text.replace(TABLE_CONTINUES_MARKER, "").rstrip()
+
+
+def merge_continued_table_pages(pages: list[tuple[int, str]]) -> list[tuple[str, str]]:
+    """把「表格被頁面截斷」的相鄰頁合併成同一個邏輯頁，page_label 變成範圍
+    （例如 "1-2"），避免跨頁表格被拆成兩個各自看不懂的 chunk。
+    """
+    merged: list[tuple[str, str]] = []
+    i = 0
+    while i < len(pages):
+        page_no, text = pages[i]
+        labels = [str(page_no)]
+        combined = _strip_marker(text)
+
+        while i < len(pages) - 1 and has_table_continuation(pages[i][1]):
+            i += 1
+            next_no, next_text = pages[i]
+            labels.append(str(next_no))
+            combined = combined + "\n" + _strip_marker(next_text)
+
+        label = labels[0] if len(labels) == 1 else f"{labels[0]}-{labels[-1]}"
+        merged.append((label, combined))
+        i += 1
+
+    return merged
+
+
+def build_chunks_from_markdown(markdown_text: str, base_metadata: dict) -> list[dict]:
+    """把一頁（或合併後的一段）Markdown 依結構切成 chunk，並在每個 chunk
+    前面加上身份前綴（檔名/文件類型/所屬段落）再回傳，讓 chunk 被單獨
+    embedding/檢索到時也知道自己是誰、屬於哪份文件。
+    """
+    blocks = parse_markdown_blocks(markdown_text)
+    doc_label = "【常見問題】" if base_metadata.get("document_type") == "faq" else "【正式規定】"
+    file_name = base_metadata.get("file_name", "未知文件")
+    page_label = base_metadata.get("page_label", "")
+
+    chunks: list[dict] = []
+    for block in blocks:
+        for piece in _split_long_section(block, MAX_SECTION_CHUNK_CHARS):
+            prefix_bits = [doc_label + file_name]
+            if page_label:
+                prefix_bits.append(f"第{page_label}頁")
+            if piece.heading:
+                prefix_bits.append(piece.heading)
+            prefix = "、".join(prefix_bits)
+
+            chunks.append({
+                "text": f"{prefix}\n{piece.text}",
+                "metadata": {
+                    **base_metadata,
+                    "chunk_kind": piece.kind,
+                    "section_heading": piece.heading,
+                },
+            })
+
+    return chunks
+
+
+# ============================================================
+# PDF ingestion：一律走 Vision OCR（不再用不可靠的「有沒有表格」判斷）
+# ============================================================
+def convert_pdf_to_markdown_pages_via_vision(pdf_path: str) -> list[tuple[int, str]]:
+    """逐頁 Vision OCR 成 Markdown；page-aware JSON cache。"""
+    filename = os.path.basename(pdf_path)
+    cache_path = os.path.join(CACHE_MD_DIR, f"{filename}.pages.json")
+
+    if os.path.exists(cache_path):
+        with open(cache_path, "r", encoding="utf-8") as f:
+            cached = json.load(f)
+        return [(int(x["page"]), x["text"]) for x in cached]
+
+    print(f"[Vision OCR] 正在處理 {filename}...")
+    images = convert_from_path(pdf_path, dpi=200, poppler_path=POPPLER_PATH)
+    total_pages = len(images)
+    page_results: list[tuple[int, str]] = []
+    previous_page_snippet = ""
+
+    for i, img in enumerate(images, 1):
+        print(f"  --> OCR 第 {i} / {total_pages} 頁...")
+
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+        user_prompt = (
+            "你是一個極度精準的文件視覺 OCR 引擎。請將圖片中的內容 100% 忠實轉錄為 Markdown。\n\n"
+            "【排版規則】：\n"
+            "1. 表格（資料對照表/門檻規定/收費明細等網格內容）請用 Markdown 表格 (|...|) 精準還原，"
+            "欄位數要跟圖片一致，儲存格文字再長都要完整轉錄，不可截斷或摘要。\n"
+            "2. Q&A、一般條文、條列式說明請用標題 (#, ##) 或純文字/清單 (- ) 輸出，絕對不要硬排成表格。\n"
+            "3. 條文請保留原本的「第X條」編號在該段開頭。\n"
+            "4. 空白填寫欄位（簽章欄、日期欄等）請獨立列在最下方，不要跟資料表格混在一起。\n"
+            f"5. 如果畫面上的表格看起來在頁面底部被截斷（下面還有列，但沒有畫完/沒看到頁面收尾），"
+            f"請在輸出的最後一行加上 {TABLE_CONTINUES_MARKER}；如果表格在這一頁完整結束，就不要加。\n"
+            "【嚴格禁令】：必須一字不漏轉錄，不可發明詞彙，嚴禁輸出 ```markdown 標籤或任何開場白/結尾說明。"
+        )
+        if previous_page_snippet:
+            user_prompt += f"\n【跨頁銜接參考】（上一頁結尾，僅供辨識連貫用，不要重複輸出）：\n{previous_page_snippet}\n"
+
+        response = openai_client.chat.completions.create(
+            model=os.getenv("RAG_OCR_MODEL", "gpt-4o"),
+            messages=[
+                {
+                    "role": "system",
+                    "content": "你是專業的文件 OCR 與表格轉錄引擎，只輸出圖片中實際存在的文字與結構，不得自行補充、不得輸出招呼語或包裝標籤。",
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_base64}", "detail": "high"}},
+                    ],
+                },
+            ],
+            temperature=0,
+            max_tokens=4000,
+        )
+
+        page_md = clean_markdown_output(response.choices[0].message.content or "")
+        page_results.append((i, page_md))
+        previous_page_snippet = page_md[-500:] if page_md else ""
+
+    os.makedirs(CACHE_MD_DIR, exist_ok=True)
+    with open(cache_path, "w", encoding="utf-8") as f:
+        json.dump([{"page": p, "text": t} for p, t in page_results], f, ensure_ascii=False, indent=2)
+
+    return page_results
+
+
+# ============================================================
+# DOCX ingestion：直接用 python-docx 走段落 + 表格，原生保留表格結構
+# （舊版用 llama_index 的 DocxReader 純文字抽取，docx 裡的表格會被拉平、
+# 完全失去欄位結構——這裡改成自己走 python-docx 的 paragraphs/tables，
+# 表格輸出成 Markdown 表格，跟 PDF 走同一套結構化切塊邏輯。）
+# ============================================================
+def _docx_table_to_markdown(table) -> str:
+    rows = []
+    for row in table.rows:
+        cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+        rows.append("| " + " | ".join(cells) + " |")
+    if len(rows) >= 1:
+        col_count = len(table.rows[0].cells)
+        separator = "| " + " | ".join(["---"] * col_count) + " |"
+        rows.insert(1, separator)
+    return "\n".join(rows)
+
+
+def extract_docx_as_markdown(docx_path: str) -> str:
+    """依段落/表格在文件中的原始順序組回一份 Markdown（表格用 |...| 表示），
+    讓 DOCX 也能套用跟 PDF 一樣的結構化切塊邏輯。
+    """
+    doc = python_docx.Document(docx_path)
+    body = doc.element.body
+    lines: list[str] = []
+
+    for child in body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            for p in doc.paragraphs:
+                if p._p is child:
+                    text = p.text.strip()
+                    if text:
+                        style = (p.style.name or "").lower() if p.style else ""
+                        if "heading" in style or "title" in style:
+                            lines.append(f"## {text}")
+                        else:
+                            lines.append(text)
+                    break
+        elif tag == "tbl":
+            for t in doc.tables:
+                if t._tbl is child:
+                    md_table = _docx_table_to_markdown(t)
+                    if md_table.strip():
+                        lines.append(md_table)
+                    break
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# Scope metadata（deterministic，不用 LLM 猜）
+# ============================================================
+def enrich_document_scope_metadata(metadata: dict, file_name: str, hierarchy: dict) -> dict:
+    meta = dict(metadata or {})
+    fname = str(file_name or "")
+    norm = normalize_for_search(fname)
+
+    meta["document_type"] = "faq" if any(p.lower() in fname.lower() for p in FAQ_FILENAME_PATTERNS) else meta.get("document_type", "formal_policy")
+
+    for department in _known_departments_from_hierarchy(hierarchy):
+        if normalize_for_search(department) in norm:
+            meta["document_scope"] = "department"
+            for canonical, entry in hierarchy.get("departments", {}).items():
+                if department == canonical or department in entry.get("aliases", []):
+                    meta["department"] = canonical
+                    meta["academic_unit"] = entry.get("college", "")
+                    break
+            meta["university_wide"] = False
+            return meta
+
+    for college in _known_colleges_from_hierarchy(hierarchy):
+        if normalize_for_search(college) in norm:
+            meta["document_scope"] = "college"
+            meta["academic_unit"] = college
+            meta["university_wide"] = False
+            return meta
+
+    if ("全校" in fname) or ("國立中央大學" in fname and "大學部" in fname):
+        meta["document_scope"] = "university"
+        meta["university_wide"] = True
+        return meta
+
+    meta.setdefault("document_scope", "unknown")
+    meta.setdefault("university_wide", False)
+    return meta
+
+
+# ============================================================
+# load_documents：每個回傳的 TextNode 就是一個最終 chunk
+# （不再另外跑 SentenceSplitter/SentenceWindowNodeParser——那是給「沒有
+# 結構」的純文字切的，我們的 chunk 已經是表格/條文/Q&A 這種天然完整的
+# 單位，不需要再切一次，也不需要用 sentence window 展開上下文）。
+#
+# ⚠️ 這裡刻意直接建 TextNode（而不是 Document 再讓 VectorStoreIndex.
+# from_documents() 內部重新解析），並且自己指定 id_：因為 from_documents()
+# 內部會重新產生一組跟 Document.doc_id 完全無關的新 node id，如果 BM25
+# 索引記的是 doc_id，之後對著向量索引的 docstore 用這個 id 查詢一定查
+#不到、BM25 那一半會整個悄悄失效（已用假的 embedding 實測驗證過這個
+# 陷阱）。自己組 TextNode、自己指定 id_，兩邊的 id 才會是同一份。
+# ============================================================
+def _stable_chunk_id(file_name: str, page_label: str, index_in_doc: int) -> str:
+    raw = f"{file_name}|{page_label}|{index_in_doc}"
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()
+
+
+def load_documents() -> list[TextNode]:
+    nodes: list[TextNode] = []
+    hierarchy = load_academic_hierarchy()
+
+    for root, _, files in os.walk(DATA_DIR):
+        for file in files:
+            file_path = os.path.join(root, file)
+            if file.startswith(".") or file.startswith("~$") or os.path.getsize(file_path) == 0:
+                continue
+
+            try:
+                chunk_index = 0
+
+                if file.lower().endswith(".pdf"):
+                    pages = convert_pdf_to_markdown_pages_via_vision(file_path)
+                    merged_pages = merge_continued_table_pages(pages)
+                    for page_label, page_text in merged_pages:
+                        if not page_text.strip():
+                            continue
+                        base_metadata = enrich_document_scope_metadata(
+                            {"file_name": file, "file_path": file_path, "page_label": page_label, "source_type": "pdf"},
+                            file, hierarchy,
+                        )
+                        for chunk in build_chunks_from_markdown(page_text, base_metadata):
+                            node_id = _stable_chunk_id(file, page_label, chunk_index)
+                            nodes.append(TextNode(text=chunk["text"], metadata=chunk["metadata"], id_=node_id))
+                            chunk_index += 1
+
+                elif file.lower().endswith(".docx"):
+                    markdown_text = extract_docx_as_markdown(file_path)
+                    base_metadata = enrich_document_scope_metadata(
+                        {"file_name": file, "file_path": file_path, "source_type": "docx"}, file, hierarchy,
+                    )
+                    for chunk in build_chunks_from_markdown(markdown_text, base_metadata):
+                        node_id = _stable_chunk_id(file, "", chunk_index)
+                        nodes.append(TextNode(text=chunk["text"], metadata=chunk["metadata"], id_=node_id))
+                        chunk_index += 1
+
+                elif file.lower().endswith(".doc"):
+                    # 舊版二進位 .doc 格式，python-docx/DocxReader 都無法解析，
+                    # 明確跳過並記錄，而不是讓例外悄悄吞掉、讓人以為有處理到。
+                    print(f"[略過] {file} 是舊版 .doc 格式，目前沒有解析器可以處理，請手動另存成 .docx。")
+
+            except Exception as e:
+                print(f"[檔案讀取失敗] {file}: {e}")
+
+    print(f"[Academic Agent] load_documents 完成，共 {len(nodes)} 個 chunk。")
+    return nodes
+
+
+def get_latest_data_mtime() -> float:
+    latest = 0.0
+    if not os.path.exists(DATA_DIR):
+        return latest
+    for root, _, files in os.walk(DATA_DIR):
+        for file in files:
+            if file.startswith(".") or file.startswith("~$"):
+                continue
+            latest = max(latest, os.path.getmtime(os.path.join(root, file)))
+    return latest
+
+
+# ============================================================
+# 索引建立：向量索引 + BM25 索引一起建、一起 persist
+# ============================================================
+CURRENT_SCHEMA_VERSION = "9-structural-chunking-bm25"
+
+
+def _bm25_tokenize(text: str) -> list[str]:
+    """跟原本 lexical scorer 同樣的策略：中文用 2-gram、英數保留完整
+    token——差別是這裡回傳 list（保留重複次數），BM25 才能正確算詞頻。
     """
     raw = normalize_for_search(text)
-    cjk = re.findall(r"[\u3400-\u9fff]", raw)
-    bigrams = {cjk[i] + cjk[i + 1] for i in range(len(cjk) - 1)}
-    latin = set(re.findall(r"[a-z0-9][a-z0-9._/-]*", raw))
-    return raw, bigrams | latin
+    cjk = re.findall(r"[㐀-鿿]", raw)
+    bigrams = [cjk[i] + cjk[i + 1] for i in range(len(cjk) - 1)]
+    latin = re.findall(r"[a-z0-9][a-z0-9._/-]*", raw)
+    return bigrams + latin
 
 
-def lexical_score(query: str, text: str, file_name: str = "") -> float:
-    q_raw, q_terms = search_terms(query)
-    if not q_raw:
-        return 0.0
+def get_or_create_index():
+    mtime_file = os.path.join(PERSIST_DIR, ".data_mtime")
+    schema_file = os.path.join(PERSIST_DIR, ".rag_schema_version")
 
-    t_raw = normalize_for_search(text)
-    f_raw = normalize_for_search(file_name)
+    current_mtime = get_latest_data_mtime()
+    need_rebuild = not os.path.exists(PERSIST_DIR)
 
-    score = 0.0
+    if not need_rebuild:
+        if os.path.exists(mtime_file):
+            with open(mtime_file, "r", encoding="utf-8") as f:
+                if current_mtime > float(f.read().strip()):
+                    need_rebuild = True
+        else:
+            need_rebuild = True
 
-    if q_raw in t_raw:
-        score += 12.0
+    if not need_rebuild:
+        if not os.path.exists(schema_file):
+            need_rebuild = True
+        else:
+            with open(schema_file, "r", encoding="utf-8") as f:
+                need_rebuild = f.read().strip() != CURRENT_SCHEMA_VERSION
 
-    if q_raw in f_raw:
-        score += 10.0
+    if need_rebuild:
+        if os.path.exists(PERSIST_DIR):
+            shutil.rmtree(PERSIST_DIR)
 
-    if q_terms:
-        hits = sum(1 for term in q_terms if term in t_raw)
-        score += 2.0 * hits
-        score += 0.5 * hits / max(len(q_terms), 1)
+        print("正在建立索引（結構化 chunk + 向量 + BM25）...")
+        nodes = load_documents()
 
-    return score
+        # 直接用 nodes= 建索引（不是 from_documents()），這樣 node 的 id_
+        # 才會維持我們自己指定的 _stable_chunk_id，BM25 索引才能跟向量
+        # 索引的 docstore 用同一組 id 對得起來（見 load_documents 的說明）。
+        index = VectorStoreIndex(nodes=nodes)
+        os.makedirs(PERSIST_DIR, exist_ok=True)
+        index.storage_context.persist(persist_dir=PERSIST_DIR)
+
+        bm25_corpus = [_bm25_tokenize(node.get_content()) for node in nodes]
+        bm25 = BM25Okapi(bm25_corpus) if bm25_corpus else None
+        node_ids = [node.id_ for node in nodes]
+        with open(BM25_INDEX_PATH, "wb") as f:
+            pickle.dump({"bm25": bm25, "node_ids": node_ids}, f)
+
+        with open(mtime_file, "w", encoding="utf-8") as f:
+            f.write(str(current_mtime))
+        with open(schema_file, "w", encoding="utf-8") as f:
+            f.write(CURRENT_SCHEMA_VERSION)
+
+        print(f"索引建立完成，共 {len(nodes)} 個 chunk。")
+    else:
+        print("載入既有索引...")
+        storage_context = StorageContext.from_defaults(persist_dir=PERSIST_DIR)
+        index = load_index_from_storage(storage_context)
+
+    return index
 
 
+def _load_bm25():
+    if not os.path.exists(BM25_INDEX_PATH):
+        return None, []
+    with open(BM25_INDEX_PATH, "rb") as f:
+        data = pickle.load(f)
+    return data.get("bm25"), data.get("node_ids", [])
+
+
+# ============================================================
+# Retrieval：candidate 融合、scope 過濾、rerank
+# ============================================================
 def _node_text(node) -> str:
-    """集中處理目前 LlamaIndex node 的文字 API。"""
     if node is None:
         return ""
     try:
@@ -508,21 +891,14 @@ def _node_metadata(node) -> dict:
 
 
 def _unwrap_retrieval_item(item):
-    """LlamaIndex adapter：NodeWithScore -> node；TextNode 原樣返回。"""
     if item is None:
         return None
     inner = getattr(item, "node", None)
     return inner if inner is not None else item
 
 
-def get_all_index_nodes(index):
-    docs = getattr(index.docstore, "docs", {})
-    return list(docs.values())
-
-
 @dataclass
 class RetrievalCandidate:
-    """Application-level candidate；不讓 LlamaIndex wrapper 穿透 pipeline。"""
     node_id: str
     text: str
     metadata: dict
@@ -538,47 +914,47 @@ def _candidate_from_node(node, dense_score=0.0, lexical_score=0.0, source=""):
     if node is None:
         return None
     return RetrievalCandidate(
-        node_id=_node_id(node),
-        text=_node_text(node),
-        metadata=_node_metadata(node),
-        dense_score=float(dense_score or 0.0),
-        lexical_score=float(lexical_score or 0.0),
-        sources=(source,) if source else tuple(),
-        node=node,
+        node_id=_node_id(node), text=_node_text(node), metadata=_node_metadata(node),
+        dense_score=float(dense_score or 0.0), lexical_score=float(lexical_score or 0.0),
+        sources=(source,) if source else tuple(), node=node,
     )
 
 
-def lexical_retrieve(index, query: str, top_k: int = LEXICAL_TOP_K):
-    scored = []
-    for node in get_all_index_nodes(index):
-        text = _node_text(node)
-        file_name = _node_metadata(node).get("file_name", "")
-        score = lexical_score(query, text, file_name)
-        if score > 0:
-            candidate = _candidate_from_node(node, lexical_score=score, source="lexical")
-            if candidate:
-                scored.append(candidate)
-    scored.sort(key=lambda x: x.lexical_score, reverse=True)
-    return scored[:top_k]
+def bm25_retrieve(index, query: str, top_k: int = LEXICAL_TOP_K) -> list[RetrievalCandidate]:
+    bm25, node_ids = _load_bm25()
+    if bm25 is None or not node_ids:
+        return []
+
+    scores = bm25.get_scores(_bm25_tokenize(query))
+    ranked = sorted(zip(node_ids, scores), key=lambda x: x[1], reverse=True)[:top_k]
+
+    docstore = index.docstore
+    candidates = []
+    for node_id, score in ranked:
+        if score <= 0:
+            continue
+        try:
+            node = docstore.get_node(node_id)
+        except Exception:
+            continue
+        candidate = _candidate_from_node(node, lexical_score=score, source="bm25")
+        if candidate:
+            candidates.append(candidate)
+    return candidates
 
 
-def _normalize_scores(candidates, attr_name):
-    values = [float(getattr(c, attr_name, 0.0) or 0.0) for c in candidates]
+def _normalize_scores(candidates: list, attr_name: str):
+    values = [getattr(c, attr_name) for c in candidates]
     if not values:
         return
     lo, hi = min(values), max(values)
-    if hi <= lo:
-        value = 1.0 if hi > 0 else 0.0
-        for c in candidates:
-            setattr(c, attr_name, value)
-        return
+    span = (hi - lo) or 1.0
     for c in candidates:
-        raw = float(getattr(c, attr_name, 0.0) or 0.0)
-        setattr(c, attr_name, (raw - lo) / (hi - lo))
+        setattr(c, attr_name, (getattr(c, attr_name) - lo) / span)
 
 
-def fuse_candidates(dense_candidates, lexical_candidates, dense_weight=0.65, lexical_weight=0.35):
-    merged = {}
+def fuse_candidates(dense_candidates, lexical_candidates, dense_weight=0.65, lexical_weight=0.35) -> list:
+    merged: dict[str, RetrievalCandidate] = {}
     for candidate in dense_candidates + lexical_candidates:
         existing = merged.get(candidate.node_id)
         if existing is None:
@@ -597,449 +973,60 @@ def fuse_candidates(dense_candidates, lexical_candidates, dense_weight=0.65, lex
     return candidates
 
 
-def prepare_nodes_for_rerank(candidates, max_chars=RERANK_MAX_CHARS):
-    """唯一建立 NodeWithScore 的 application -> LlamaIndex adapter。"""
-    from llama_index.core.schema import TextNode
+def prepare_nodes_for_rerank(candidates: list, max_chars: int = RERANK_MAX_CHARS) -> list[NodeWithScore]:
     prepared = []
     for candidate in candidates:
         text = candidate.text or ""
         if len(text) > max_chars:
             text = text[:max_chars] + "\n[內容已截斷，僅供 rerank 判斷]"
-        node = TextNode(
-            text=text,
-            metadata=dict(candidate.metadata or {}),
-            id_=candidate.node_id,
-        )
+        node = TextNode(text=text, metadata=dict(candidate.metadata or {}), id_=candidate.node_id)
         prepared.append(NodeWithScore(node=node, score=float(candidate.fused_score)))
     return prepared
 
 
-def candidates_from_reranked(reranked_nodes, original_candidates):
+def candidates_from_reranked(reranked_nodes, original_candidates: list) -> list:
     by_id = {c.node_id: c for c in original_candidates}
     output = []
     for item in reranked_nodes:
         node = _unwrap_retrieval_item(item)
         if node is None:
             continue
-        candidate = by_id.get(_node_id(node))
-        if candidate is None:
-            candidate = _candidate_from_node(node, source="rerank")
+        candidate = by_id.get(_node_id(node)) or _candidate_from_node(node, source="rerank")
         if candidate:
             candidate.node = node
             output.append(candidate)
     return output
 
-def build_source_context(nodes):
-    """
-    把 metadata 明確寫進 context，避免模型只看到內容卻不知道來源。
+
+def build_source_context(candidates: list) -> str:
+    """chunk 本身已經帶了身份前綴，這裡再額外附上結構化的來源標記，
+    讓生成答案時引用 [SOURCE N] 能對應回實際檔名/頁碼。
     """
     blocks = []
-    for i, node in enumerate(nodes, 1):
-        meta = getattr(node, "metadata", {})
-        file_name = meta.get("file_name", "未知文件")
-        page = meta.get("page_label", "")
-        source = f"{file_name}"
-        if page:
-            source += f"｜第 {page} 頁"
-
-        text = getattr(node, "text", "") or ""
-        blocks.append(f"[SOURCE {i}]\n來源：{source}\n內容：\n{text}")
+    for i, c in enumerate(candidates, 1):
+        meta = c.metadata or {}
+        source = meta.get("file_name", "未知文件")
+        if meta.get("page_label"):
+            source += f"｜第 {meta['page_label']} 頁"
+        blocks.append(f"[SOURCE {i}]\n來源：{source}\n內容：\n{c.text}")
 
     context = "\n\n====================\n\n".join(blocks)
     if len(context) <= MAX_CONTEXT_CHARS:
         return context
 
-    kept = []
-    size = 0
+    kept, size = [], 0
     for block in blocks:
         if size + len(block) > MAX_CONTEXT_CHARS:
             break
         kept.append(block)
         size += len(block)
-
     return "\n\n====================\n\n".join(kept)
 
 
-def has_tables_in_pdf(pdf_path: str) -> bool:
-    try:
-        with pdfplumber.open(pdf_path) as pdf:
-            for page in pdf.pages:
-                tables = page.extract_tables()
-                if tables:
-                    for table in tables:
-                        if not table:
-                            continue
-                        total_cells = 0
-                        total_text_length = 0
-                        for row in table:
-                            for cell in row:
-                                if cell and cell.strip():
-                                    total_cells += 1
-                                    total_text_length += len(cell.strip())
-
-                        if total_cells > 0:
-                            avg_cell_length = total_text_length / total_cells
-                            if avg_cell_length < 35 and total_cells >= 4:
-                                return True
-    except Exception as e:
-        print(f"[表格偵測警告] {os.path.basename(pdf_path)}: {e}")
-        return True
-    return False
-
-
-def extract_plain_text_pages_from_pdf(pdf_path: str):
-    """每頁獨立成 Document，避免整份 PDF 被當成單一長文件。"""
-    pages = []
-    with pdfplumber.open(pdf_path) as pdf:
-        for page_no, page in enumerate(pdf.pages, 1):
-            text = page.extract_text() or ""
-            if text.strip():
-                pages.append((page_no, text.strip()))
-    return pages
-
-
-def convert_pdf_to_markdown_pages_via_vision(pdf_path: str):
-    """
-    Vision OCR 仍逐頁做，但 cache 改成 JSON，保留 page number。
-    舊的 .md cache 若存在，會被忽略一次並重新建立 page-aware cache。
-    """
-    filename = os.path.basename(pdf_path)
-    cache_path = os.path.join(CACHE_MD_DIR, f"{filename}.pages.json")
-
-    if os.path.exists(cache_path):
-        with open(cache_path, "r", encoding="utf-8") as f:
-            cached = json.load(f)
-        return [(int(x["page"]), x["text"]) for x in cached]
-
-    print(f"  [Vision OCR] 正在處理 {filename}...")
-    images = convert_from_path(pdf_path, dpi=200, poppler_path=POPPLER_PATH)
-    total_pages = len(images)
-    page_results = []
-    previous_page_snippet = ""
-
-    for i, img in enumerate(images, 1):
-        print(f"    --> OCR 第 {i} / {total_pages} 頁...")
-
-        buffered = io.BytesIO()
-        img.save(buffered, format="PNG")
-        img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-        user_prompt = (
-            "你是一個極度精準的文件 OCR 引擎。請將圖片中的內容忠實轉錄為 Markdown。\n\n"
-            "規則：\n"
-            "1. 表格必須保留原本欄列結構，不得自行合併欄位。\n"
-            "2. 一般條文、Q&A、條列內容維持一般 Markdown，不要硬轉成表格。\n"
-            "3. 文字必須完整，不摘要、不補寫、不猜測看不清楚的內容。\n"
-            "4. 空白填寫欄位請保留。\n"
-            "5. 不要輸出 ```markdown 包裝，不要輸出開場白或結尾說明。\n"
-        )
-
-        if previous_page_snippet:
-            user_prompt += (
-                "\n上一頁結尾僅供跨頁辨識參考；不要把上一頁內容重複輸出：\n"
-                f"{previous_page_snippet}\n"
-            )
-
-        response = openai_client.chat.completions.create(
-            model=os.getenv("RAG_OCR_MODEL", "gpt-4o"),
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "你是文件 OCR 與表格轉錄引擎。"
-                        "只輸出圖片中實際存在的文字與結構，不得自行補充。"
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": user_prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{img_base64}",
-                                "detail": "high",
-                            },
-                        },
-                    ],
-                },
-            ],
-            temperature=0,
-            max_tokens=4000,
-        )
-
-        page_md = clean_markdown_output(response.choices[0].message.content or "")
-        page_results.append((i, page_md))
-        previous_page_snippet = page_md[-500:] if page_md else ""
-
-    os.makedirs(CACHE_MD_DIR, exist_ok=True)
-    with open(cache_path, "w", encoding="utf-8") as f:
-        json.dump(
-            [{"page": page, "text": text} for page, text in page_results],
-            f,
-            ensure_ascii=False,
-            indent=2,
-        )
-
-    return page_results
-
-
-def enrich_document_scope_metadata(metadata, file_name, hierarchy):
-    """由可審核 mapping + 明確檔名訊號建立 deterministic scope metadata。
-    不用 LLM 推論；無法確認就保持 unknown。
-    """
-    meta = dict(metadata or {})
-    fname = str(file_name or "")
-    norm = normalize_for_search(fname)
-
-    if any(p.lower() in fname.lower() for p in FAQ_FILENAME_PATTERNS):
-        meta["document_type"] = "faq"
-    else:
-        meta.setdefault("document_type", "formal_policy")
-    colleges = _known_colleges_from_hierarchy(hierarchy)
-    departments = _known_departments_from_hierarchy(hierarchy)
-
-    for department in departments:
-        if normalize_for_search(department) in norm:
-            meta["document_scope"] = "department"
-            for canonical, entry in hierarchy.get("departments", {}).items():
-                if department == canonical or department in entry.get("aliases", []):
-                    meta["department"] = canonical
-                    meta["academic_unit"] = entry.get("college", "")
-                    break
-            meta["university_wide"] = False
-            return meta
-
-    for college in colleges:
-        if normalize_for_search(college) in norm:
-            meta["document_scope"] = "college"
-            meta["academic_unit"] = college
-            meta["university_wide"] = False
-            return meta
-
-    # 已知全校文件優先於一般未知文件。
-    if ("全校" in fname) or ("國立中央大學" in fname and "大學部" in fname):
-        meta["document_scope"] = "university"
-        meta["university_wide"] = True
-        return meta
-
-    meta.setdefault("document_scope", "unknown")
-    meta.setdefault("university_wide", False)
-    return meta
-
-
-def load_documents():
-    documents = []
-    docx_parser = DocxReader()
-    hierarchy = load_academic_hierarchy()
-
-    for root, _, files in os.walk(DATA_DIR):
-        for file in files:
-            file_path = os.path.join(root, file)
-
-            if file.startswith(".") or file.startswith("~$"):
-                continue
-
-            if os.path.getsize(file_path) == 0:
-                continue
-
-            try:
-                if file.lower().endswith(".pdf"):
-                    if has_tables_in_pdf(file_path):
-                        pages = convert_pdf_to_markdown_pages_via_vision(file_path)
-                    else:
-                        pages = extract_plain_text_pages_from_pdf(file_path)
-
-                    for page_no, page_text in pages:
-                        if not page_text.strip():
-                            continue
-                        documents.append(
-                            Document(
-                                text=page_text,
-                                metadata=enrich_document_scope_metadata(
-                                    {
-                                        "file_name": file,
-                                        "file_path": file_path,
-                                        "page_label": str(page_no),
-                                        "source_type": "pdf",
-                                    },
-                                    file,
-                                    hierarchy,
-                                ),
-                            )
-                        )
-
-                elif file.lower().endswith(".docx"):
-                    docx_docs = docx_parser.load_data(file_path)
-                    for docx_doc in docx_docs:
-                        docx_doc.metadata = enrich_document_scope_metadata(
-                            {
-                                **dict(docx_doc.metadata or {}),
-                                "file_name": file,
-                                "file_path": file_path,
-                                "source_type": "docx",
-                            },
-                            file,
-                            hierarchy,
-                        )
-                        documents.append(docx_doc)
-
-            except Exception as e:
-                print(f"[檔案讀取失敗] {file}: {e}")
-
-    return documents
-
-
-def get_latest_data_mtime() -> float:
-    latest_mtime = 0.0
-    if not os.path.exists(DATA_DIR):
-        return latest_mtime
-
-    for root, _, files in os.walk(DATA_DIR):
-        for file in files:
-            if file.startswith(".") or file.startswith("~$"):
-                continue
-            file_path = os.path.join(root, file)
-            latest_mtime = max(latest_mtime, os.path.getmtime(file_path))
-
-    return latest_mtime
-
-
-def get_or_create_index():
-    mtime_file = os.path.join(PERSIST_DIR, ".data_mtime")
-    schema_file = os.path.join(PERSIST_DIR, ".rag_schema_version")
-
-    current_latest_mtime = get_latest_data_mtime()
-    need_rebuild = False
-
-    if not os.path.exists(PERSIST_DIR):
-        need_rebuild = True
-
-    elif os.path.exists(mtime_file):
-        with open(mtime_file, "r", encoding="utf-8") as f:
-            saved_mtime = float(f.read().strip())
-
-        if current_latest_mtime > saved_mtime:
-            need_rebuild = True
-
-    else:
-        need_rebuild = True
-
-    # Schema version changed → rebuild
-    CURRENT_SCHEMA_VERSION = "8-v3.3-intent-first-faq-retrieval"
-
-    if not os.path.exists(schema_file):
-        need_rebuild = True
-    else:
-        with open(schema_file, "r", encoding="utf-8") as f:
-            saved_schema = f.read().strip()
-
-        if saved_schema != CURRENT_SCHEMA_VERSION:
-            need_rebuild = True
-
-    if need_rebuild:
-
-        if os.path.exists(PERSIST_DIR):
-            shutil.rmtree(PERSIST_DIR)
-
-        print("[Academic Agent] 正在建立 page-aware index...")
-
-        documents = load_documents()
-
-        # --------------------------------------------------
-        # 1. 先把每個 page Document 切成小 chunk
-        # --------------------------------------------------
-
-        splitter = SentenceSplitter(
-            chunk_size=500,
-            chunk_overlap=50,
-        )
-
-        chunked_nodes = splitter.get_nodes_from_documents(documents)
-
-        print(
-            f"[Academic Agent] SentenceSplitter: "
-            f"{len(documents)} documents → "
-            f"{len(chunked_nodes)} chunks"
-        )
-
-        # --------------------------------------------------
-        # 2. 再建立 Sentence Window
-        # --------------------------------------------------
-
-        node_parser = SentenceWindowNodeParser.from_defaults(
-            window_size=2,
-            window_metadata_key="window",
-            original_text_metadata_key="original_text",
-        )
-
-        final_nodes = node_parser.get_nodes_from_documents(
-            chunked_nodes
-        )
-
-        print(
-            f"[Academic Agent] SentenceWindow: "
-            f"{len(final_nodes)} nodes"
-        )
-
-        # --------------------------------------------------
-        # 3. 安全檢查
-        # --------------------------------------------------
-
-        max_chars = max(
-            len(getattr(node, "text", "") or "")
-            for node in final_nodes
-        )
-
-        print(
-            f"[Academic Agent] 最大 node text 長度: "
-            f"{max_chars} chars"
-        )
-
-        # --------------------------------------------------
-        # 4. 只建立一次 VectorStoreIndex
-        # --------------------------------------------------
-
-        index = VectorStoreIndex(final_nodes)
-
-        # --------------------------------------------------
-        # 5. Persist
-        # --------------------------------------------------
-
-        index.storage_context.persist(
-            persist_dir=PERSIST_DIR
-        )
-
-        with open(mtime_file, "w", encoding="utf-8") as f:
-            f.write(str(current_latest_mtime))
-
-        with open(schema_file, "w", encoding="utf-8") as f:
-            f.write(CURRENT_SCHEMA_VERSION)
-
-        print(
-            f"[Academic Agent] Index 建立完成，"
-            f"共 {len(final_nodes)} nodes。"
-        )
-
-    else:
-
-        print("[Academic Agent] 載入既有 index...")
-
-        storage_context = StorageContext.from_defaults(
-            persist_dir=PERSIST_DIR
-        )
-
-        index = load_index_from_storage(
-            storage_context
-        )
-
-    return index
-
-
 def expand_query_for_retrieval(user_query: str, history_str: str = "") -> str:
-    """
-    只做「語意重寫」，禁止自行新增學院、規章年份、法規內容。
-    這是為了避免 query expansion 本身把 retrieval 帶偏。
+    """只做語意重寫，禁止自行新增學院、規章年份、法規內容——避免 query
+    expansion 本身把 retrieval 帶偏。學院/系所擴張交給 academic_hierarchy.json
+    這種可審核的 mapping 處理，不讓 LLM 猜。
     """
     prompt = f"""
     你是法規檢索的 query rewrite 模組。
@@ -1058,16 +1045,12 @@ def expand_query_for_retrieval(user_query: str, history_str: str = "") -> str:
     使用者問題：
     {user_query}
     """
-
     try:
-        response = llm_smart.chat(
-            [
-                ChatMessage(role=MessageRole.SYSTEM, content=prompt),
-                ChatMessage(role=MessageRole.USER, content=user_query),
-            ]
-        )
-        rewritten = response.message.content.strip()
-        return rewritten or user_query
+        response = llm_smart.chat([
+            ChatMessage(role=MessageRole.SYSTEM, content=prompt),
+            ChatMessage(role=MessageRole.USER, content=user_query),
+        ])
+        return response.message.content.strip() or user_query
     except Exception:
         return user_query
 
@@ -1105,135 +1088,82 @@ ANSWER_SYSTEM_PROMPT = """
 def query_academic_knowledge(query_str: str, history_str: str = "") -> dict:
     try:
         index = get_or_create_index()
-        print(f'\n[Academic Agent] 原始問題：「{query_str}」')
+        print(f'原始問題：「{query_str}」')
 
         intent_info = detect_query_intent(query_str)
         intent = intent_info["intent"]
-        print(
-            f"[Academic Agent] Query intent：{intent} "
-            f"(faq_hits={intent_info['faq_hits']}, academic_hits={intent_info['academic_hits']})"
-        )
+        print(f"Query intent：{intent}（faq_hits={intent_info['faq_hits']}, academic_hits={intent_info['academic_hits']}）")
 
         rewritten_query = expand_query_for_retrieval(query_str, history_str)
-        print(f"[Academic Agent] Retrieval query：「{rewritten_query}」")
+        print(f"Retrieval query：「{rewritten_query}」")
 
         hierarchy = load_academic_hierarchy()
-        retrieval_queries, resolved_entities = build_retrieval_queries(
-            query_str, rewritten_query, hierarchy
-        )
+        retrieval_queries, resolved_entities = build_retrieval_queries(query_str, rewritten_query, hierarchy)
         faq_queries = build_faq_retrieval_queries(query_str, rewritten_query)
 
-        print(
-            "[Academic Agent] 已驗證 academic entities："
-            + json.dumps(resolved_entities, ensure_ascii=False)
-            if resolved_entities else
-            "[Academic Agent] 未命中已驗證 academic mapping，不自行推導 hierarchy"
-        )
-
-        # FAQ 問題：保留原始問題與 FAQ 擴張，但不啟用 academic scope。
         if intent == "faq":
             active_queries = faq_queries
         elif intent == "mixed":
             active_queries = list(dict.fromkeys(faq_queries + retrieval_queries))
         else:
             active_queries = retrieval_queries
-
-        print("[Academic Agent] Retrieval variants：" + " | ".join(active_queries))
+        print("Retrieval variants：" + " | ".join(active_queries))
 
         retriever = index.as_retriever(similarity_top_k=VECTOR_TOP_K)
-        dense_candidates = []
+        dense_candidates: list[RetrievalCandidate] = []
         for q in active_queries:
             try:
-                results = retriever.retrieve(q)
+                for item in retriever.retrieve(q):
+                    c = _candidate_from_node(item, dense_score=getattr(item, "score", 0.0) or 0.0, source="dense")
+                    if c:
+                        dense_candidates.append(c)
             except Exception as e:
-                print(f"[Academic Agent] Dense retrieval 失敗：{e}")
-                results = []
-            for item in results:
-                candidate = _candidate_from_node(
-                    item,
-                    dense_score=getattr(item, "score", 0.0) or 0.0,
-                    source="dense",
-                )
-                if candidate:
-                    dense_candidates.append(candidate)
+                print(f"Dense retrieval 失敗：{e}")
 
-        dense_by_id = {}
+        dense_by_id: dict[str, RetrievalCandidate] = {}
         for c in dense_candidates:
             old = dense_by_id.get(c.node_id)
             if old is None:
                 dense_by_id[c.node_id] = c
             else:
                 old.dense_score = max(old.dense_score, c.dense_score)
-                old.sources = tuple(sorted(set(old.sources + c.sources)))
         dense_candidates = list(dense_by_id.values())
 
-        lexical_candidates = []
+        lexical_candidates: list[RetrievalCandidate] = []
         for q in active_queries:
-            for c in lexical_retrieve(index, q, LEXICAL_TOP_K):
-                c.sources = tuple(sorted(set(c.sources + ("lexical",))))
-                lexical_candidates.append(c)
+            lexical_candidates.extend(bm25_retrieve(index, q, LEXICAL_TOP_K))
 
-        lexical_by_id = {}
+        lexical_by_id: dict[str, RetrievalCandidate] = {}
         for c in lexical_candidates:
             old = lexical_by_id.get(c.node_id)
             if old is None:
                 lexical_by_id[c.node_id] = c
             else:
                 old.lexical_score = max(old.lexical_score, c.lexical_score)
-                old.sources = tuple(sorted(set(old.sources + c.sources)))
         lexical_candidates = list(lexical_by_id.values())
 
-        candidates = fuse_candidates(
-            dense_candidates, lexical_candidates,
-            dense_weight=0.65, lexical_weight=0.35,
-        )
-        print(
-            f"[Academic Agent] V3.3 混合檢索候選：{len(candidates)} "
-            f"(dense={len(dense_candidates)}, lexical={len(lexical_candidates)})"
-        )
+        candidates = fuse_candidates(dense_candidates, lexical_candidates)
+        print(f"hybrid 檢索候選：{len(candidates)}（dense={len(dense_candidates)}, bm25={len(lexical_candidates)}）")
 
-        # ----------------------------------------------------------
-        # Intent-first policy
-        # ----------------------------------------------------------
         if intent == "faq":
             faq_candidates = filter_faq_candidates(candidates)
             if faq_candidates:
                 candidates = faq_candidates
-                print(
-                    f"[Academic Agent] FAQ-first：命中 {len(candidates)} 個 FAQ 文件，"
-                    "停用 academic scope filter"
-                )
-            elif FAQ_ONLY_IF_MATCH:
-                print("[Academic Agent] FAQ-first：沒有 FAQ 文件命中，fallback 一般 retrieval")
-                for c in candidates:
-                    c.faq_match = False
+            elif not FAQ_ONLY_IF_MATCH:
+                pass
         elif intent == "mixed":
-            # mixed 問題不做 hard scope；FAQ 有 boost，正式文件仍可進候選。
-            faq_candidates = filter_faq_candidates(candidates)
-            print(
-                f"[Academic Agent] Mixed intent：FAQ candidates={len(faq_candidates)}；"
-                "不對提及的系所套用 hard academic scope"
+            filter_faq_candidates(candidates)
+        elif intent == "academic":
+            candidates = annotate_and_filter_by_scope(
+                candidates, [e for e in resolved_entities if e.get("role") in {"user_department", "target_department"}],
             )
         else:
-            # 只有 academic intent 才使用 hierarchy scope。
-            if intent == "academic":
-                candidates = annotate_and_filter_by_scope(
-                    candidates,
-                    [e for e in resolved_entities if e.get("role") in {"user_department", "target_department"}],
-                )
-            else:
-                for c in candidates:
-                    c.scope_match = "unknown"
-                    c.scope_score = 0.0
+            for c in candidates:
+                c.scope_match, c.scope_score = "unknown", 0.0
 
         if not candidates:
-            return {
-                "answer": "目前檢索到的文件不足以確認這個問題的具體答案。",
-                "sources": [],
-                "retrieval_query": rewritten_query,
-            }
+            return {"answer": "目前檢索到的文件不足以確認這個問題的具體答案。", "sources": []}
 
-        # 排序：scope score 只有 academic intent 才有意義；FAQ boost 已寫入 fused_score。
         candidates.sort(
             key=lambda c: (
                 1 if getattr(c, "faq_match", False) else 0,
@@ -1244,116 +1174,46 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> dict:
         )
 
         rerank_pool = candidates[:max(VECTOR_TOP_K, LEXICAL_TOP_K)]
-        for c in rerank_pool:
-            c.metadata = dict(c.metadata or {})
-            c.metadata["applicability_evidence"] = getattr(c, "scope_match", "unknown")
-            c.metadata["retrieval_intent"] = intent
-            c.metadata["faq_match"] = bool(getattr(c, "faq_match", False))
-
-        rerank_input = prepare_nodes_for_rerank(
-            rerank_pool, max_chars=RERANK_MAX_CHARS
-        )
-        reranker = LLMRerank(
-            choice_batch_size=RERANK_BATCH_SIZE,
-            top_n=RERANK_TOP_N,
-            llm=llm_smart,
-        )
+        reranker = LLMRerank(choice_batch_size=RERANK_BATCH_SIZE, top_n=RERANK_TOP_N, llm=llm_smart)
         reranked_nodes = reranker.postprocess_nodes(
-            rerank_input,
-            query_bundle=QueryBundle(query_str),
+            prepare_nodes_for_rerank(rerank_pool), query_bundle=QueryBundle(query_str),
         )
+        final_candidates = candidates_from_reranked(reranked_nodes, rerank_pool) or rerank_pool[:RERANK_TOP_N]
 
-        final_candidates = candidates_from_reranked(reranked_nodes, rerank_pool)
-        if not final_candidates:
-            final_candidates = rerank_pool[:RERANK_TOP_N]
-
-        window_processor = MetadataReplacementPostProcessor(
-            target_metadata_key="window"
-        )
-        window_input = [
-            NodeWithScore(node=c.node, score=float(c.fused_score))
-            for c in final_candidates if c.node is not None
-        ]
-        try:
-            window_nodes = window_processor.postprocess_nodes(window_input)
-        except Exception as e:
-            print(f"[Academic Agent] Sentence Window 展開失敗，退回 rerank node：{e}")
-            window_nodes = window_input
-
-        final_nodes = [
-            _unwrap_retrieval_item(item)
-            for item in window_nodes
-            if _unwrap_retrieval_item(item) is not None
-        ]
-        context_str = build_source_context(final_nodes)
-
-        retrieval_notes = [f"intent = {intent}"]
-        if resolved_entities:
-            retrieval_notes.append(
-                "entities = " + json.dumps(resolved_entities, ensure_ascii=False)
-            )
-        retrieval_notes.append(
-            "FAQ documents are prioritized for FAQ intent; mentioned departments are not automatically treated as applicability scope."
-        )
-        context_str += "\n\n[Retrieval notes]\n" + "\n".join(retrieval_notes)
-
+        context_str = build_source_context(final_candidates)
         user_prompt = f"""
 【檢索來源】
 {context_str}
-
-【檢索意圖】
-{intent}
-
-【已驗證 academic entities】
-{json.dumps(resolved_entities, ensure_ascii=False)}
-注意：entity role 很重要。user_department / target_department 才可能形成 academic scope；referenced_department / course_department 只是問題中被提及的對象，不能單獨限制檢索範圍。
 
 【使用者問題】
 {query_str}
 
 請直接回答問題。若來源不足，明確說明不足之處，不要自行補答案。
 """
-
         response = openai_client.chat.completions.create(
             model=os.getenv("RAG_ANSWER_MODEL", "gpt-4o"),
-            messages=[
-                {"role": "system", "content": ANSWER_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=[{"role": "system", "content": ANSWER_SYSTEM_PROMPT}, {"role": "user", "content": user_prompt}],
             temperature=0,
             max_tokens=1200,
         )
         answer = (response.choices[0].message.content or "").strip()
 
         sources = []
-        for node in final_nodes:
-            meta = getattr(node, "metadata", {})
-            file_name = meta.get("file_name", "未知文件")
-            page_label = meta.get("page_label", "")
-            source_text = file_name
-            if page_label:
-                source_text += f" (第 {page_label} 頁)"
+        for c in final_candidates:
+            meta = c.metadata or {}
+            source_text = meta.get("file_name", "未知文件")
+            if meta.get("page_label"):
+                source_text += f" (第 {meta['page_label']} 頁)"
             if source_text not in sources:
                 sources.append(source_text)
 
-        return {
-            "answer": answer,
-            "sources": sources,
-            "retrieval_query": rewritten_query,
-            "intent": intent,
-            "resolved_entities": resolved_entities,
-        }
+        return {"answer": answer, "sources": sources, "retrieval_query": rewritten_query, "intent": intent}
 
     except Exception as e:
-        print(f"\n[Academic Agent] 查詢錯誤: {e}")
-        return {
-            "answer": "系統在檢索法規與回答時發生錯誤，請稍後再試。",
-            "sources": [],
-        }
+        print(f"查詢錯誤: {e}")
+        return {"answer": "系統在檢索法規與回答時發生錯誤，請稍後再試。", "sources": []}
 
 
 if __name__ == "__main__":
-    test_query = "資工系英文畢業門檻"
-    result = query_academic_knowledge(test_query)
+    result = query_academic_knowledge("資工系英文畢業門檻")
     print(f"\n[Academic Agent 回答]:\n{result['answer']}")
-    print(f"\n[來源]:\n{result['sources']}")
