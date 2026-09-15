@@ -1485,6 +1485,172 @@ referenced_department 只是問題裡順帶提到的對象，不能拿來限制�
         return {"answer": "系統在檢索法規與回答時發生錯誤，請稍後再試。", "sources": []}
 
 
+def query_academic_knowledge_stream(query_str: str, history_str: str = ""):
+    """`query_academic_knowledge()` 的串流版本。
+
+    檢索/rerank 這幾步本來就不是逐字產生的東西，跟原本一樣整段做完；
+    只有最後答案生成那段改成 `stream=True`，逐 chunk yield 出去——這是
+    整條查詢裡最花時間、也最適合逐字呈現的一步，其餘步驟只 yield 一句
+    狀態文字讓前端知道現在在做什麼，不強求每一步都做成逐字動畫。
+
+    依序 yield 以下形狀的 dict（不含 SSE 包裝，呼叫端自己序列化）：
+    - {"type": "status", "text": "..."}
+    - {"type": "token", "text": "..."}          # 逐字答案片段
+    - {"type": "sources", "sources": [...]}     # 答案生成完，最後一次
+    - {"type": "error", "message": "..."}
+    """
+    try:
+        yield {"type": "status", "text": "正在載入法規資料庫..."}
+        index = get_or_create_index()
+        print(f'原始問題：「{query_str}」')
+
+        intent_info = detect_query_intent(query_str)
+        intent = intent_info["intent"]
+        print(f"Query intent：{intent}（faq_hits={intent_info['faq_hits']}, academic_hits={intent_info['academic_hits']}）")
+
+        yield {"type": "status", "text": "正在理解你的問題..."}
+        rewritten_query = expand_query_for_retrieval(query_str, history_str)
+        print(f"Retrieval query：「{rewritten_query}」")
+
+        hierarchy = load_academic_hierarchy()
+        retrieval_queries, resolved_entities = build_retrieval_queries(query_str, rewritten_query, hierarchy)
+        faq_queries = build_faq_retrieval_queries(query_str, rewritten_query)
+
+        if intent == "faq":
+            active_queries = faq_queries
+        elif intent == "mixed":
+            active_queries = list(dict.fromkeys(faq_queries + retrieval_queries))
+        else:
+            active_queries = retrieval_queries
+        print("Retrieval variants：" + " | ".join(active_queries))
+
+        yield {"type": "status", "text": "正在檢索校園法規..."}
+        retriever = index.as_retriever(similarity_top_k=VECTOR_TOP_K)
+        dense_candidates: list[RetrievalCandidate] = []
+        for q in active_queries:
+            try:
+                for item in retriever.retrieve(q):
+                    c = _candidate_from_node(item, dense_score=getattr(item, "score", 0.0) or 0.0, source="dense")
+                    if c:
+                        dense_candidates.append(c)
+            except Exception as e:
+                print(f"Dense retrieval 失敗：{e}")
+
+        dense_by_id: dict[str, RetrievalCandidate] = {}
+        for c in dense_candidates:
+            old = dense_by_id.get(c.node_id)
+            if old is None:
+                dense_by_id[c.node_id] = c
+            else:
+                old.dense_score = max(old.dense_score, c.dense_score)
+        dense_candidates = list(dense_by_id.values())
+
+        lexical_candidates: list[RetrievalCandidate] = []
+        for q in active_queries:
+            lexical_candidates.extend(bm25_retrieve(index, q, LEXICAL_TOP_K))
+
+        lexical_by_id: dict[str, RetrievalCandidate] = {}
+        for c in lexical_candidates:
+            old = lexical_by_id.get(c.node_id)
+            if old is None:
+                lexical_by_id[c.node_id] = c
+            else:
+                old.lexical_score = max(old.lexical_score, c.lexical_score)
+        lexical_candidates = list(lexical_by_id.values())
+
+        candidates = fuse_candidates(dense_candidates, lexical_candidates)
+        print(f"hybrid 檢索候選：{len(candidates)}（dense={len(dense_candidates)}, bm25={len(lexical_candidates)}）")
+
+        if intent == "faq":
+            faq_candidates = filter_faq_candidates(candidates)
+            if faq_candidates:
+                candidates = faq_candidates
+        elif intent == "mixed":
+            filter_faq_candidates(candidates)
+        elif intent == "academic":
+            candidates = annotate_and_filter_by_scope(
+                candidates, [e for e in resolved_entities if e.get("role") in {"user_department", "target_department"}],
+            )
+        else:
+            for c in candidates:
+                c.scope_match, c.scope_score = "unknown", 0.0
+
+        if not candidates:
+            yield {"type": "token", "text": "目前檢索到的文件不足以確認這個問題的具體答案。"}
+            yield {"type": "sources", "sources": []}
+            return
+
+        candidates.sort(
+            key=lambda c: (
+                1 if getattr(c, "faq_match", False) else 0,
+                getattr(c, "scope_score", 0.0) if intent == "academic" else 0.0,
+                c.fused_score,
+            ),
+            reverse=True,
+        )
+
+        yield {"type": "status", "text": "正在排序候選文件..."}
+        rerank_pool = candidates[:max(VECTOR_TOP_K, LEXICAL_TOP_K)]
+        reranker = LLMRerank(choice_batch_size=RERANK_BATCH_SIZE, top_n=RERANK_TOP_N, llm=llm_smart)
+        reranked_nodes = reranker.postprocess_nodes(
+            prepare_nodes_for_rerank(rerank_pool), query_bundle=QueryBundle(query_str),
+        )
+        final_candidates = candidates_from_reranked(reranked_nodes, rerank_pool) or rerank_pool[:RERANK_TOP_N]
+
+        context_str = build_source_context(final_candidates)
+        user_prompt = f"""
+【檢索來源】
+{context_str}
+
+【已驗證 academic entities】
+{json.dumps(resolved_entities, ensure_ascii=False)}
+這是系統用可審核的系所/學院對照表算出來的事實，不是你自己推導的，可以直接採信、
+用來對應來源裡的學院簡稱（例如「資電」＝資訊電機學院）。entity role 很重要：
+user_department / target_department 才可能代表使用者實際要問的範圍；
+referenced_department 只是問題裡順帶提到的對象，不能拿來限制檢索範圍。
+
+【使用者問題】
+{query_str}
+
+請直接回答問題。若來源不足，明確說明不足之處，不要自行補答案。
+"""
+        yield {"type": "status", "text": "正在生成答案..."}
+        stream = openai_client.chat.completions.create(
+            model=os.getenv("RAG_ANSWER_MODEL", "gpt-4o"),
+            messages=[{"role": "system", "content": ANSWER_SYSTEM_PROMPT}, {"role": "user", "content": user_prompt}],
+            temperature=0,
+            max_tokens=1200,
+            stream=True,
+        )
+
+        answer_parts: list[str] = []
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                answer_parts.append(delta)
+                yield {"type": "token", "text": delta}
+
+        answer = "".join(answer_parts)
+
+        cited_indices = {int(n) for n in re.findall(r"\[SOURCE (\d+)\]", answer)}
+        cited_candidates = [c for i, c in enumerate(final_candidates, 1) if i in cited_indices] or final_candidates
+
+        sources = []
+        for c in cited_candidates:
+            meta = c.metadata or {}
+            source_text = meta.get("file_name", "未知文件")
+            if meta.get("page_label"):
+                source_text += f" (第 {meta['page_label']} 頁)"
+            if source_text not in sources:
+                sources.append(source_text)
+
+        yield {"type": "sources", "sources": sources}
+
+    except Exception as e:
+        print(f"查詢錯誤: {e}")
+        yield {"type": "error", "message": f"系統在檢索法規與回答時發生錯誤：{e}"}
+
+
 if __name__ == "__main__":
     result = query_academic_knowledge("資工系英文畢業門檻")
     print(f"\n[Academic Agent 回答]:\n{result['answer']}")
