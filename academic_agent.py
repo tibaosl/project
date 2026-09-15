@@ -88,7 +88,12 @@ BM25_INDEX_PATH = os.path.join(PERSIST_DIR, "bm25.pkl")
 VECTOR_TOP_K = int(os.getenv("VECTOR_TOP_K", "15"))
 LEXICAL_TOP_K = int(os.getenv("LEXICAL_TOP_K", "15"))
 RERANK_TOP_N = int(os.getenv("RERANK_TOP_N", "5"))
-RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "3"))
+
+# rerank_pool 最多 max(VECTOR_TOP_K, LEXICAL_TOP_K) 筆，batch_size=3 的話
+# 等於要切成好幾批、一批一次 LLM 呼叫，全部跑完才能算完 rerank 分數——
+# 實測一次查詢光 rerank 這階段就疊了 5 次序列呼叫，是整體延遲的大宗。
+# 改成跟 top_k 同量級，正常情況下一次 LLM 呼叫就能把整個候選池排完。
+RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "15"))
 RERANK_MAX_CHARS = int(os.getenv("RERANK_MAX_CHARS", "1800"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
 MAX_SECTION_CHUNK_CHARS = int(os.getenv("MAX_SECTION_CHUNK_CHARS", "1000"))
