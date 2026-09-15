@@ -14,11 +14,12 @@ import re
 from typing import Any, Optional
 from urllib.parse import urljoin
 
-import requests
-import urllib3
 from bs4 import BeautifulSoup
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from secure_requests import get_with_fallback
+from logging_config import make_print_logger
+
+print = make_print_logger(__name__)
 
 ACTIVITY_QUERY_URL = "https://cis.ncu.edu.tw/iNCU/publicService/activityQuery"
 
@@ -136,11 +137,10 @@ def search_activities(
 
     print(f"[Activity Tools] 查詢活動列表，條件：{params}")
 
-    response = requests.get(
+    response = get_with_fallback(
         ACTIVITY_QUERY_URL,
         params=params,
         headers=HEADERS,
-        verify=False,
         timeout=15,
     )
     response.raise_for_status()
@@ -296,7 +296,7 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
 
     print(f"[Activity Tools] 查詢活動詳情：{url}")
 
-    response = requests.get(url, headers=HEADERS, verify=False, timeout=15)
+    response = get_with_fallback(url, headers=HEADERS, timeout=15)
     response.raise_for_status()
     response.encoding = "utf-8"
 

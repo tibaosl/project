@@ -13,6 +13,9 @@ from playwright.async_api import (
 )
 
 from activity_tools import get_activity_detail
+from logging_config import make_print_logger
+
+print = make_print_logger(__name__)
 
 # Portal
 PORTAL_LOGIN_URL = "https://portal.ncu.edu.tw/login"

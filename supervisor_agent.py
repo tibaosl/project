@@ -11,6 +11,10 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import MemorySaver
 
+from logging_config import make_print_logger
+
+print = make_print_logger(__name__)
+
 load_dotenv()
 llm_smart = ChatOpenAI(model="gpt-4o-mini", temperature=0)
 memory = MemorySaver()
@@ -67,6 +71,9 @@ class AgentState(TypedDict):
     # 所以每個節點回傳時要嘛明確清空（{}），要嘛明確設成新的待確認動作，
     # 否則舊的待確認動作會一直留著（checkpointer 只覆蓋有回傳的欄位）。
     pending_action: dict
+    # 這一輪實際呼叫了哪些工具（或走了哪個非 LLM 的攔截分支），只給
+    # debug_info 用；每輪都要明確回傳（覆蓋掉上一輪的值，不是累加）。
+    called_tools: List[str]
 
 
 def _summarize_tool_result(result: dict) -> str:
@@ -109,6 +116,7 @@ async def agent_node(state: AgentState):
             return {
                 "agent_results": ["[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先在左側邊欄輸入帳號密碼！"],
                 "pending_action": {},
+                "called_tools": [],
             }
 
         action_type = pending_action.get("type")
@@ -132,6 +140,7 @@ async def agent_node(state: AgentState):
             return {
                 "agent_results": [f"**Action Agent 回報**：\n{result.get('message', '')}"],
                 "pending_action": {},
+                "called_tools": [f"__confirm__:{action_type}"],
             }
         except Exception as e:
             print(f"[Agent] 確認動作執行時發生錯誤: {e}")
@@ -139,6 +148,7 @@ async def agent_node(state: AgentState):
             return {
                 "agent_results": [f"**Action Agent 回報**：\n系統執行時發生錯誤：{str(e)}"],
                 "pending_action": {},
+                "called_tools": [f"__confirm__:{action_type}"],
             }
 
     # ------------------------------------------------------------------
@@ -183,11 +193,16 @@ async def agent_node(state: AgentState):
                 else {**pending_action, "next_indices": next_indices}
             )
 
-            return {"agent_results": [envelope], "pending_action": new_pending_action}
+            return {
+                "agent_results": [envelope],
+                "pending_action": new_pending_action,
+                "called_tools": [f"__continue__:{pending_action['type']}"],
+            }
         except Exception as e:
             return {
                 "agent_results": [f"**Action Agent 回報**：\n查詢活動時發生錯誤：{str(e)}"],
                 "pending_action": {},
+                "called_tools": [f"__continue__:{pending_action['type']}"],
             }
 
     # ------------------------------------------------------------------
@@ -208,6 +223,7 @@ async def agent_node(state: AgentState):
     agent_results: list = []
     sources: list = []
     new_pending_action: dict = {}
+    called_tools: list = []
 
     for _ in range(MAX_TOOL_ROUNDS):
         ai_msg = await llm_with_tools.ainvoke(messages)
@@ -229,6 +245,7 @@ async def agent_node(state: AgentState):
                 continue
 
             print(f"[Agent] 呼叫工具：{tool_call['name']}({tool_call['args']})")
+            called_tools.append(tool_call["name"])
             try:
                 result = await tool_fn.ainvoke(tool_call["args"])
             except Exception as e:
@@ -259,6 +276,7 @@ async def agent_node(state: AgentState):
         "agent_results": agent_results,
         "sources": sources,
         "pending_action": new_pending_action,
+        "called_tools": called_tools,
     }
 
 
@@ -278,6 +296,7 @@ async def run_ncuxplore_agent(user_message: str, username: str = "", password: s
         "agent_results": [],
         "past_queries": [f"[使用者]: {user_message}"],
         "sources": [],
+        "called_tools": [],
     }
     config = {"configurable": {"thread_id": thread_id}}
     final_state = await app.ainvoke(initial_state, config=config)

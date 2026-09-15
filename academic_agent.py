@@ -24,6 +24,10 @@ from llama_index.readers.file import DocxReader
 from llama_index.core.llms import ChatMessage, MessageRole
 from llama_index.core.prompts import PromptTemplate
 
+from logging_config import make_print_logger
+
+print = make_print_logger(__name__)
+
 load_dotenv()
 
 Settings.llm = LlamaOpenAI(
