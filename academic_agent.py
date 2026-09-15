@@ -464,52 +464,8 @@ def _split_long_section(block: Block, max_chars: int) -> list[Block]:
     ]
 
 
-def has_table_continuation(page_markdown: str) -> bool:
-    """判斷這一頁是否以「被截斷的表格」結尾（表格會延續到下一頁）。
-
-    優先看 OCR 自己標的 TABLE_CONTINUES_MARKER（prompt 有要求它在偵測到
-    表格被頁面截斷時輸出這個標記）；OCR 沒標的話，退回一個保守的備援
-    判斷：整頁最後一個區塊是表格，且看起來沒有「總計/簽章/以上」這類
-    收尾字樣，就當作可能被截斷，交給下一頁開頭是否也是表格來決定。
-    """
-    stripped = (page_markdown or "").strip()
-    if stripped.endswith(TABLE_CONTINUES_MARKER):
-        return True
-
-    blocks = parse_markdown_blocks(stripped)
-    if not blocks or blocks[-1].kind != "table":
-        return False
-    tail_text = blocks[-1].text
-    closing_hints = ("合計", "總計", "簽章", "簽名", "以上", "備註")
-    return not any(h in tail_text for h in closing_hints)
-
-
 def _strip_marker(text: str) -> str:
     return text.replace(TABLE_CONTINUES_MARKER, "").rstrip()
-
-
-def merge_continued_table_pages(pages: list[tuple[int, str]]) -> list[tuple[str, str]]:
-    """把「表格被頁面截斷」的相鄰頁合併成同一個邏輯頁，page_label 變成範圍
-    （例如 "1-2"），避免跨頁表格被拆成兩個各自看不懂的 chunk。
-    """
-    merged: list[tuple[str, str]] = []
-    i = 0
-    while i < len(pages):
-        page_no, text = pages[i]
-        labels = [str(page_no)]
-        combined = _strip_marker(text)
-
-        while i < len(pages) - 1 and has_table_continuation(pages[i][1]):
-            i += 1
-            next_no, next_text = pages[i]
-            labels.append(str(next_no))
-            combined = combined + "\n" + _strip_marker(next_text)
-
-        label = labels[0] if len(labels) == 1 else f"{labels[0]}-{labels[-1]}"
-        merged.append((label, combined))
-        i += 1
-
-    return merged
 
 
 def build_chunks_from_markdown(markdown_text: str, base_metadata: dict) -> list[dict]:
@@ -545,8 +501,117 @@ def build_chunks_from_markdown(markdown_text: str, base_metadata: dict) -> list[
 
 
 # ============================================================
-# PDF ingestion：一律走 Vision OCR（不再用不可靠的「有沒有表格」判斷）
+# PDF ingestion
+#
+# ⚠️ 這裡吃過一次真實的教訓：一開始的版本「不管有沒有表格，一律用
+# Vision OCR」，理由是原本 has_tables_in_pdf() 那個「儲存格平均字數 <
+# 35」的判斷式不可靠。但拿真實文件實測後發現：GPT-4o Vision OCR 本身在
+# 「常見問題.pdf」這種密集雙欄版面上會整段幻覺／唸錯字（例如把「我是
+# 電機的...如我修了資管的演算法」讀成「我完成輸的...如果修了這堂的演算法」
+# ——調高 DPI 到 300 也一樣會錯，不是解析度問題）。
+#
+# 而這份 PDF其實是「有真正文字層的數位文件」，不是掃描圖檔：
+# pdfplumber.extract_text()／extract_tables() 直接就能 100% 準確、零成本、
+# 零幻覺地把內容抓出來（已實測驗證）。所以現在的策略改成：
+#   1. 優先用 pdfplumber 原生抽取（表格用 extract_tables() 精準保留欄位，
+#      比 Vision OCR 唸出來的內容更可信，因為完全沒有 LLM 參與）。
+#   2. 只有整份 PDF 幾乎抓不到文字層（判定為掃描圖檔）時，才退回
+#      Vision OCR（帶跨頁表格續接偵測）。
+# 這樣「表格的欄位結構」跟「文字的忠實度」兩件事都不用犧牲。
 # ============================================================
+def _table_to_markdown(rows: list[list]) -> str:
+    def clean(cell) -> str:
+        return (str(cell) if cell is not None else "").replace("\n", " ").strip()
+
+    lines = []
+    for i, row in enumerate(rows):
+        cells = [clean(c) for c in row]
+        lines.append("| " + " | ".join(cells) + " |")
+        if i == 0:
+            lines.append("| " + " | ".join(["---"] * len(cells)) + " |")
+    return "\n".join(lines)
+
+
+def _row_looks_truncated(row: list) -> bool:
+    """一列裡有 None 儲存格（pdfplumber 抓不到值，不是「本來就空白」的
+    空字串），視為這一列可能被頁面截斷、延續到下一頁。
+    """
+    return any(c is None for c in row)
+
+
+def _extract_pdf_page_raw(page) -> dict:
+    return {"tables": page.extract_tables(), "text": page.extract_text() or ""}
+
+
+def merge_continued_pdfplumber_tables(pages_data: list[dict]) -> list[dict]:
+    """把「表格看起來被頁面截斷」的相鄰頁合併成同一個邏輯頁。
+
+    不強求跨頁的欄位精準對齊（不同頁的表格常常欄數對不上，例如原本
+    9 欄的表格續到下一頁變成 8 欄），只求把兩頁的表格內容放進同一個
+    chunk——這樣即使欄位沒有完美接起來，LLM 讀到同一個 chunk 裡「上一頁
+    最後一列」跟「下一頁第一列」還是拼得出完整資訊，這才是真正重要的
+    （已用真實案例的欄位資料驗證過這個判斷邏輯）。
+    """
+    merged: list[dict] = []
+    i = 0
+    while i < len(pages_data):
+        page = {**pages_data[i], "tables": [list(t) for t in pages_data[i]["tables"]]}
+        labels = [str(page["page"])]
+
+        while (
+            i < len(pages_data) - 1
+            and page["tables"]
+            and page["tables"][-1]
+            and _row_looks_truncated(page["tables"][-1][-1])
+            and pages_data[i + 1]["tables"]
+        ):
+            i += 1
+            next_page = pages_data[i]
+            next_tables = [list(t) for t in next_page["tables"]]
+            page["tables"][-1] = page["tables"][-1] + next_tables[0]
+            page["tables"].extend(next_tables[1:])
+            page["text"] = page["text"] + "\n" + next_page["text"]
+            labels.append(str(next_page["page"]))
+
+        page["page_label"] = labels[0] if len(labels) == 1 else f"{labels[0]}-{labels[-1]}"
+        merged.append(page)
+        i += 1
+
+    return merged
+
+
+def extract_pdf_pages_structured(pdf_path: str) -> list[tuple[str, str]]:
+    """優先用 pdfplumber 原生抽取；整份 PDF 幾乎沒有文字層時才退回 Vision OCR。"""
+    filename = os.path.basename(pdf_path)
+
+    with pdfplumber.open(pdf_path) as pdf:
+        pages_data = [
+            {"page": i, **_extract_pdf_page_raw(page)}
+            for i, page in enumerate(pdf.pages, 1)
+        ]
+
+    total_text_len = sum(len(p["text"].strip()) for p in pages_data)
+    avg_text_len = total_text_len / max(len(pages_data), 1)
+
+    if avg_text_len < 20:
+        print(f"[{filename}] 平均每頁文字層長度只有 {avg_text_len:.0f}，判定為掃描圖檔，改用 Vision OCR。")
+        vision_pages = convert_pdf_to_markdown_pages_via_vision(pdf_path)
+        return merge_continued_vision_pages(vision_pages)
+
+    merged_pages = merge_continued_pdfplumber_tables(pages_data)
+
+    results = []
+    for page in merged_pages:
+        table_blocks = [_table_to_markdown(t) for t in page["tables"] if t]
+        if table_blocks:
+            page_md = "\n\n".join(table_blocks)
+        else:
+            page_md = page["text"]
+        results.append((page["page_label"], page_md))
+
+    return results
+
+
 def convert_pdf_to_markdown_pages_via_vision(pdf_path: str) -> list[tuple[int, str]]:
     """逐頁 Vision OCR 成 Markdown；page-aware JSON cache。"""
     filename = os.path.basename(pdf_path)
@@ -613,6 +678,48 @@ def convert_pdf_to_markdown_pages_via_vision(pdf_path: str) -> list[tuple[int, s
         json.dump([{"page": p, "text": t} for p, t in page_results], f, ensure_ascii=False, indent=2)
 
     return page_results
+
+
+def has_table_continuation(page_markdown: str) -> bool:
+    """判斷這一頁（Vision OCR 產出的 Markdown）是否以「被截斷的表格」結尾。
+
+    只用在掃描圖檔的 fallback 路徑——一般數位文件已經走 pdfplumber 的
+    _row_looks_truncated()，不需要靠這個文字層級的判斷。
+    """
+    stripped = (page_markdown or "").strip()
+    if stripped.endswith(TABLE_CONTINUES_MARKER):
+        return True
+
+    blocks = parse_markdown_blocks(stripped)
+    if not blocks or blocks[-1].kind != "table":
+        return False
+    tail_text = blocks[-1].text
+    closing_hints = ("合計", "總計", "簽章", "簽名", "以上", "備註")
+    return not any(h in tail_text for h in closing_hints)
+
+
+def merge_continued_vision_pages(pages: list[tuple[int, str]]) -> list[tuple[str, str]]:
+    """掃描圖檔 fallback 專用：把「表格被頁面截斷」的相鄰頁合併成同一個
+    邏輯頁，page_label 變成範圍（例如 "1-2"）。
+    """
+    merged: list[tuple[str, str]] = []
+    i = 0
+    while i < len(pages):
+        page_no, text = pages[i]
+        labels = [str(page_no)]
+        combined = _strip_marker(text)
+
+        while i < len(pages) - 1 and has_table_continuation(pages[i][1]):
+            i += 1
+            next_no, next_text = pages[i]
+            labels.append(str(next_no))
+            combined = combined + "\n" + _strip_marker(next_text)
+
+        label = labels[0] if len(labels) == 1 else f"{labels[0]}-{labels[-1]}"
+        merged.append((label, combined))
+        i += 1
+
+    return merged
 
 
 # ============================================================
@@ -735,8 +842,7 @@ def load_documents() -> list[TextNode]:
                 chunk_index = 0
 
                 if file.lower().endswith(".pdf"):
-                    pages = convert_pdf_to_markdown_pages_via_vision(file_path)
-                    merged_pages = merge_continued_table_pages(pages)
+                    merged_pages = extract_pdf_pages_structured(file_path)
                     for page_label, page_text in merged_pages:
                         if not page_text.strip():
                             continue
@@ -1198,8 +1304,14 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> dict:
         )
         answer = (response.choices[0].message.content or "").strip()
 
+        # 只列出答案裡真的用 [SOURCE N] 引用過的來源，不要把 rerank 選進來、
+        # 但最後沒被引用的候選也列進去——不然使用者會看到一堆看似相關、
+        # 實際上答案根本沒用到的檔名，反而混淆是哪份文件真正支持這個答案。
+        cited_indices = {int(n) for n in re.findall(r"\[SOURCE (\d+)\]", answer)}
+        cited_candidates = [c for i, c in enumerate(final_candidates, 1) if i in cited_indices] or final_candidates
+
         sources = []
-        for c in final_candidates:
+        for c in cited_candidates:
             meta = c.metadata or {}
             source_text = meta.get("file_name", "未知文件")
             if meta.get("page_label"):
