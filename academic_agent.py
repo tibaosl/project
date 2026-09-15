@@ -8,15 +8,19 @@
    + FAQ/正式法規意圖判斷 + dense/BM25 hybrid 檢索 + scope 過濾 + LLM
    rerank，最後餵給 LLM 生成有引用來源的答案。
 
-跟舊版最大的差異在 ingestion：舊版用「有沒有表格」這個不可靠的啟發式決定
-要不要跑 Vision OCR，再用通用的 SentenceSplitter/SentenceWindowNodeParser
-按字數切 chunk——這會把表格從中間切開、把跨頁表格拆成兩個各自看不懂的
-chunk、把長答案的 FAQ 誤判成「沒有表格」而整份拆散。現在改成：
-- 每一頁一律先转成 Markdown（不再用不可靠的啟發式決定要不要 OCR）。
-- 依 Markdown 自身的結構（標題／條文／表格）切 chunk，表格永遠不被切開。
-- 偵測「表格在頁尾被截斷」時，把下一頁的延續內容合併回同一個 chunk。
-- 每個 chunk 前面加一段身份前綴（檔名／類型／所屬段落）再拿去 embedding，
-  避免不同文件的內容在檢索/生成時被混在一起。
+跟舊版最大的差異在 ingestion：
+- PDF 優先用 pdfplumber 原生抽取文字/表格（零成本、零幻覺、表格欄位結構
+  100% 準確）；只有整份 PDF 判定為掃描圖檔（幾乎沒有文字層）才退回
+  Vision OCR。曾經改成「一律用 Vision OCR」，但實測發現 GPT-4o Vision
+  在密集版面上會整段幻覺、唸錯字，所以能用原生解析就不要交給 LLM「用看的」
+  去猜（詳見 extract_pdf_pages_structured 的說明）。
+- DOCX 改用 python-docx 直接走 paragraphs/tables，原生保留表格結構。
+- 舊版二進位 .doc 透過 LibreOffice 無頭轉檔成 .docx 再解析（見
+  convert_doc_to_docx），不需要手動一個個另存新檔。
+- 不管哪種來源，最後都依 Markdown 自身的結構（標題／條文／表格）切
+  chunk，表格永遠不被從中間切開；跨頁表格會偵測並合併回同一個 chunk；
+  每個 chunk 前面加一段身份前綴（檔名／類型／所屬段落）再拿去
+  embedding，避免不同文件的內容在檢索/生成時被混在一起。
 
 Retrieval 這一側（系所/學院 mapping、FAQ 優先、scope 過濾、hybrid 融合、
 LLM rerank、附引用來源的回答 prompt）延續既有版本已經驗證過的設計，
@@ -31,6 +35,7 @@ import base64
 import hashlib
 import pickle
 import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -91,6 +96,9 @@ RERANK_BATCH_SIZE = int(os.getenv("RERANK_BATCH_SIZE", "3"))
 RERANK_MAX_CHARS = int(os.getenv("RERANK_MAX_CHARS", "1800"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
 MAX_SECTION_CHUNK_CHARS = int(os.getenv("MAX_SECTION_CHUNK_CHARS", "1000"))
+# 保底用的硬上限：OpenAI embedding API 單筆輸入上限是 8192 tokens，中文
+# 抓保守一點的字數換算，避免真的撞到那條線（已用真實文件實測撞過一次）。
+MAX_HARD_CHUNK_CHARS = int(os.getenv("MAX_HARD_CHUNK_CHARS", "4000"))
 
 SCOPE_UNKNOWN_PENALTY = float(os.getenv("SCOPE_UNKNOWN_PENALTY", "0.15"))
 
@@ -440,14 +448,64 @@ def parse_markdown_blocks(text: str) -> list[Block]:
     return blocks
 
 
+def _hard_split_by_chars(text: str, max_chars: int, header: str = "") -> list[str]:
+    """最後手段：直接依字數硬切（優先在換行處斷開），並在每一段前面重複
+    header（表格的表頭列／段落的標題），讓每一段拆出來還是看得懂脈絡。
+    只有在「表格沒有分隔線可切」或「一整個段落完全沒有空行可切」這種
+    正常切法都失效、單一區塊仍然大到可能超過 embedding API 輸入長度上限
+    時才會用到。
+    """
+    lines = text.split("\n")
+    chunks: list[str] = []
+    current = [header] if header else []
+    current_len = len(header)
+
+    for line in lines:
+        if current_len + len(line) + 1 > max_chars and len(current) > (1 if header else 0):
+            chunks.append("\n".join(current))
+            current = [header] if header else []
+            current_len = len(header)
+        current.append(line)
+        current_len += len(line) + 1
+
+    if current and (not header or len(current) > 1):
+        chunks.append("\n".join(current))
+
+    return chunks or [text[:max_chars]]
+
+
 def _split_long_section(block: Block, max_chars: int) -> list[Block]:
-    """只有「一般段落」區塊太長時才在空行處切，表格永遠不切。"""
-    if block.kind == "table" or len(block.text) <= max_chars:
+    """一般段落太長時在空行處切；表格原則上不切。
+
+    但兩者都有一個 MAX_HARD_CHUNK_CHARS 的硬上限保底：如果段落完全沒有
+    空行可切、或表格本身就大到可能超過 OpenAI embedding API 的輸入長度
+    上限（8192 tokens，曾經真的因為一個超大表格 chunk 直接建索引失敗），
+    就依字數硬切、表格切開時在每一段前面重複表頭列，避免整個索引建立
+    失敗，也不會讓拆出來的段落完全失去脈絡。
+    """
+    if block.kind == "table":
+        if len(block.text) <= MAX_HARD_CHUNK_CHARS:
+            return [block]
+        lines = block.text.split("\n")
+        header = "\n".join(lines[:2]) if len(lines) >= 2 else ""
+        pieces = _hard_split_by_chars(block.text, MAX_HARD_CHUNK_CHARS, header=header)
+        total = len(pieces)
+        return [
+            Block(kind="table", text=p, heading=f"{block.heading} ({i}/{total})" if total > 1 else block.heading)
+            for i, p in enumerate(pieces, 1)
+        ]
+
+    if len(block.text) <= max_chars:
         return [block]
 
     paragraphs = [p for p in re.split(r"\n\s*\n", block.text) if p.strip()]
     if len(paragraphs) <= 1:
-        return [block]
+        pieces = _hard_split_by_chars(block.text, min(max_chars, MAX_HARD_CHUNK_CHARS))
+        total = len(pieces)
+        return [
+            Block(kind="section", text=p, heading=f"{block.heading} ({i}/{total})" if total > 1 else block.heading)
+            for i, p in enumerate(pieces, 1)
+        ]
 
     chunks: list[str] = []
     current = ""
@@ -461,10 +519,19 @@ def _split_long_section(block: Block, max_chars: int) -> list[Block]:
     if current:
         chunks.append(current)
 
-    total = len(chunks)
+    # 個別段落本身仍可能超過硬上限（例如某一段本身就是一大坨沒有空行的
+    # 文字），逐一再檢查一次。
+    final_chunks: list[str] = []
+    for c in chunks:
+        if len(c) <= MAX_HARD_CHUNK_CHARS:
+            final_chunks.append(c)
+        else:
+            final_chunks.extend(_hard_split_by_chars(c, MAX_HARD_CHUNK_CHARS))
+
+    total = len(final_chunks)
     return [
         Block(kind="section", text=c, heading=f"{block.heading} ({i}/{total})" if total > 1 else block.heading)
-        for i, c in enumerate(chunks, 1)
+        for i, c in enumerate(final_chunks, 1)
     ]
 
 
@@ -777,6 +844,76 @@ def extract_docx_as_markdown(docx_path: str) -> str:
 
 
 # ============================================================
+# 舊版 .doc（二進位格式）ingestion：透過 LibreOffice 無頭轉檔成 .docx
+#
+# .doc 是舊的 OLE2 二進位格式，跟 .docx（其實是 zip 包 XML）完全不是同一種
+# 檔案結構，python-docx 讀不了。與其要求每個 .doc 手動開 Word 另存新檔，
+# 這裡改成呼叫 LibreOffice 的無頭（headless）轉檔功能自動轉成 .docx，
+# 轉過的結果快取起來（第一次轉完之後就不會再轉），之後就跟一般 .docx
+# 走同一套解析／切塊邏輯。需要先裝 LibreOffice（免費）：
+# https://www.libreoffice.org/download/download/
+# ============================================================
+DOC_CONVERTED_CACHE_DIR = "./doc_converted_cache"
+LIBREOFFICE_PATH = os.getenv("LIBREOFFICE_PATH", None)
+
+_LIBREOFFICE_CANDIDATE_PATHS = [
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+]
+
+
+def _find_soffice() -> Optional[str]:
+    """找 LibreOffice 的 soffice 執行檔：優先看 LIBREOFFICE_PATH 環境變數，
+    再看常見安裝路徑，最後看 PATH 裡有沒有 soffice。找不到回傳 None。
+    """
+    if LIBREOFFICE_PATH and os.path.exists(LIBREOFFICE_PATH):
+        return LIBREOFFICE_PATH
+
+    for candidate in _LIBREOFFICE_CANDIDATE_PATHS:
+        if os.path.exists(candidate):
+            return candidate
+
+    return shutil.which("soffice")
+
+
+def convert_doc_to_docx(doc_path: str) -> Optional[str]:
+    """用 LibreOffice 無頭轉檔把 .doc 轉成 .docx，回傳轉檔後的路徑；
+    找不到 LibreOffice 或轉檔失敗則回傳 None（呼叫端要自行處理略過）。
+    """
+    filename = os.path.basename(doc_path)
+    os.makedirs(DOC_CONVERTED_CACHE_DIR, exist_ok=True)
+    cached_path = os.path.join(DOC_CONVERTED_CACHE_DIR, os.path.splitext(filename)[0] + ".docx")
+
+    if os.path.exists(cached_path) and os.path.getmtime(cached_path) >= os.path.getmtime(doc_path):
+        return cached_path
+
+    soffice = _find_soffice()
+    if not soffice:
+        print(
+            f"[{filename}] 找不到 LibreOffice（soffice），無法自動轉檔。"
+            "請先安裝 https://www.libreoffice.org/download/download/ "
+            "（或設定 LIBREOFFICE_PATH 環境變數指向 soffice.exe）。"
+        )
+        return None
+
+    print(f"[{filename}] 用 LibreOffice 轉成 .docx...")
+    try:
+        result = subprocess.run(
+            [soffice, "--headless", "--convert-to", "docx", "--outdir", DOC_CONVERTED_CACHE_DIR, doc_path],
+            capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"[{filename}] LibreOffice 轉檔逾時（超過 120 秒），略過這個檔案。")
+        return None
+
+    if result.returncode != 0 or not os.path.exists(cached_path):
+        print(f"[{filename}] LibreOffice 轉檔失敗：{result.stderr.strip() or result.stdout.strip()}")
+        return None
+
+    return cached_path
+
+
+# ============================================================
 # Scope metadata（deterministic，不用 LLM 猜）
 # ============================================================
 def enrich_document_scope_metadata(metadata: dict, file_name: str, hierarchy: dict) -> dict:
@@ -859,8 +996,17 @@ def load_documents() -> list[TextNode]:
                             nodes.append(TextNode(text=chunk["text"], metadata=chunk["metadata"], id_=node_id))
                             chunk_index += 1
 
-                elif file.lower().endswith(".docx"):
-                    markdown_text = extract_docx_as_markdown(file_path)
+                elif file.lower().endswith(".docx") or file.lower().endswith(".doc"):
+                    docx_path = file_path
+                    if file.lower().endswith(".doc"):
+                        # 舊版二進位格式，先透過 LibreOffice 無頭轉檔成 .docx
+                        # （轉檔結果會快取，之後不會重轉），轉不成功就跳過
+                        # 並記錄原因，不讓例外悄悄吞掉、讓人以為有處理到。
+                        docx_path = convert_doc_to_docx(file_path)
+                        if docx_path is None:
+                            continue
+
+                    markdown_text = extract_docx_as_markdown(docx_path)
                     base_metadata = enrich_document_scope_metadata(
                         {"file_name": file, "file_path": file_path, "source_type": "docx"}, file, hierarchy,
                     )
@@ -868,11 +1014,6 @@ def load_documents() -> list[TextNode]:
                         node_id = _stable_chunk_id(file, "", chunk_index)
                         nodes.append(TextNode(text=chunk["text"], metadata=chunk["metadata"], id_=node_id))
                         chunk_index += 1
-
-                elif file.lower().endswith(".doc"):
-                    # 舊版二進位 .doc 格式，python-docx/DocxReader 都無法解析，
-                    # 明確跳過並記錄，而不是讓例外悄悄吞掉、讓人以為有處理到。
-                    print(f"[略過] {file} 是舊版 .doc 格式，目前沒有解析器可以處理，請手動另存成 .docx。")
 
             except Exception as e:
                 print(f"[檔案讀取失敗] {file}: {e}")

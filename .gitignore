@@ -7,4 +7,5 @@ __pycache__/
 poppler/
 storage/
 parsed_markdown_cache/
+doc_converted_cache/
 venv/
