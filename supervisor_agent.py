@@ -135,7 +135,7 @@ async def agent_node(state: AgentState):
             }
         except Exception as e:
             print(f"[Agent] 確認動作執行時發生錯誤: {e}")
-            await reset_session()
+            await reset_session(username)
             return {
                 "agent_results": [f"**Action Agent 回報**：\n系統執行時發生錯誤：{str(e)}"],
                 "pending_action": {},

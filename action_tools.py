@@ -261,9 +261,12 @@ class NCUSession:
 
         print("[Action Agent] 啟動背景隱形爬蟲...")
 
-        # debug 完記得改回 headless=True
+        # 這個 browser 只是拿 _login_interactively() 已經登入好的 storage_state
+        # 繼續在背景跑爬蟲/操作，使用者不需要再看到它，所以維持 headless。
+        # 跟下面 _login_interactively() 裡「刻意開可見視窗」的 browser_ui 不同，
+        # 那個是為了讓使用者能手動處理登入時跳出的人機驗證，不能改成 headless。
         self.browser = await self.playwright.chromium.launch(
-            headless=False
+            headless=True
         )
 
         self.context = await self.browser.new_context(

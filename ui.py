@@ -1,5 +1,6 @@
 import os
 import html
+import uuid
 import streamlit as st
 import requests
 import urllib.parse
@@ -8,6 +9,12 @@ import json
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# 每個瀏覽器分頁（Streamlit session）各自產生一個獨立的 thread_id，隨每次
+# 請求送給後端，讓不同使用者的對話歷史、pending_action（例如還沒確認的
+# 報名）不會共用同一份 LangGraph 對話狀態、互相干擾。
+if "thread_id" not in st.session_state:
+    st.session_state.thread_id = str(uuid.uuid4())
 
 st.set_page_config(page_title="NCUXplore 校園助手", page_icon="🎓")
 st.title("NCUXplore 智慧校園代理系統")
@@ -512,7 +519,8 @@ if prompt := st.chat_input("請輸入你的問題 (例如：請幫我查詢本�
                 payload = {
                     "user_message": prompt,
                     "username": user_id,
-                    "password": user_pwd
+                    "password": user_pwd,
+                    "thread_id": st.session_state.thread_id,
                 }
                 
                 response = requests.post("http://127.0.0.1:8000/api/chat", json=payload, timeout=120)

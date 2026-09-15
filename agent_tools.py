@@ -16,6 +16,7 @@
 用關鍵字判斷使用者是否回覆「確定」來觸發的。
 """
 
+import asyncio
 from typing import Any, Optional
 
 from langchain_core.tools import tool
@@ -38,34 +39,51 @@ NO_CREDENTIALS_MSG = (
     "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先在左側邊欄輸入帳號密碼！"
 )
 
-# 背景瀏覽器 session 整個程式只需要一份，同一個帳號登入一次沿用即可
-# （跟原本 supervisor_agent.py 用模組全域變數 global_ncu_session 的做法一致，
-# 只是把 session 生命週期管理集中搬到這裡，供各個工具共用）。
-_global_session: Optional[NCUSession] = None
+# 背景瀏覽器 session 依「帳號」各自保存一份，而不是整個程式共用一個全域
+# session——不然兩個不同使用者（或同一使用者很快點兩次）同時進來，後一個
+# request 會直接把前一個人正在用的瀏覽器 session 關掉、換成自己的帳密重登，
+# 等於幫別人把登入狀態換掉。
+#
+# _session_locks 是「每個帳號各自一把鎖」，用來保護「檢查有沒有現成 session、
+# 沒有的話建立一個」這段（避免同一帳號的兩個並行 request 同時各開一個瀏覽器）；
+# _locks_guard 只是保護 _session_locks 這個 dict 本身不要被並行寫壞，鎖的時間
+# 極短（沒有任何 I/O），不會讓不同帳號的登入互相卡住。
+_sessions: dict[str, NCUSession] = {}
+_session_locks: dict[str, asyncio.Lock] = {}
+_locks_guard = asyncio.Lock()
+
+
+async def _get_session_lock(username: str) -> asyncio.Lock:
+    async with _locks_guard:
+        lock = _session_locks.get(username)
+        if lock is None:
+            lock = asyncio.Lock()
+            _session_locks[username] = lock
+        return lock
 
 
 async def get_or_create_session(username: str, password: str) -> Optional[NCUSession]:
-    """取得（或視需要重新建立）已登入的 NCUSession；缺帳密時回傳 None。"""
-    global _global_session
-
+    """取得（或視需要重新建立）指定帳號已登入的 NCUSession；缺帳密時回傳 None。"""
     if not username or not password:
         return None
 
-    if _global_session is None or _global_session.username != username:
-        if _global_session is not None:
-            await _global_session.close()
-        _global_session = NCUSession(username, password)
-        await _global_session.start()
+    lock = await _get_session_lock(username)
+    async with lock:
+        session = _sessions.get(username)
+        if session is None:
+            session = NCUSession(username, password)
+            await session.start()
+            _sessions[username] = session
+        return session
 
-    return _global_session
 
-
-async def reset_session():
-    """登入類操作出錯時關閉並清掉目前的 session，下次呼叫會重新登入。"""
-    global _global_session
-    if _global_session is not None:
-        await _global_session.close()
-        _global_session = None
+async def reset_session(username: str):
+    """該帳號的登入類操作出錯時關閉並清掉它的 session，下次呼叫會重新登入。"""
+    lock = await _get_session_lock(username)
+    async with lock:
+        session = _sessions.pop(username, None)
+    if session is not None:
+        await session.close()
 
 
 def _find_activity_id_by_keyword(keyword: str) -> Optional[str]:
@@ -100,7 +118,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
                 return {"content": NO_CREDENTIALS_MSG}
             schedule_data = await get_schedule(session)
         except Exception as e:
-            await reset_session()
+            await reset_session(username)
             return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
 
         if schedule_data is not None:
@@ -125,7 +143,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
                 return {"content": NO_CREDENTIALS_MSG}
             search_data = await search_courses(session, keyword)
         except Exception as e:
-            await reset_session()
+            await reset_session(username)
             return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
 
         if not search_data:
@@ -150,7 +168,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
                 return {"content": NO_CREDENTIALS_MSG}
             dashboard_data = await session.get_hours_dashboard()
         except Exception as e:
-            await reset_session()
+            await reset_session(username)
             return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
 
         envelope = {
@@ -224,7 +242,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
                 return {"content": NO_CREDENTIALS_MSG}
             dashboard_data = await session.get_hours_dashboard()
         except Exception as e:
-            await reset_session()
+            await reset_session(username)
             return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
 
         deficiencies = get_deficiency_details(dashboard_data)
@@ -307,7 +325,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
                 dry_run = await session.cancel_activity_registration(activity_id, confirm=False)
                 action_label = "取消報名"
         except Exception as e:
-            await reset_session()
+            await reset_session(username)
             return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
 
         if not dry_run.get("would_click"):
