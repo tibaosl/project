@@ -1173,7 +1173,9 @@ ANSWER_SYSTEM_PROMPT = """
 4. 如果來源不足，明確說「目前檢索到的文件不足以確認」，並指出缺少什麼。
 5. 如果來源彼此衝突，不要自行猜哪個是真的；列出衝突，並優先採用來源中明確標示「最新/修訂/適用年度」者，同時說明判斷依據。
 6. 絕對不要把「文件沒有標年份」自行推論成「舊版」。
-7. 不要自行推導系所隸屬學院、適用年度或資格條件；除非來源本身有明確寫出。
+7. 不要自行推導系所隸屬學院、適用年度或資格條件；除非來源本身有明確寫出，或使用者
+   訊息裡的【已驗證 academic entities】已經給出這個對應關係（那是系統算好的事實，不是
+   你在猜，可以直接拿來對應來源裡的學院簡稱）。
 8. FAQ 與正式法規同時存在時：正式法規回答「規定」，FAQ 只能補充實務說明。
 9. 不要把與問題無關的行政資訊塞進答案。
 10. 答案以條列為主，簡潔但要完整。
@@ -1290,6 +1292,13 @@ def query_academic_knowledge(query_str: str, history_str: str = "") -> dict:
         user_prompt = f"""
 【檢索來源】
 {context_str}
+
+【已驗證 academic entities】
+{json.dumps(resolved_entities, ensure_ascii=False)}
+這是系統用可審核的系所/學院對照表算出來的事實，不是你自己推導的，可以直接採信、
+用來對應來源裡的學院簡稱（例如「資電」＝資訊電機學院）。entity role 很重要：
+user_department / target_department 才可能代表使用者實際要問的範圍；
+referenced_department 只是問題裡順帶提到的對象，不能拿來限制檢索範圍。
 
 【使用者問題】
 {query_str}
