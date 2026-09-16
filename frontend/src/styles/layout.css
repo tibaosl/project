@@ -4,7 +4,15 @@
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: linear-gradient(180deg, #eff6ff 0%, var(--ncux-bg) 320px);
+  background: linear-gradient(180deg, var(--ncux-bg-gradient-top) 0%, var(--ncux-bg) 320px);
+  position: relative;
+  transition: background-color 0.2s ease;
+}
+
+.login-page .theme-toggle {
+  position: absolute;
+  top: 20px;
+  right: 20px;
 }
 
 .login-box {
@@ -15,6 +23,8 @@
   border-radius: 16px;
   padding: 32px 28px;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+  animation: ncux-rise-in 0.35s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .login-box h1 {
@@ -56,7 +66,7 @@
 .login-trust-note {
   font-size: 12.5px;
   color: var(--ncux-text-muted);
-  background: #f8fafc;
+  background: var(--ncux-surface-muted);
   border: 1px solid var(--ncux-border);
   border-radius: 8px;
   padding: 10px 12px;
@@ -74,10 +84,15 @@
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
 }
 
 .login-submit:hover {
-  background: #1e3a8a;
+  background: var(--ncux-primary-hover);
+}
+
+.login-submit:active {
+  transform: scale(0.98);
 }
 
 .login-skip {
@@ -99,6 +114,8 @@
   height: 100vh;
   display: flex;
   flex-direction: column;
+  background: var(--ncux-bg);
+  transition: background-color 0.2s ease;
 }
 
 .chat-header {
@@ -108,6 +125,7 @@
   padding: 12px 20px;
   background: var(--ncux-surface);
   border-bottom: 1px solid var(--ncux-border);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .chat-header h1 {
@@ -131,10 +149,46 @@
   font-size: 13px;
   cursor: pointer;
   color: var(--ncux-text);
+  transition: background-color 0.15s ease;
 }
 
 .chat-header button:hover {
   background: var(--ncux-bg);
+}
+
+.theme-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--ncux-border);
+  border-radius: 999px;
+  background: var(--ncux-surface-muted);
+}
+
+.theme-toggle-btn {
+  border: none;
+  background: none;
+  border-radius: 999px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: background-color 0.15s ease, opacity 0.15s ease;
+  line-height: 1;
+}
+
+.theme-toggle-btn:hover {
+  opacity: 0.85;
+}
+
+.theme-toggle-btn.active {
+  background: var(--ncux-surface);
+  opacity: 1;
+  box-shadow: var(--ncux-shadow);
 }
 
 .chat-body {
@@ -148,11 +202,30 @@
 
 .chat-message-row {
   display: flex;
+  align-items: flex-end;
+  gap: 8px;
   margin-bottom: 16px;
+  animation: ncux-rise-in 0.25s ease;
 }
 
 .chat-message-row.role-user {
   justify-content: flex-end;
+}
+
+.chat-avatar {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  background: var(--ncux-primary-light);
+}
+
+.role-user .chat-avatar {
+  background: var(--ncux-primary);
 }
 
 .chat-bubble {
@@ -161,6 +234,7 @@
   border-radius: 14px;
   line-height: 1.6;
   font-size: 14.5px;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .role-user .chat-bubble {
@@ -174,6 +248,17 @@
   border: 1px solid var(--ncux-border);
   border-bottom-left-radius: 4px;
   width: 100%;
+}
+
+@keyframes ncux-rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .chat-bubble p:first-child {
@@ -209,6 +294,7 @@
   border-top: 1px solid var(--ncux-border);
   background: var(--ncux-surface);
   padding: 14px 20px;
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .chat-input-form {
@@ -224,6 +310,9 @@
   border: 1px solid var(--ncux-border);
   border-radius: 999px;
   font-size: 14.5px;
+  background: var(--ncux-surface);
+  color: var(--ncux-text);
+  transition: background-color 0.2s ease, border-color 0.2s ease;
 }
 
 .chat-input-form input:focus {
@@ -240,6 +329,15 @@
   font-size: 14.5px;
   font-weight: 600;
   cursor: pointer;
+  transition: background-color 0.15s ease, transform 0.1s ease;
+}
+
+.chat-input-form button:hover:not(:disabled) {
+  background: var(--ncux-primary-hover);
+}
+
+.chat-input-form button:active:not(:disabled) {
+  transform: scale(0.97);
 }
 
 .chat-input-form button:disabled {
@@ -305,15 +403,15 @@
 }
 
 .timetable td.has-course {
-  background: #f0f9ff;
+  background: var(--ncux-highlight-bg);
   border-left: 4px solid var(--ncux-accent);
   text-align: left;
 }
 
 .timetable .time-cell {
-  background: #f8fafc;
+  background: var(--ncux-surface-muted);
   font-weight: 700;
-  color: #334155;
+  color: var(--ncux-text);
   white-space: nowrap;
 }
 

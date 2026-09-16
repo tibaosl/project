@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSession } from "../context/SessionContext";
+import ThemeToggle from "../components/ThemeToggle";
 
 export default function Login() {
   const [username, setUsername] = useState("");
@@ -21,6 +22,7 @@ export default function Login() {
 
   return (
     <div className="login-page">
+      <ThemeToggle />
       <div className="login-box">
         <h1>🎓 NCUXplore</h1>
         <p className="subtitle">中央大學校園智慧助手</p>

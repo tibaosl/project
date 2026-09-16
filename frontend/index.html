@@ -4,6 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>NCUXplore 校園助手</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎓</text></svg>" />
+    <meta name="theme-color" content="#1e40af" />
+    <script>
+      (function () {
+        try {
+          var mode = localStorage.getItem("ncuxplore_theme");
+          var resolved =
+            mode === "dark" || mode === "light"
+              ? mode
+              : window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light";
+          document.documentElement.dataset.theme = resolved;
+        } catch (e) {
+          // localStorage/matchMedia 不可用就維持預設（CSS 的 light 預設值）。
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
