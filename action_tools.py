@@ -328,22 +328,56 @@ class NCUSession:
         return False
 
     async def _login_interactively(self):
-        """用可見瀏覽器完成需要使用者操作的 Portal 登入。"""
+        """完成 Portal 登入。
 
+        預設全程 headless（不會跳出任何瀏覽器視窗）：先在背景嘗試一次，
+        按下登入後檢查有沒有跳出人機驗證挑戰——沒有的話就直接在背景把
+        登入跑完，使用者完全不會看到瀏覽器視窗。只有真的偵測到需要人工
+        處理的驗證挑戰時，才改開一個看得到的瀏覽器視窗、重新跑一次登入
+        流程讓使用者手動處理（headless 視窗本來就看不到，沒辦法在裡面
+        手動點東西，所以這種情況一定要重開一個看得到的視窗）。
+        """
         assert self.playwright is not None
 
-        browser_ui = await self.playwright.chromium.launch(
-            headless=False
-        )
+        try:
+            result = await self._attempt_portal_login(headless=True)
+            if result is not None:
+                return result
+
+            print(
+                "[Action Agent] 偵測到需要人工處理的人機驗證，背景視窗沒辦法手動操作，"
+                "改開一個看得到的瀏覽器視窗重新登入..."
+            )
+            result = await self._attempt_portal_login(headless=False, wait_for_manual_challenge=True)
+            if result is None:
+                raise RuntimeError("Portal 登入失敗：可見瀏覽器視窗裡的驗證挑戰逾時或未完成。")
+            return result
+
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Portal 登入階段發生錯誤: {exc}"
+            ) from exc
+
+    async def _attempt_portal_login(
+        self, headless: bool, wait_for_manual_challenge: bool = False
+    ):
+        """嘗試一次 Portal 登入流程，回傳 (login_state, user_agent)；失敗回傳 None。
+
+        `headless=True` 且 `wait_for_manual_challenge=False`（預設的背景嘗試）
+        時，如果按下登入後偵測到人機驗證挑戰，會直接放棄這次嘗試回傳
+        None（背景視窗看不到，沒辦法手動處理），由呼叫端決定要不要改開
+        看得到的視窗重來一次。`wait_for_manual_challenge=True` 時，偵測到
+        挑戰會停下來等使用者手動處理，而不是直接放棄。
+        """
+        browser_ui = await self.playwright.chromium.launch(headless=headless)
 
         try:
-            context_ui = await browser_ui.new_context(
-                locale="zh-TW"
-            )
-
+            context_ui = await browser_ui.new_context(locale="zh-TW")
             page_ui = await context_ui.new_page()
 
-            print("[Action Agent] 正在開啟中大 Portal...")
+            print(f"[Action Agent] 正在開啟中大 Portal...（{'背景，不開視窗' if headless else '可見視窗'}）")
 
             await page_ui.goto(PORTAL_LOGIN_URL)
 
@@ -370,12 +404,16 @@ class NCUSession:
 
             challenge_present = await self._captcha_challenge_present(page_ui)
 
+            if challenge_present and not wait_for_manual_challenge:
+                print("[Action Agent] 偵測到人機驗證挑戰，背景模式無法處理，放棄這次嘗試。")
+                return None
+
             if challenge_present:
                 print(
                     "\n=======================================================\n"
                     "[Action Agent 暫停]\n"
-                    "偵測到需要額外的人機驗證，請手動完成驗證挑戰\n"
-                    "（例如打勾「我不是機器人」並視需要解題），"
+                    "偵測到需要額外的人機驗證，請在剛剛跳出的瀏覽器視窗裡手動完成\n"
+                    "驗證挑戰（例如打勾「我不是機器人」並視需要解題），"
                     "完成後請手動點擊「登入 Portal」按鈕。\n"
                     "系統將等待 90 秒...\n"
                     "=======================================================\n"
@@ -429,16 +467,10 @@ class NCUSession:
             login_state = await context_ui.storage_state()
 
             print(
-                "[Action Agent] 畫面關閉，已擷取登入憑證，"
-                "準備轉入背景執行..."
+                "[Action Agent] 已擷取登入憑證，準備轉入背景執行..."
             )
 
             return login_state, real_user_agent
-
-        except Exception as exc:
-            raise RuntimeError(
-                f"Portal 登入階段發生錯誤: {exc}"
-            ) from exc
 
         finally:
             await browser_ui.close()
