@@ -9,3 +9,5 @@ storage/
 parsed_markdown_cache/
 doc_converted_cache/
 venv/
+frontend/node_modules/
+frontend/dist/
