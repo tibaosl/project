@@ -21,6 +21,12 @@ app = FastAPI(title="NCUXplore Agent System")
 # host 改成 "0.0.0.0"。
 app.mount("/files", StaticFiles(directory="data"), name="files")
 
+@app.get("/api/health")
+async def health():
+    """給前端判斷「後端有沒有連得上」用的輕量端點，不做任何實際工作。"""
+    return {"status": "ok"}
+
+
 class ChatRequest(BaseModel):
     user_message: str
     username: str = ""

@@ -13,6 +13,16 @@
  *   {type: "error", message}
  *   {type: "done"}
  */
+
+// 跟單純的網路連線失敗（fetch 直接 throw TypeError）分開，讓呼叫端可以
+// 判斷「伺服器有回應，只是這次請求本身失敗」還是「根本連不上伺服器」。
+export class HttpStatusError extends Error {
+  constructor(status) {
+    super(`HTTP ${status}`);
+    this.status = status;
+  }
+}
+
 export async function streamChat({ userMessage, username, password, threadId }, onEvent, { signal } = {}) {
   const response = await fetch("/api/chat/stream", {
     method: "POST",
@@ -27,7 +37,7 @@ export async function streamChat({ userMessage, username, password, threadId }, 
   });
 
   if (!response.ok || !response.body) {
-    throw new Error(`HTTP ${response.status}`);
+    throw new HttpStatusError(response.status);
   }
 
   const reader = response.body.getReader();

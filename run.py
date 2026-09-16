@@ -5,9 +5,6 @@
 
 第一次執行、`frontend/node_modules` 還不存在時，會先自動跑 `npm install`
 （Node.js 要先裝好：https://nodejs.org，選 LTS 版本即可）。
-
-舊的 Streamlit 原型（ui.py）還留著沒刪，這支腳本不會啟動它；真的想跑
-Streamlit 版本，另外開一個終端機手動執行 `streamlit run ui.py` 即可。
 """
 
 import os

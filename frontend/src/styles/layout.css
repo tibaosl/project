@@ -149,6 +149,7 @@
   font-size: 13px;
   cursor: pointer;
   color: var(--ncux-text);
+  white-space: nowrap;
   transition: background-color 0.15s ease;
 }
 
@@ -198,6 +199,12 @@
   max-width: 860px;
   width: 100%;
   margin: 0 auto;
+}
+
+.connection-banner {
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .chat-message-row {
@@ -428,4 +435,80 @@
 .timetable .course-location {
   color: var(--ncux-accent);
   font-size: 10.5px;
+}
+
+/* ---- 手機版面 ---- */
+
+@media (max-width: 600px) {
+  .chat-header {
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 10px 14px;
+  }
+
+  .chat-header h1 {
+    font-size: 15px;
+  }
+
+  .chat-header .header-actions {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .chat-header .header-actions > span {
+    display: none;
+  }
+
+  .chat-header button {
+    padding: 5px 10px;
+    font-size: 12px;
+  }
+
+  .theme-toggle-btn {
+    width: 24px;
+    height: 24px;
+    font-size: 12px;
+  }
+
+  .chat-body {
+    padding: 14px;
+  }
+
+  .chat-bubble {
+    max-width: 88%;
+    font-size: 14px;
+  }
+
+  .chat-avatar {
+    width: 26px;
+    height: 26px;
+    font-size: 13px;
+  }
+
+  .chat-input-bar {
+    padding: 10px 14px;
+  }
+
+  .chat-input-form input {
+    padding: 10px 14px;
+    font-size: 14px;
+  }
+
+  .chat-input-form button {
+    padding: 0 16px;
+    font-size: 14px;
+  }
+
+  .login-page {
+    padding: 16px;
+  }
+
+  .login-box {
+    padding: 24px 20px;
+  }
+
+  .login-page .theme-toggle {
+    top: 12px;
+    right: 12px;
+  }
 }
