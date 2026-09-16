@@ -212,7 +212,15 @@ async def agent_node(state: AgentState):
     # @tool 函式，不需要再動這裡的 prompt。
     # ------------------------------------------------------------------
     tools = build_tools(username, password, history_str)
-    llm_with_tools = llm_smart.bind_tools(tools)
+    # parallel_tool_calls=False：沒有這個，模型偶爾會對同一個問題（尤其是
+    # 短、承接上一輪對話的追問，例如「客家系呢」）一次發出好幾個
+    # search_campus_regulations 呼叫、每個問法都不太一樣，每個都要跑一次
+    # 完整的 RAG 流程（intent 判斷 + 多組 embedding + LLM rerank + 答案
+    # 生成），一輪對話從十幾秒變成快兩分鐘，卻只有最後一個結果會顯示
+    # 出來——等於使用者白等了前面幾次。強制一輪只能呼叫一個工具，不夠
+    # 精準的話讓 academic_agent 自己的 query 擴寫/多變體檢索去處理，不需要
+    # 靠 LLM 重複呼叫同一個工具來「多試幾次」。
+    llm_with_tools = llm_smart.bind_tools(tools, parallel_tool_calls=False)
     tools_by_name = {t.name: t for t in tools}
 
     messages = [
