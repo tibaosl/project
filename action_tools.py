@@ -887,36 +887,37 @@ class NCUSession:
         return page
 
     async def _login_on_page(self, page: Page):
-        """在既有 page 上完成一次 Portal 登入（供 SSO 轉導頁面使用）。
+        """處理背景 context 執行中途 SSO session 過期、被導回 Portal 登入頁的情況
+        （例如 iNCU token 過期）。
 
-        跟 _login_interactively 邏輯相同，差別是這裡是在背景 context
-        現有的 page 上操作，而不是另外開一個新視窗。
+        背景 context 本身全程 headless（看不到，沒辦法在裡面手動處理人機驗證），
+        所以不直接在傳入的 `page` 上操作，而是複用 `_attempt_portal_login()`——
+        跟 `_login_interactively()` 啟動時同一套邏輯：先背景嘗試，真的偵測到
+        驗證挑戰才改開一個看得到的視窗讓使用者手動處理。拿到新的登入憑證後，
+        把 cookies 灌回目前這個背景 context，讓 `page` 之後的請求自然帶上新
+        session（呼叫端會自行重新導航，這裡不需要處理導航）。
         """
+        assert self.playwright is not None
+        if self.context is None:
+            raise RuntimeError("BrowserContext 尚未建立，無法重新登入。")
 
-        await page.get_by_role("textbox", name="帳號").fill(self.username)
-        await page.get_by_role("textbox", name="密碼").fill(self.password)
+        print("[Action Agent] iNCU/Portal SSO 需要重新驗證，準備重新登入...")
 
-        login_button = page.get_by_role("button", name="登入 Portal")
-
-        print("[Action Agent] iNCU/Portal SSO 需要重新驗證，自動點擊登入...")
-        await login_button.click()
-
-        if await self._captcha_challenge_present(page):
+        result = await self._attempt_portal_login(headless=True)
+        if result is None:
             print(
-                "\n=======================================================\n"
-                "[Action Agent 暫停]\n"
-                "偵測到需要額外的人機驗證，請在背景瀏覽器視窗中手動完成\n"
-                "驗證挑戰（例如打勾「我不是機器人」並視需要解題），"
-                "完成後請手動點擊「登入 Portal」按鈕。\n"
-                "系統將等待 90 秒...\n"
-                "=======================================================\n"
+                "[Action Agent] 偵測到需要人工處理的人機驗證，背景視窗沒辦法手動操作，"
+                "改開一個看得到的瀏覽器視窗重新登入..."
             )
-        else:
-            print("[Action Agent] 沒有偵測到額外驗證挑戰，繼續自動往下跑...")
+            result = await self._attempt_portal_login(headless=False, wait_for_manual_challenge=True)
+            if result is None:
+                raise RuntimeError("SSO 重新登入失敗：可見瀏覽器視窗裡的驗證挑戰逾時或未完成。")
 
-        await login_button.wait_for(state="hidden", timeout=90000)
+        login_state, _real_user_agent = result
 
-        await page.wait_for_load_state("networkidle")
+        await self.context.add_cookies(login_state["cookies"])
+
+        print("[Action Agent] 已取得新的登入憑證並套用到背景 session。")
 
     async def _handle_oauth_consent_if_present(self, page: Page):
         """處理 iNCU 部分子系統（例如時數 dashboard）額外要求的 OAuth2 授權同意畫面。

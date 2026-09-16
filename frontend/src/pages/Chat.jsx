@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { useSession } from "../context/SessionContext";
-import { streamChat } from "../api/chatStream";
+import { streamChat, HttpStatusError } from "../api/chatStream";
 import MessageList from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
 import ThemeToggle from "../components/ThemeToggle";
+import ConnectionBanner from "../components/ConnectionBanner";
+import { useBackendStatus } from "../hooks/useBackendStatus";
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -21,6 +23,7 @@ export default function Chat() {
   ]);
   const [isStreaming, setIsStreaming] = useState(false);
   const bodyRef = useRef(null);
+  const { online, markUnreachable } = useBackendStatus();
 
   useEffect(() => {
     if (bodyRef.current) {
@@ -73,6 +76,9 @@ export default function Chat() {
         }
       );
     } catch (err) {
+      if (!(err instanceof HttpStatusError)) {
+        markUnreachable();
+      }
       updateMessage(assistantId, (m) => ({
         ...m,
         status: null,
@@ -99,6 +105,7 @@ export default function Chat() {
       </header>
 
       <div className="chat-body" ref={bodyRef}>
+        {!online && <ConnectionBanner />}
         <MessageList messages={messages} />
       </div>
 

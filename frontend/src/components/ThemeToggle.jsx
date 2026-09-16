@@ -18,6 +18,7 @@ export default function ThemeToggle() {
           className={`theme-toggle-btn${mode === opt.mode ? " active" : ""}`}
           onClick={() => setThemeMode(opt.mode)}
           title={opt.label}
+          aria-label={opt.label}
           aria-pressed={mode === opt.mode}
         >
           {opt.icon}
