@@ -1,7 +1,7 @@
 """LangChain tool（function calling）包裝層。
 
 這裡把 action_tools / activity_tools / academic_agent 裡原本的功能，
-包成一個一個帶 docstring／參數說明的 @tool，讓模型自己挑要呼叫哪一個。
+包成一個一個帶 docstring/參數說明的 @tool，讓模型自己挑要呼叫哪一個。
 
 日後要新增功能，只要在這個檔案裡新增一個 @tool 函式（寫清楚 docstring：
 什麼時候該用、參數是什麼），並加進 build_tools() 回傳的清單就好，
