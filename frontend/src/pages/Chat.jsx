@@ -6,6 +6,7 @@ import MessageList from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
 import ThemeToggle from "../components/ThemeToggle";
 import ConnectionBanner from "../components/ConnectionBanner";
+import UnlockActionsBar from "../components/UnlockActionsBar";
 import { useBackendStatus } from "../hooks/useBackendStatus";
 
 function makeId() {
@@ -97,12 +98,14 @@ export default function Chat() {
       <header className="chat-header">
         <h1>🎓 NCUXplore</h1>
         <div className="header-actions">
-          {session.username && <span>已登入：{session.username}</span>}
+          {session.username && <span>已登入：{session.chineseName || session.username}</span>}
           <ThemeToggle />
           <button onClick={newConversation}>開新對話</button>
           <button onClick={logout}>登出</button>
         </div>
       </header>
+
+      {session.username && !session.hasActionAccess && <UnlockActionsBar />}
 
       <div className="chat-body" ref={bodyRef}>
         {!online && <ConnectionBanner />}

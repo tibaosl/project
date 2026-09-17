@@ -78,6 +78,19 @@
   font-size: 13px;
 }
 
+.login-oauth-note {
+  font-size: 12px;
+  color: var(--ncux-text-muted);
+  text-align: center;
+  margin: 8px 0 18px;
+}
+
+.login-box form {
+  border-top: 1px solid var(--ncux-border);
+  padding-top: 16px;
+  margin-top: 4px;
+}
+
 .login-submit {
   width: 100%;
   padding: 11px;
@@ -209,6 +222,64 @@
   position: sticky;
   top: 0;
   z-index: 1;
+}
+
+.unlock-actions-toggle {
+  display: block;
+  width: 100%;
+  padding: 8px 20px;
+  background: var(--ncux-primary-light);
+  color: var(--ncux-primary);
+  border: none;
+  border-bottom: 1px solid var(--ncux-border);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+
+.unlock-actions-toggle:hover {
+  filter: brightness(0.97);
+}
+
+.unlock-actions-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 20px;
+  background: var(--ncux-primary-light);
+  border-bottom: 1px solid var(--ncux-border);
+  font-size: 13px;
+}
+
+.unlock-actions-bar input {
+  padding: 5px 10px;
+  border: 1px solid var(--ncux-border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--ncux-surface);
+  color: var(--ncux-text);
+}
+
+.unlock-actions-bar button {
+  padding: 5px 12px;
+  border: 1px solid var(--ncux-border);
+  border-radius: 6px;
+  font-size: 13px;
+  background: var(--ncux-surface);
+  color: var(--ncux-text);
+  cursor: pointer;
+}
+
+.unlock-actions-error {
+  color: var(--ncux-danger-text);
+}
+
+.unlock-actions-done {
+  color: var(--ncux-ok-text);
+  background: var(--ncux-ok-bg);
+  font-weight: 600;
+  justify-content: center;
 }
 
 .chat-message-row {

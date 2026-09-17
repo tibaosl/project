@@ -5,7 +5,7 @@ import asyncio
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 from supervisor_agent import run_ncuxplore_agent, run_ncuxplore_agent_stream
 from agent_tools import (
@@ -15,6 +15,7 @@ from agent_tools import (
     revoke_session_token,
     reset_session,
 )
+import oauth_portal
 from logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -65,6 +66,67 @@ async def login(req: LoginRequest):
     token = issue_session_token(req.username)
     print(f"[main API] {req.username} 登入成功，已核發 session token。")
     return {"status": "success", "token": token, "username": req.username}
+
+
+@app.get("/api/oauth/login")
+async def oauth_login():
+    """把瀏覽器導去中大 Portal 官方 OAuth 授權頁（見 oauth_portal.py 開頭的
+    說明）——使用者在 portal.ncu.edu.tw 自己的頁面輸入帳密，我們完全看不到
+    密碼，只會在使用者同意授權後拿到一個 access token 去換身分。
+
+    這條路是給瀏覽器「整頁導航」用的，不是給前端 fetch/XHR 呼叫（OAuth
+    授權本來就需要離開我們的網站、到 Portal 那邊完成，再被導回來）。
+    """
+    try:
+        url = oauth_portal.build_authorization_url()
+    except RuntimeError as e:
+        return RedirectResponse(oauth_portal.build_return_url("/login", oauth_error=str(e)))
+    return RedirectResponse(url)
+
+
+@app.get("/api/oauth/callback")
+async def oauth_callback(code: str = "", state: str = "", error: str = ""):
+    """Portal OAuth 授權完成後導回這裡。成功的話換到使用者身分（identifier
+    當作我們系統內的 username），核發跟 /api/login 同一套 session token，
+    再把瀏覽器導回前端、由前端把 token 存起來（見 frontend 的
+    /oauth-complete 頁面）。
+
+    ⚠️ 這裡只驗證了身分，還沒有建立 Playwright 背景 session——課表/時數/
+    選課這些需要自動化操作 Portal/選課系統的功能，第一次使用時仍然會需要
+    使用者另外提供一次密碼（走 /api/login，這裡拿到的 username 可以直接
+    帶進去，不用使用者重打帳號），因為 OAuth 官方 API 沒有提供這些資料/
+    操作的介面。
+    """
+    if error:
+        print(f"[main API] Portal OAuth 授權失敗或被使用者拒絕：{error}")
+        return RedirectResponse(oauth_portal.build_return_url("/login", oauth_error="Portal 授權失敗或已取消。"))
+
+    if not oauth_portal.consume_state(state):
+        print("[main API] Portal OAuth callback 的 state 驗證失敗（可能逾時、重複使用，或是偽造的請求）。")
+        return RedirectResponse(
+            oauth_portal.build_return_url("/login", oauth_error="登入驗證逾時或無效，請重新登入一次。")
+        )
+
+    try:
+        identity = await oauth_portal.exchange_code_for_identity(code)
+    except Exception as e:
+        print(f"[main API] Portal OAuth 換身分失敗：{e}")
+        return RedirectResponse(
+            oauth_portal.build_return_url("/login", oauth_error=f"登入失敗，請再試一次。（{e}）")
+        )
+
+    username = identity["identifier"]
+    token = issue_session_token(username)
+    print(f"[main API] {username}（{identity.get('chinese_name') or '未知姓名'}）透過 Portal OAuth 登入成功。")
+
+    return RedirectResponse(
+        oauth_portal.build_return_url(
+            "/oauth-complete",
+            token=token,
+            username=username,
+            chinese_name=identity.get("chinese_name", ""),
+        )
+    )
 
 
 class LogoutRequest(BaseModel):
