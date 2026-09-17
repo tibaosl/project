@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useCallback } from "react";
+import { requestLogin, requestLogout } from "../api/auth";
 
 const SessionContext = createContext(null);
 
@@ -39,16 +40,41 @@ function makeThreadId() {
 export function SessionProvider({ children }) {
   const [session, setSession] = useState(() => loadStoredSession());
 
-  const login = useCallback((username, password) => {
-    const next = { username, password, threadId: makeThreadId() };
-    setSession(next);
-    persistSession(next);
+  // 登入成功後只存 token，不存密碼——sessionStorage 裡、之後每一輪對話
+  // 送出的請求裡都不會再出現明文密碼（見 api/chatStream.js、main.py 的
+  // /api/login、/api/chat(/stream)）。
+  //
+  // 回傳 { ok, message }，不是丟例外：帳密打錯是很常見、預期內的情況，
+  // 讓呼叫端（Login 頁）用一般的 if/else 處理錯誤訊息，不用包 try/catch。
+  const login = useCallback(async (username, password) => {
+    if (!username || !password) {
+      // 「先不登入」的訪客模式：不呼叫後端，直接開一個沒有 token 的 session。
+      const next = { username: username || "", token: "", threadId: makeThreadId() };
+      setSession(next);
+      persistSession(next);
+      return { ok: true };
+    }
+
+    try {
+      const token = await requestLogin(username, password);
+      const next = { username, token, threadId: makeThreadId() };
+      setSession(next);
+      persistSession(next);
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, message: err.message };
+    }
   }, []);
 
   const logout = useCallback(() => {
+    if (session?.token) {
+      // 登出是收尾動作，不等後端回應、不擋 UI；requestLogout 內部本來就
+      // 會吞掉失敗（例如剛好連不上後端）。
+      void requestLogout(session.token, session.username);
+    }
     setSession(null);
     persistSession(null);
-  }, []);
+  }, [session]);
 
   const newConversation = useCallback(() => {
     setSession((prev) => {

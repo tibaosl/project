@@ -23,14 +23,14 @@ export class HttpStatusError extends Error {
   }
 }
 
-export async function streamChat({ userMessage, username, password, threadId }, onEvent, { signal } = {}) {
+export async function streamChat({ userMessage, username, token, threadId }, onEvent, { signal } = {}) {
   const response = await fetch("/api/chat/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       user_message: userMessage,
       username: username || "",
-      password: password || "",
+      token: token || "",
       thread_id: threadId,
     }),
     signal,
