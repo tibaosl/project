@@ -8,6 +8,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from supervisor_agent import run_ncuxplore_agent, run_ncuxplore_agent_stream
+from agent_tools import (
+    get_or_create_session,
+    issue_session_token,
+    resolve_session_token,
+    revoke_session_token,
+    reset_session,
+)
 from logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -23,26 +30,93 @@ app.mount("/files", StaticFiles(directory="data"), name="files")
 
 @app.get("/api/health")
 async def health():
-    """給前端判斷「後端有沒有連得上」用的輕量端點，不做任何實際工作。"""
+    """給前端判斷「有沒有連得上後端」用的輕量端點，不做任何實際工作。"""
     return {"status": "ok"}
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/api/login")
+async def login(req: LoginRequest):
+    """驗證 Portal 帳密（真的跑一次登入，不是只檢查格式），成功後發一個
+    session token 給前端。前端登入成功後只會存這個 token，不會再存密碼，
+    之後每一輪對話也只帶 token，不會再把密碼傳過來。
+
+    ⚠️ 沿用 agent_tools.get_or_create_session() 既有的 session cache 行為：
+    如果這個帳號剛好已經有現成 session（例如另一個分頁剛登入過），這裡會
+    直接重用、不會重新比對密碼。這不是這次改動新增的信任假設，只是把它
+    集中到登入這一個端點，而不是分散在每一次 /api/chat 呼叫裡。
+    """
+    if not req.username or not req.password:
+        return {"status": "error", "message": "請輸入帳號和密碼。"}
+
+    try:
+        session = await get_or_create_session(req.username, req.password)
+    except Exception as e:
+        print(f"[main API] 登入失敗（{req.username}）：{e}")
+        return {"status": "error", "message": f"登入失敗，請確認帳號密碼是否正確。（{e}）"}
+
+    if session is None:
+        return {"status": "error", "message": "登入失敗，請確認帳號密碼是否正確。"}
+
+    token = issue_session_token(req.username)
+    print(f"[main API] {req.username} 登入成功，已核發 session token。")
+    return {"status": "success", "token": token, "username": req.username}
+
+
+class LogoutRequest(BaseModel):
+    token: str
+    username: str = ""
+
+
+@app.post("/api/logout")
+async def logout(req: LogoutRequest):
+    """登出：讓 token 失效，並順手關掉背景瀏覽器 session（不是必要動作，
+    純粹避免長時間掛著沒人用的 Playwright session 占資源）。
+    """
+    revoke_session_token(req.token)
+    if req.username:
+        await reset_session(req.username)
+    return {"status": "success"}
 
 
 class ChatRequest(BaseModel):
     user_message: str
     username: str = ""
     password: str = ""
+    # 登入後的正常路徑會帶 token，不再帶明文密碼；username/password 兩個
+    # 欄位留著只是為了相容舊版呼叫端（例如還沒登出重登入、還在用舊 token
+    # 的分頁）跟「先不登入」的訪客模式（這種情況兩者都會是空字串）。
+    token: str = ""
     # 前端每個瀏覽器分頁會各自帶一個獨立的 thread_id，讓不同使用者的對話
     # 歷史、pending_action 不會共用同一份 LangGraph 對話狀態。沒帶的話退回
     # 舊的預設值，行為等同改動前（僅供沒更新前端的舊呼叫端相容用）。
     thread_id: str = "default_session"
 
+
+def _resolve_credentials(req: ChatRequest) -> tuple[str, str]:
+    """優先用 token 換回 username（這種情況下密碼一律是空字串，靠後端的
+    session cache 撐著，見 agent_tools.get_or_create_session）；沒有 token
+    或 token 已經失效（伺服器重啟過、使用者登出過）就退回舊的 username/
+    password 欄位，維持相容。
+    """
+    if req.token:
+        resolved_username = resolve_session_token(req.token)
+        if resolved_username:
+            return resolved_username, ""
+    return req.username, req.password
+
 @app.post("/api/chat")
 async def chat_with_agent(req: ChatRequest):
     print(f"\n[main API] 收到前端訊息：「{req.user_message}」（thread_id={req.thread_id}）")
+    username, password = _resolve_credentials(req)
 
     try:
         final_state = await run_ncuxplore_agent(
-            req.user_message, req.username, req.password, thread_id=req.thread_id
+            req.user_message, username, password, thread_id=req.thread_id
         )
     except Exception as e:
         # agent 內部任何未預期的例外（Playwright 掛掉、OpenAI timeout...）都
@@ -93,11 +167,12 @@ async def chat_with_agent_stream(req: ChatRequest):
     `supervisor_agent.run_ncuxplore_agent_stream()` 的說明。
     """
     print(f"\n[main API] 收到前端串流請求：「{req.user_message}」（thread_id={req.thread_id}）")
+    username, password = _resolve_credentials(req)
 
     async def event_source():
         try:
             async for event in run_ncuxplore_agent_stream(
-                req.user_message, req.username, req.password, thread_id=req.thread_id
+                req.user_message, username, password, thread_id=req.thread_id
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:

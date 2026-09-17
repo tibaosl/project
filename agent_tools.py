@@ -17,6 +17,7 @@
 """
 
 import asyncio
+import secrets
 from typing import Any, Optional
 
 from langchain_core.tools import tool
@@ -36,7 +37,7 @@ from activity_tools import (
 from academic_agent import query_academic_knowledge
 
 NO_CREDENTIALS_MSG = (
-    "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先在左側邊欄輸入帳號密碼！"
+    "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先登入 Portal 帳號密碼！"
 )
 
 # 背景瀏覽器 session 依「帳號」各自保存一份，而不是整個程式共用一個全域
@@ -63,14 +64,23 @@ async def _get_session_lock(username: str) -> asyncio.Lock:
 
 
 async def get_or_create_session(username: str, password: str) -> Optional[NCUSession]:
-    """取得（或視需要重新建立）指定帳號已登入的 NCUSession；缺帳密時回傳 None。"""
-    if not username or not password:
+    """取得（或視需要重新建立）指定帳號已登入的 NCUSession。
+
+    `password` 只有在「這個帳號目前沒有現成 session」時才會用到（拿去建立
+    新的 NCUSession、實際登入一次 Portal）；已經有現成 session 時就直接
+    重用，不會比對傳進來的密碼對不對——這也是 token 登入流程能成立的原因：
+    登入之後的每一輪對話只需要帶 username，不用再夾帶密碼，只要 session
+    還在（沒被 reset_session 清掉），`password=""` 一樣拿得到 session。
+    """
+    if not username:
         return None
 
     lock = await _get_session_lock(username)
     async with lock:
         session = _sessions.get(username)
         if session is None:
+            if not password:
+                return None
             session = NCUSession(username, password)
             await session.start()
             _sessions[username] = session
@@ -84,6 +94,40 @@ async def reset_session(username: str):
         session = _sessions.pop(username, None)
     if session is not None:
         await session.close()
+
+
+# ----------------------------------------------------------------------------
+# Session token：登入成功後發一個不透明 token 給前端，取代「每次對話都夾帶
+# 明文密碼」。純記憶體儲存，伺服器重啟就會全部失效（使用者只是要重新登入
+# 一次，不是資料遺失）。
+#
+# ⚠️ 沿用上面 get_or_create_session() 既有的行為：只要 username 對得上
+# 現成的 _sessions cache，就不會再比對密碼——token 只是把「不再重複傳密碼」
+# 這件事往前挪到登入當下一次性驗證，不是額外新增的信任假設。
+# ----------------------------------------------------------------------------
+_session_tokens: dict[str, str] = {}
+
+
+def issue_session_token(username: str) -> str:
+    """核發一個新的 session token，取代該帳號舊的 token（如果有的話）。"""
+    for existing_token, existing_username in list(_session_tokens.items()):
+        if existing_username == username:
+            _session_tokens.pop(existing_token, None)
+
+    token = secrets.token_urlsafe(32)
+    _session_tokens[token] = username
+    return token
+
+
+def resolve_session_token(token: str) -> Optional[str]:
+    """把 token 換回 username；token 不存在（沒登入過/已登出/伺服器重啟過）回傳 None。"""
+    if not token:
+        return None
+    return _session_tokens.get(token)
+
+
+def revoke_session_token(token: str):
+    _session_tokens.pop(token, None)
 
 
 def _find_activity_id_by_keyword(keyword: str) -> Optional[str]:

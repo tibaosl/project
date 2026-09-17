@@ -51,7 +51,7 @@ export default function Chat() {
 
     try {
       await streamChat(
-        { userMessage: text, username: session.username, password: session.password, threadId: session.threadId },
+        { userMessage: text, username: session.username, token: session.token, threadId: session.threadId },
         (event) => {
           if (event.type === "status") {
             updateMessage(assistantId, (m) => ({ ...m, status: event.text }));

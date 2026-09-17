@@ -74,6 +74,10 @@
   line-height: 1.6;
 }
 
+.login-error {
+  font-size: 13px;
+}
+
 .login-submit {
   width: 100%;
   padding: 11px;
