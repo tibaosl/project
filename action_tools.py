@@ -260,39 +260,49 @@ class NCUSession:
         """登入 Portal 並建立背景 BrowserContext。"""
 
         self.playwright = await async_playwright().start()
-        login_state, user_agent = await self._login_interactively()
 
-        print("[Action Agent] 啟動背景隱形爬蟲...")
+        try:
+            login_state, user_agent = await self._login_interactively()
 
-        # 這個 browser 只是拿 _login_interactively() 已經登入好的 storage_state
-        # 繼續在背景跑爬蟲/操作，使用者不需要再看到它，所以維持 headless。
-        # 跟下面 _login_interactively() 裡「刻意開可見視窗」的 browser_ui 不同，
-        # 那個是為了讓使用者能手動處理登入時跳出的人機驗證，不能改成 headless。
-        self.browser = await self.playwright.chromium.launch(
-            headless=True
-        )
+            print("[Action Agent] 啟動背景隱形爬蟲...")
 
-        self.context = await self.browser.new_context(
-            storage_state=login_state,
-            viewport={"width": 1920, "height": 1080},
-            user_agent=user_agent,
-            locale="zh-TW",
-        )
-
-        # ====================================================
-        # Portal page
-        # ====================================================
-
-        self.page = await self.context.new_page()
-
-        await self.page.goto(PORTAL_HOME_URL)
-
-        await self.page.wait_for_load_state("networkidle")
-
-        if "login" in self.page.url:
-            raise RuntimeError(
-                "Cookie 傳遞失敗，背景瀏覽器被踢回 Portal 登入頁面！"
+            # 這個 browser 只是拿 _login_interactively() 已經登入好的
+            # storage_state 繼續在背景跑爬蟲/操作，使用者不需要再看到它，
+            # 所以維持 headless。跟上面 _login_interactively() 裡「刻意開
+            # 可見視窗」的 browser_ui 不同，那個是為了讓使用者能手動處理
+            # 登入時跳出的人機驗證，不能改成 headless。
+            self.browser = await self.playwright.chromium.launch(
+                headless=True
             )
+
+            self.context = await self.browser.new_context(
+                storage_state=login_state,
+                viewport={"width": 1920, "height": 1080},
+                user_agent=user_agent,
+                locale="zh-TW",
+            )
+
+            # ====================================================
+            # Portal page
+            # ====================================================
+
+            self.page = await self.context.new_page()
+
+            await self.page.goto(PORTAL_HOME_URL)
+
+            await self.page.wait_for_load_state("networkidle")
+
+            if "login" in self.page.url:
+                raise RuntimeError(
+                    "Cookie 傳遞失敗，背景瀏覽器被踢回 Portal 登入頁面！"
+                )
+        except Exception:
+            # 登入或背景 session 建立過程中途失敗（帳密錯誤、逾時、cookie
+            # 傳遞失敗...），playwright driver／browser／context 可能已經
+            # 起了一部分，這裡統一收尾，不要留下沒人清的背景 process
+            # （呼叫端只會拿到例外，不會知道要另外呼叫 close()）。
+            await self.close()
+            raise
 
         print("[Action Agent] Portal session 建立完成。")
 
@@ -418,12 +428,20 @@ class NCUSession:
                     "系統將等待 90 秒...\n"
                     "=======================================================\n"
                 )
+                # 有人在等，才需要給到 90 秒讓使用者手動解驗證挑戰。
+                login_wait_timeout = 90000
             else:
                 print("[Action Agent] 沒有偵測到額外驗證挑戰，繼續自動往下跑...")
+                # 沒有人在等，帳密錯誤這類失敗通常幾秒內 Portal 就會顯示錯誤、
+                # 但登入按鈕不會消失（跟「登入成功、按鈕被導頁帶走」是同一種
+                # 訊號：按鈕一直不消失）。這裡如果沿用 90 秒逾時，帳密打錯時
+                # 使用者會看起來像「卡住」快兩分鐘才等到失敗訊息，體驗很差，
+                # 所以這個分支縮短逾時，讓失敗能更快回報出去。
+                login_wait_timeout = 20000
 
             await login_button.wait_for(
                 state="hidden",
-                timeout=90000,
+                timeout=login_wait_timeout,
             )
 
             print("[Action Agent] Portal 登入成功！")
