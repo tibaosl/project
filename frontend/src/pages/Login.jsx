@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSession } from "../context/SessionContext";
 import ThemeToggle from "../components/ThemeToggle";
+import Logo from "../components/Logo";
 
 export default function Login() {
   const [username, setUsername] = useState("");
@@ -51,8 +52,14 @@ export default function Login() {
     <div className="login-page">
       <ThemeToggle />
       <div className="login-box">
-        <h1><span className="ncux-logo-badge">🎓</span> NCUXplore</h1>
+        <h1><Logo size={35} /> NCUXplore</h1>
         <p className="subtitle">中央大學校園智慧助手</p>
+        <div className="login-feature-pills">
+          <span className="ncux-badge ncux-badge-info">法規查詢</span>
+          <span className="ncux-badge ncux-badge-info">課表</span>
+          <span className="ncux-badge ncux-badge-info">時數進度</span>
+          <span className="ncux-badge ncux-badge-info">活動報名</span>
+        </div>
 
         {error && <div className="ncux-banner ncux-banner-warn login-error">⚠️ {error}</div>}
 

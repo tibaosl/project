@@ -27,6 +27,7 @@
   --ncux-confirm-text: #9a3412;
   --ncux-radius: 12px;
   --ncux-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+  --ncux-shadow-hover: 0 4px 14px rgba(15, 23, 42, 0.1);
   color-scheme: light;
 }
 
@@ -54,6 +55,7 @@
   --ncux-confirm-border: #c2680f;
   --ncux-confirm-text: #fdba74;
   --ncux-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --ncux-shadow-hover: 0 4px 14px rgba(0, 0, 0, 0.45);
   color-scheme: dark;
 }
 
@@ -83,11 +85,10 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.6em;
-  height: 1.6em;
+  flex: none;
   border-radius: 9999px;
   background: linear-gradient(135deg, var(--ncux-primary), var(--ncux-violet));
-  font-size: 0.62em;
+  color: #fff;
   vertical-align: middle;
   box-shadow: 0 2px 6px rgba(109, 40, 217, 0.35);
 }
@@ -117,7 +118,12 @@ button {
   padding: 14px 16px;
   margin: 8px 0;
   box-shadow: var(--ncux-shadow);
-  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.ncux-card:hover {
+  box-shadow: var(--ncux-shadow-hover);
+  transform: translateY(-1px);
 }
 
 .ncux-card-title {

@@ -8,6 +8,7 @@ import ThemeToggle from "../components/ThemeToggle";
 import ConnectionBanner from "../components/ConnectionBanner";
 import UnlockActionsBar from "../components/UnlockActionsBar";
 import { useBackendStatus } from "../hooks/useBackendStatus";
+import Logo from "../components/Logo";
 
 function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -143,7 +144,7 @@ export default function Chat() {
   return (
     <div className="chat-page">
       <header className="chat-header">
-        <h1><span className="ncux-logo-badge">🎓</span> NCUXplore</h1>
+        <h1><Logo size={27} /> NCUXplore</h1>
         <div className="header-actions">
           {session.username && <span>已登入：{session.chineseName || session.username}</span>}
           <ThemeToggle />

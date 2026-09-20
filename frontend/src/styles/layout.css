@@ -6,16 +6,50 @@
   padding: 24px;
   background: linear-gradient(180deg, var(--ncux-bg-gradient-top) 0%, var(--ncux-bg) 320px);
   position: relative;
+  overflow: hidden;
   transition: background-color 0.2s ease;
+}
+
+/* 兩顆柔和的漸層色塊當背景裝飾，純 CSS、不用額外圖片素材——讓登入頁不
+   只是一張白卡片浮在單色背景上，同時保留現有的紫金配色語彙。 */
+.login-page::before,
+.login-page::after {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(60px);
+  opacity: 0.35;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.login-page::before {
+  width: 380px;
+  height: 380px;
+  top: -140px;
+  left: -120px;
+  background: var(--ncux-primary);
+}
+
+.login-page::after {
+  width: 320px;
+  height: 320px;
+  bottom: -120px;
+  right: -100px;
+  background: var(--ncux-accent);
+  opacity: 0.25;
 }
 
 .login-page .theme-toggle {
   position: absolute;
   top: 20px;
   right: 20px;
+  z-index: 1;
 }
 
 .login-box {
+  position: relative;
+  z-index: 1;
   width: 100%;
   max-width: 380px;
   background: var(--ncux-surface);
@@ -28,6 +62,9 @@
 }
 
 .login-box h1 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   font-size: 22px;
   margin: 0 0 4px;
 }
@@ -35,7 +72,18 @@
 .login-box p.subtitle {
   color: var(--ncux-text-muted);
   font-size: 14px;
-  margin: 0 0 20px;
+  margin: 0 0 16px;
+}
+
+.login-feature-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 20px;
+}
+
+.login-feature-pills .ncux-badge {
+  margin-right: 0;
 }
 
 .login-field {

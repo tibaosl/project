@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useSession } from "../context/SessionContext";
+import Logo from "../components/Logo";
 
 // 後端 /api/oauth/callback 完成 Portal OAuth 授權流程後，會把瀏覽器導來這頁，
 // URL 帶著 token/username（見 oauth_portal.build_return_url）。這裡只做一件
@@ -33,7 +34,7 @@ export default function OAuthComplete() {
   return (
     <div className="login-page">
       <div className="login-box">
-        <h1><span className="ncux-logo-badge">🎓</span> NCUXplore</h1>
+        <h1><Logo size={35} /> NCUXplore</h1>
         <p className="subtitle">登入處理中，請稍候...</p>
       </div>
     </div>
