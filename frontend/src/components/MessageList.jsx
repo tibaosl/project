@@ -1,13 +1,14 @@
 import MessageContent from "./MessageContent";
 import StatusIndicator from "./StatusIndicator";
 import SourcesPanel from "./SourcesPanel";
+import { AssistantAvatar, UserAvatar } from "./Avatar";
 
 export default function MessageList({ messages }) {
   return (
     <div>
       {messages.map((msg) => (
         <div className={`chat-message-row role-${msg.role}`} key={msg.id}>
-          {msg.role === "assistant" && <div className="chat-avatar">🤖</div>}
+          {msg.role === "assistant" && <AssistantAvatar />}
           <div className="chat-bubble">
             {msg.role === "assistant" && msg.status && <StatusIndicator text={msg.status} />}
             {msg.content != null && <MessageContent content={msg.content} />}
@@ -16,7 +17,7 @@ export default function MessageList({ messages }) {
             )}
             {msg.role === "assistant" && msg.sources && <SourcesPanel sources={msg.sources} />}
           </div>
-          {msg.role === "user" && <div className="chat-avatar">🧑</div>}
+          {msg.role === "user" && <UserAvatar />}
         </div>
       ))}
     </div>

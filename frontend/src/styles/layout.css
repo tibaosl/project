@@ -11,14 +11,16 @@
 }
 
 /* 兩顆柔和的漸層色塊當背景裝飾，純 CSS、不用額外圖片素材——讓登入頁不
-   只是一張白卡片浮在單色背景上，同時保留現有的紫金配色語彙。 */
+   只是一張白卡片浮在單色背景上，同時保留現有的紫金配色語彙。模糊調大、
+   透明度調低，讓色塊是隱約的暈染感，不是搶眼的螢光光暈（使用者反映原本
+   的版本看久會不舒服）。 */
 .login-page::before,
 .login-page::after {
   content: "";
   position: absolute;
   border-radius: 50%;
-  filter: blur(60px);
-  opacity: 0.35;
+  filter: blur(90px);
+  opacity: 0.16;
   pointer-events: none;
   z-index: 0;
 }
@@ -37,7 +39,7 @@
   bottom: -120px;
   right: -100px;
   background: var(--ncux-accent);
-  opacity: 0.25;
+  opacity: 0.14;
 }
 
 .login-page .theme-toggle {
@@ -350,12 +352,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 15px;
   background: var(--ncux-primary-light);
+  color: var(--ncux-primary);
 }
 
 .role-user .chat-avatar {
   background: var(--ncux-primary);
+  color: var(--ncux-surface);
 }
 
 .chat-bubble {

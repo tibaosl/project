@@ -3,15 +3,15 @@ import { describe, it, expect } from "vitest";
 import MessageList from "../MessageList";
 
 describe("MessageList", () => {
-  it("使用者訊息顯示 🧑 頭像、助手訊息顯示 🤖 頭像", () => {
+  it("使用者訊息顯示使用者頭像、助手訊息顯示助手頭像", () => {
     const messages = [
       { id: "1", role: "assistant", content: "你好！" },
       { id: "2", role: "user", content: "資工系英文畢業門檻" },
     ];
-    render(<MessageList messages={messages} />);
+    const { container } = render(<MessageList messages={messages} />);
 
-    expect(screen.getByText("🤖")).toBeInTheDocument();
-    expect(screen.getByText("🧑")).toBeInTheDocument();
+    expect(container.querySelector(".chat-avatar-assistant")).toBeInTheDocument();
+    expect(container.querySelector(".chat-avatar-user")).toBeInTheDocument();
     expect(screen.getByText("你好！")).toBeInTheDocument();
     expect(screen.getByText("資工系英文畢業門檻")).toBeInTheDocument();
   });

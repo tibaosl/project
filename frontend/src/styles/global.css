@@ -1,61 +1,63 @@
-/* 配色靈感來自中央大學官網實際使用的紫色（#56008d，見 ncu.edu.tw 首頁
-   header）+ 金色點綴——中大校徽/官網本身就是紫配金。刻意不是完全一樣的
-   色號：這是學生做的非官方工具，不是校方系統，用「同色系但不是同一個
-   色號」呼應學校識別、同時避免看起來像在冒充官方網站。 */
+/* 配色靈感仍然來自中央大學官網的紫（見 ncu.edu.tw 首頁 header）+ 金色點綴，
+   但 Round 8 版本用的是 Tailwind violet-700 等「網頁 UI 常用飽和色」，使用者
+   實際用起來反映太搶眼、看久會不舒服。Round 11 全部降低飽和度、往柔和的
+   灰調靠：主色從鮮豔紫改成偏灰的霧紫（plum/lavender），金色從偏橘的琥珀
+   改成柔和的淺駝金，背景/文字也從冷灰藍（slate）改成帶一點暖灰的中性色，
+   整體看起來更像「有質感的霧面」而不是「螢光」。 */
 :root {
-  --ncux-bg: #f8fafc;
-  --ncux-bg-gradient-top: #f4effb;
+  --ncux-bg: #f8f7fa;
+  --ncux-bg-gradient-top: #efeaf3;
   --ncux-surface: #ffffff;
-  --ncux-surface-muted: #f8fafc;
-  --ncux-border: #e2e8f0;
-  --ncux-text: #0f172a;
-  --ncux-text-muted: #64748b;
-  --ncux-primary: #6d28d9;
-  --ncux-primary-hover: #5b21b6;
-  --ncux-primary-light: #f3e8ff;
-  --ncux-highlight-bg: #f3e8ff;
-  --ncux-accent: #b45309;
-  --ncux-violet: #9333ea;
+  --ncux-surface-muted: #f8f7fa;
+  --ncux-border: #e2dde6;
+  --ncux-text: #2e2a35;
+  --ncux-text-muted: #746e7d;
+  --ncux-primary: #7c6a9c;
+  --ncux-primary-hover: #6a5a87;
+  --ncux-primary-light: #eee9f5;
+  --ncux-highlight-bg: #eee9f5;
+  --ncux-accent: #ad8a5a;
+  --ncux-violet: #9884b3;
   --ncux-ok-bg: #dcfce7;
   --ncux-ok-text: #166534;
   --ncux-warn-bg: #fef3c7;
   --ncux-warn-text: #92400e;
   --ncux-danger-bg: #fef2f2;
   --ncux-danger-text: #b91c1c;
-  --ncux-confirm-bg: #fff7ed;
-  --ncux-confirm-border: #fdba74;
-  --ncux-confirm-text: #9a3412;
+  --ncux-confirm-bg: #fbf4ec;
+  --ncux-confirm-border: #dcbb8c;
+  --ncux-confirm-text: #8a6a3f;
   --ncux-radius: 12px;
-  --ncux-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
-  --ncux-shadow-hover: 0 4px 14px rgba(15, 23, 42, 0.1);
+  --ncux-shadow: 0 1px 3px rgba(46, 42, 53, 0.06);
+  --ncux-shadow-hover: 0 4px 14px rgba(46, 42, 53, 0.1);
   color-scheme: light;
 }
 
 :root[data-theme="dark"] {
-  --ncux-bg: #0f172a;
-  --ncux-bg-gradient-top: #1e1235;
-  --ncux-surface: #1e293b;
-  --ncux-surface-muted: #17233a;
-  --ncux-border: #334155;
-  --ncux-text: #f1f5f9;
-  --ncux-text-muted: #94a3b8;
-  --ncux-primary: #a78bfa;
-  --ncux-primary-hover: #c4b5fd;
-  --ncux-primary-light: #3b0764;
-  --ncux-highlight-bg: #3b0764;
-  --ncux-accent: #fbbf24;
-  --ncux-violet: #c4b5fd;
+  --ncux-bg: #1c1922;
+  --ncux-bg-gradient-top: #251f2e;
+  --ncux-surface: #262130;
+  --ncux-surface-muted: #211c29;
+  --ncux-border: #3b3446;
+  --ncux-text: #ece8f0;
+  --ncux-text-muted: #a49bb0;
+  --ncux-primary: #b3a1cf;
+  --ncux-primary-hover: #c4b4dc;
+  --ncux-primary-light: #362d45;
+  --ncux-highlight-bg: #362d45;
+  --ncux-accent: #cfab7b;
+  --ncux-violet: #c7bade;
   --ncux-ok-bg: rgba(34, 197, 94, 0.16);
   --ncux-ok-text: #4ade80;
   --ncux-warn-bg: rgba(245, 158, 11, 0.16);
-  --ncux-warn-text: #fbbf24;
+  --ncux-warn-text: #eab84f;
   --ncux-danger-bg: rgba(239, 68, 68, 0.16);
   --ncux-danger-text: #f87171;
-  --ncux-confirm-bg: rgba(251, 146, 60, 0.12);
-  --ncux-confirm-border: #c2680f;
-  --ncux-confirm-text: #fdba74;
-  --ncux-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --ncux-shadow-hover: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --ncux-confirm-bg: rgba(207, 171, 123, 0.12);
+  --ncux-confirm-border: #a2825a;
+  --ncux-confirm-text: #dcbb8c;
+  --ncux-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --ncux-shadow-hover: 0 4px 14px rgba(0, 0, 0, 0.4);
   color-scheme: dark;
 }
 
@@ -90,7 +92,7 @@ button {
   background: linear-gradient(135deg, var(--ncux-primary), var(--ncux-violet));
   color: #fff;
   vertical-align: middle;
-  box-shadow: 0 2px 6px rgba(109, 40, 217, 0.35);
+  box-shadow: 0 2px 6px rgba(124, 106, 156, 0.35);
 }
 
 ::-webkit-scrollbar {
