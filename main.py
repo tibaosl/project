@@ -273,4 +273,13 @@ if __name__ == "__main__":
     # ⚠️ 這裡的 host 一定要維持 "127.0.0.1"（僅本機可連線）——/files 掛的
     # data/ 資料夾、/api/chat 收的帳號密碼目前都沒有任何驗證機制，
     # 改成 "0.0.0.0" 之前請先看上面 StaticFiles 掛載處的說明。
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    # ⚠️ 特意直接傳 app 物件（不是 "main:app" 字串）。字串形式是給
+    # reload=True 用的：uvicorn 需要能夠在檔案變動時重新 import 一次拿到
+    # 新版的 app。但這裡 reload=False，而且本來就已經在 `python main.py`
+    # 這個 process 裡把整支檔案當 __main__ 執行過一次了——如果還傳字串，
+    # uvicorn 會再用模組名稱 "main"（不是 "__main__"，Python 對這是
+    # 兩個不同的 sys.modules cache key）重新 import 一次整支檔案，等於
+    # 這支檔案的最上層程式碼（包含建立 FastAPI() app、上面那些
+    # print/掛載判斷）會跑兩遍，只是第一遍建出來的 app 沒被用到、白跑。
+    # 直接傳物件就不會有這個問題。
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)
