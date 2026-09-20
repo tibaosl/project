@@ -51,7 +51,7 @@ export default function Login() {
     <div className="login-page">
       <ThemeToggle />
       <div className="login-box">
-        <h1>🎓 NCUXplore</h1>
+        <h1><span className="ncux-logo-badge">🎓</span> NCUXplore</h1>
         <p className="subtitle">中央大學校園智慧助手</p>
 
         {error && <div className="ncux-banner ncux-banner-warn login-error">⚠️ {error}</div>}

@@ -124,7 +124,7 @@ export default function Chat() {
   return (
     <div className="chat-page">
       <header className="chat-header">
-        <h1>🎓 NCUXplore</h1>
+        <h1><span className="ncux-logo-badge">🎓</span> NCUXplore</h1>
         <div className="header-actions">
           {session.username && <span>已登入：{session.chineseName || session.username}</span>}
           <ThemeToggle />
