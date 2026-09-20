@@ -1,17 +1,21 @@
+/* 配色靈感來自中央大學官網實際使用的紫色（#56008d，見 ncu.edu.tw 首頁
+   header）+ 金色點綴——中大校徽/官網本身就是紫配金。刻意不是完全一樣的
+   色號：這是學生做的非官方工具，不是校方系統，用「同色系但不是同一個
+   色號」呼應學校識別、同時避免看起來像在冒充官方網站。 */
 :root {
   --ncux-bg: #f8fafc;
-  --ncux-bg-gradient-top: #eff6ff;
+  --ncux-bg-gradient-top: #f4effb;
   --ncux-surface: #ffffff;
   --ncux-surface-muted: #f8fafc;
   --ncux-border: #e2e8f0;
   --ncux-text: #0f172a;
   --ncux-text-muted: #64748b;
-  --ncux-primary: #1e40af;
-  --ncux-primary-hover: #1e3a8a;
-  --ncux-primary-light: #dbeafe;
-  --ncux-highlight-bg: #f0f9ff;
-  --ncux-accent: #0284c7;
-  --ncux-violet: #7c3aed;
+  --ncux-primary: #6d28d9;
+  --ncux-primary-hover: #5b21b6;
+  --ncux-primary-light: #f3e8ff;
+  --ncux-highlight-bg: #f3e8ff;
+  --ncux-accent: #b45309;
+  --ncux-violet: #9333ea;
   --ncux-ok-bg: #dcfce7;
   --ncux-ok-text: #166534;
   --ncux-warn-bg: #fef3c7;
@@ -28,18 +32,18 @@
 
 :root[data-theme="dark"] {
   --ncux-bg: #0f172a;
-  --ncux-bg-gradient-top: #131f37;
+  --ncux-bg-gradient-top: #1e1235;
   --ncux-surface: #1e293b;
   --ncux-surface-muted: #17233a;
   --ncux-border: #334155;
   --ncux-text: #f1f5f9;
   --ncux-text-muted: #94a3b8;
-  --ncux-primary: #3b82f6;
-  --ncux-primary-hover: #60a5fa;
-  --ncux-primary-light: #1e3a5f;
-  --ncux-highlight-bg: #16324d;
-  --ncux-accent: #38bdf8;
-  --ncux-violet: #a78bfa;
+  --ncux-primary: #a78bfa;
+  --ncux-primary-hover: #c4b5fd;
+  --ncux-primary-light: #3b0764;
+  --ncux-highlight-bg: #3b0764;
+  --ncux-accent: #fbbf24;
+  --ncux-violet: #c4b5fd;
   --ncux-ok-bg: rgba(34, 197, 94, 0.16);
   --ncux-ok-text: #4ade80;
   --ncux-warn-bg: rgba(245, 158, 11, 0.16);
@@ -73,6 +77,19 @@ body {
 
 button {
   font-family: inherit;
+}
+
+.ncux-logo-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6em;
+  height: 1.6em;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, var(--ncux-primary), var(--ncux-violet));
+  font-size: 0.62em;
+  vertical-align: middle;
+  box-shadow: 0 2px 6px rgba(109, 40, 217, 0.35);
 }
 
 ::-webkit-scrollbar {

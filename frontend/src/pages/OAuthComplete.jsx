@@ -33,7 +33,7 @@ export default function OAuthComplete() {
   return (
     <div className="login-page">
       <div className="login-box">
-        <h1>🎓 NCUXplore</h1>
+        <h1><span className="ncux-logo-badge">🎓</span> NCUXplore</h1>
         <p className="subtitle">登入處理中，請稍候...</p>
       </div>
     </div>
