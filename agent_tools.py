@@ -129,21 +129,28 @@ async def reset_session(username: str):
 # 明文密碼」。純記憶體儲存，伺服器重啟就會全部失效（使用者只是要重新登入
 # 一次，不是資料遺失）。
 #
+# 同一個帳號可以同時持有多組有效 token（例如同一個使用者開兩個分頁各自
+# 登入一次），彼此不會互相頂掉——所有 token 反正都指向同一個共用的
+# NCUSession（見上面 _sessions），讓其中一個分頁失效並不會讓 Playwright
+# session 變得更安全，只會讓另一個分頁的使用者莫名其妙被登出、一頭霧水。
+# `_username_tokens` 是反向索引（username -> 該帳號目前所有有效 token），
+# 用來讓「登出時只清掉自己這個 token，且只有真的是最後一個 token 時才
+# 順便關掉共用的背景瀏覽器」這件事是 O(1) 查表，不用整個 _session_tokens
+# 掃一遍。
+#
 # ⚠️ 沿用上面 get_or_create_session() 既有的行為：只要 username 對得上
 # 現成的 _sessions cache，就不會再比對密碼——token 只是把「不再重複傳密碼」
 # 這件事往前挪到登入當下一次性驗證，不是額外新增的信任假設。
 # ----------------------------------------------------------------------------
 _session_tokens: dict[str, str] = {}
+_username_tokens: dict[str, set[str]] = {}
 
 
 def issue_session_token(username: str) -> str:
-    """核發一個新的 session token，取代該帳號舊的 token（如果有的話）。"""
-    for existing_token, existing_username in list(_session_tokens.items()):
-        if existing_username == username:
-            _session_tokens.pop(existing_token, None)
-
+    """核發一個新的 session token，不會動到該帳號其他分頁既有的 token。"""
     token = secrets.token_urlsafe(32)
     _session_tokens[token] = username
+    _username_tokens.setdefault(username, set()).add(token)
     return token
 
 
@@ -155,7 +162,21 @@ def resolve_session_token(token: str) -> Optional[str]:
 
 
 def revoke_session_token(token: str):
-    _session_tokens.pop(token, None)
+    username = _session_tokens.pop(token, None)
+    if username is None:
+        return
+    tokens = _username_tokens.get(username)
+    if tokens is not None:
+        tokens.discard(token)
+        if not tokens:
+            _username_tokens.pop(username, None)
+
+
+def has_active_tokens(username: str) -> bool:
+    """這個帳號目前是否還有其他分頁/裝置持有的有效 token——給登出流程
+    判斷「可不可以順便關掉共用的背景瀏覽器」用，見 main.py 的 /api/logout。
+    """
+    return bool(_username_tokens.get(username))
 
 
 def _find_activity_id_by_keyword(keyword: str) -> Optional[str]:

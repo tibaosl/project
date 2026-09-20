@@ -25,7 +25,7 @@ export default function OAuthComplete() {
       loginWithToken(username, token, chineseName);
       navigate("/chat", { replace: true });
     } else {
-      navigate("/login?oauth_error=登入流程未完成，請再試一次。", { replace: true });
+      navigate("/login?login_error=登入流程未完成，請再試一次。", { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

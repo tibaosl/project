@@ -16,6 +16,7 @@ import os
 import secrets
 import time
 from typing import Any
+from urllib.parse import urlencode
 
 import requests
 
@@ -82,8 +83,7 @@ def build_authorization_url() -> str:
         "scope": SCOPES,
         "state": state,
     }
-    query = "&".join(f"{k}={requests.utils.quote(v, safe='')}" for k, v in params.items())
-    return f"{AUTHORIZATION_URL}?{query}"
+    return f"{AUTHORIZATION_URL}?{urlencode(params)}"
 
 
 def consume_state(state: str) -> bool:
@@ -144,7 +144,7 @@ async def exchange_code_for_identity(code: str) -> dict[str, Any]:
 
 def build_return_url(path: str, **query: str) -> str:
     """組出 OAuth 流程結束後要導回前端的網址（成功會帶 token/username，
-    失敗會帶 oauth_error）。"""
-    qs = "&".join(f"{k}={requests.utils.quote(v, safe='')}" for k, v in query.items() if v)
+    失敗會帶 login_error）。"""
+    qs = urlencode({k: v for k, v in query.items() if v})
     base = f"{FRONTEND_ORIGIN}{path}"
     return f"{base}?{qs}" if qs else base

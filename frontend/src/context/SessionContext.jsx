@@ -47,12 +47,20 @@ export function SessionProvider({ children }) {
   // 回傳 { ok, message }，不是丟例外：帳密打錯是很常見、預期內的情況，
   // 讓呼叫端（Login 頁）用一般的 if/else 處理錯誤訊息，不用包 try/catch。
   const login = useCallback(async (username, password) => {
-    if (!username || !password) {
-      // 「先不登入」的訪客模式：不呼叫後端，直接開一個沒有 token 的 session。
-      const next = { username: username || "", token: "", hasActionAccess: false, threadId: makeThreadId() };
+    if (!username && !password) {
+      // 「先不登入」的訪客模式（Login 頁的「先不登入」按鈕固定帶兩個空
+      // 字串呼叫這裡）：不呼叫後端，直接開一個沒有 token 的 session。
+      const next = { username: "", token: "", hasActionAccess: false, threadId: makeThreadId() };
       setSession(next);
       persistSession(next);
       return { ok: true };
+    }
+
+    if (!username || !password) {
+      // 手動登入表單只填了其中一個欄位——不能落到訪客模式（那樣畫面上會
+      // 顯示「已登入：<使用者打的帳號>」，但其實完全沒有 session，之後
+      // 任何需要帳密的功能都會莫名其妙失敗），要明確當成錯誤退回去。
+      return { ok: false, message: "請同時輸入帳號和密碼，或改用「先不登入」。" };
     }
 
     try {

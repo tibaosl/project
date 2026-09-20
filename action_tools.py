@@ -921,21 +921,65 @@ class NCUSession:
 
         print("[Action Agent] iNCU/Portal SSO 需要重新驗證，準備重新登入...")
 
-        result = await self._attempt_portal_login(headless=True)
-        if result is None:
-            print(
-                "[Action Agent] 偵測到需要人工處理的人機驗證，背景視窗沒辦法手動操作，"
-                "改開一個看得到的瀏覽器視窗重新登入..."
-            )
-            result = await self._attempt_portal_login(headless=False, wait_for_manual_challenge=True)
+        # ⚠️ 跟 _login_interactively() 一樣包 try/except：_attempt_portal_login()
+        # 內部的 login_button.wait_for(...) 逾時（例如存的密碼過期/被改掉，
+        # 但沒有跳出人機驗證）會直接丟出 Playwright 的 TimeoutError，如果這裡
+        # 不接住，會整個從 open_incu_home() 原封不動炸出去，而不是變成清楚
+        # 的錯誤訊息。
+        try:
+            result = await self._attempt_portal_login(headless=True)
             if result is None:
-                raise RuntimeError("SSO 重新登入失敗：可見瀏覽器視窗裡的驗證挑戰逾時或未完成。")
+                print(
+                    "[Action Agent] 偵測到需要人工處理的人機驗證，背景視窗沒辦法手動操作，"
+                    "改開一個看得到的瀏覽器視窗重新登入..."
+                )
+                result = await self._attempt_portal_login(headless=False, wait_for_manual_challenge=True)
+                if result is None:
+                    raise RuntimeError("SSO 重新登入失敗：可見瀏覽器視窗裡的驗證挑戰逾時或未完成。")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"SSO 重新登入階段發生錯誤: {exc}") from exc
 
         login_state, _real_user_agent = result
 
         await self.context.add_cookies(login_state["cookies"])
 
+        # cookies 之外，storage_state() 拿到的 origins（localStorage）沒辦法
+        # 用一個 API 直接灌回既有 context——只能開一個該 origin 的分頁實際
+        # 執行 script 寫進去。_login_interactively() 啟動時是靠 new_context(
+        # storage_state=...) 一次到位帶進 cookies + origins，這裡是中途
+        # 補登，只能用這個比較笨的方式補上同樣的東西。
+        origins = login_state.get("origins")
+        if origins:
+            await self._restore_origin_storage(origins)
+
         print("[Action Agent] 已取得新的登入憑證並套用到背景 session。")
+
+    async def _restore_origin_storage(self, origins: list[dict]):
+        """把 storage_state() 裡的 origins（每個 origin 各自的 localStorage）
+        套用到目前的背景 context。"""
+        for origin_entry in origins:
+            origin_url = origin_entry.get("origin")
+            local_storage_items = origin_entry.get("localStorage") or []
+            if not origin_url or not local_storage_items:
+                continue
+
+            restore_page = await self.context.new_page()
+            try:
+                await restore_page.goto(origin_url, wait_until="domcontentloaded")
+                await restore_page.evaluate(
+                    """(items) => {
+                        for (const { name, value } of items) {
+                            localStorage.setItem(name, value);
+                        }
+                    }""",
+                    local_storage_items,
+                )
+            except Exception as exc:
+                print(f"[Action Agent] 補寫 {origin_url} 的 localStorage 時發生錯誤（不影響 cookies 已經套用成功）：{exc}")
+            finally:
+                await restore_page.close()
 
     async def _handle_oauth_consent_if_present(self, page: Page):
         """處理 iNCU 部分子系統（例如時數 dashboard）額外要求的 OAuth2 授權同意畫面。

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, useNavigate } from "react-router-dom";
 import { useSession } from "../context/SessionContext";
 import { streamChat, HttpStatusError } from "../api/chatStream";
 import MessageList from "../components/MessageList";
@@ -15,6 +15,7 @@ function makeId() {
 
 export default function Chat() {
   const { session, isLoggedIn, logout, newConversation } = useSession();
+  const navigate = useNavigate();
   const [messages, setMessages] = useState([
     {
       id: makeId(),
@@ -25,12 +26,36 @@ export default function Chat() {
   const [isStreaming, setIsStreaming] = useState(false);
   const bodyRef = useRef(null);
   const { online, markUnreachable } = useBackendStatus();
+  // UnlockActionsBar 顯示「✅ 已啟用」的那一刻，session.hasActionAccess 也
+  // 剛好變成 true——如果直接拿 !session.hasActionAccess 當渲染條件，這個
+  // 元件會在使用者看到成功訊息之前就被整個拆掉。改成解鎖成功後刻意再多
+  // 顯示一段時間，讓那句「已啟用」訊息真的看得到，之後才收起來。
+  const [showUnlockBar, setShowUnlockBar] = useState(!session.hasActionAccess);
+  const prevHasActionAccessRef = useRef(session.hasActionAccess);
 
   useEffect(() => {
     if (bodyRef.current) {
       bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
     }
   }, [messages]);
+
+  useEffect(() => {
+    const justUnlocked = !prevHasActionAccessRef.current && session.hasActionAccess;
+    prevHasActionAccessRef.current = session.hasActionAccess;
+
+    if (!session.hasActionAccess) {
+      setShowUnlockBar(true);
+      return;
+    }
+    if (!justUnlocked) {
+      // 一開始登入就已經有 action 權限（例如手動帳密登入），不是剛解鎖，
+      // 沒有「已啟用」訊息需要顯示。
+      setShowUnlockBar(false);
+      return;
+    }
+    const timer = setTimeout(() => setShowUnlockBar(false), 2500);
+    return () => clearTimeout(timer);
+  }, [session.hasActionAccess]);
 
   if (!isLoggedIn) {
     return <Navigate to="/login" replace />;
@@ -48,7 +73,6 @@ export default function Chat() {
     setIsStreaming(true);
 
     let tokenBuffer = "";
-    let gotResult = false;
 
     try {
       await streamChat(
@@ -61,7 +85,6 @@ export default function Chat() {
             const snapshot = tokenBuffer;
             updateMessage(assistantId, (m) => ({ ...m, status: null, content: snapshot }));
           } else if (event.type === "result") {
-            gotResult = true;
             updateMessage(assistantId, (m) => ({ ...m, status: null, content: event.content }));
           } else if (event.type === "sources") {
             updateMessage(assistantId, (m) => ({ ...m, sources: event.sources }));
@@ -73,6 +96,13 @@ export default function Chat() {
             }));
           } else if (event.type === "done") {
             updateMessage(assistantId, (m) => ({ ...m, status: null, isStreaming: false }));
+          } else if (event.type === "session_expired") {
+            // 後端明確告訴我們 token 已經失效了（跟單純訪客模式不一樣，見
+            // main.py _resolve_credentials 的說明）——清掉這個過期的本地
+            // session，導回登入頁並說明原因，不要讓使用者繼續對著一個
+            // 悄悄變成訪客模式的畫面納悶為什麼查不到自己的資料。
+            logout();
+            navigate(`/login?login_error=${encodeURIComponent(event.message)}`, { replace: true });
           }
         }
       );
@@ -89,8 +119,6 @@ export default function Chat() {
     } finally {
       setIsStreaming(false);
     }
-
-    void gotResult; // 目前不需要用到，保留給之後想針對「有沒有結構化結果」加行為時用。
   }
 
   return (
@@ -105,7 +133,7 @@ export default function Chat() {
         </div>
       </header>
 
-      {session.username && !session.hasActionAccess && <UnlockActionsBar />}
+      {session.username && showUnlockBar && <UnlockActionsBar />}
 
       <div className="chat-body" ref={bodyRef}>
         {!online && <ConnectionBanner />}

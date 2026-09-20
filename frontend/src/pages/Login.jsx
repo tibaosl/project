@@ -12,10 +12,10 @@ export default function Login() {
   const { login } = useSession();
   const navigate = useNavigate();
 
-  // 從 /api/oauth/callback 導回來、授權失敗或逾時時會帶 oauth_error。
+  // 從 /api/oauth/callback 導回來、授權失敗或逾時時會帶 login_error。
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const oauthError = params.get("oauth_error");
+    const oauthError = params.get("login_error");
     if (oauthError) {
       setError(oauthError);
       window.history.replaceState({}, "", "/login");
@@ -82,6 +82,7 @@ export default function Login() {
                 onChange={(e) => setUsername(e.target.value)}
                 autoComplete="username"
                 disabled={isSubmitting}
+                required
               />
             </div>
             <div className="login-field">
@@ -93,6 +94,7 @@ export default function Login() {
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="current-password"
                 disabled={isSubmitting}
+                required
               />
             </div>
 

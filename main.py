@@ -13,6 +13,7 @@ from agent_tools import (
     issue_session_token,
     resolve_session_token,
     revoke_session_token,
+    has_active_tokens,
     reset_session,
 )
 import oauth_portal
@@ -78,7 +79,7 @@ async def oauth_login():
     try:
         url = oauth_portal.build_authorization_url()
     except RuntimeError as e:
-        return RedirectResponse(oauth_portal.build_return_url("/login", oauth_error=str(e)))
+        return RedirectResponse(oauth_portal.build_return_url("/login", login_error=str(e)))
     return RedirectResponse(url)
 
 
@@ -97,12 +98,12 @@ async def oauth_callback(code: str = "", state: str = "", error: str = ""):
     """
     if error:
         print(f"[main API] Portal OAuth 授權失敗或被使用者拒絕：{error}")
-        return RedirectResponse(oauth_portal.build_return_url("/login", oauth_error="Portal 授權失敗或已取消。"))
+        return RedirectResponse(oauth_portal.build_return_url("/login", login_error="Portal 授權失敗或已取消。"))
 
     if not oauth_portal.consume_state(state):
         print("[main API] Portal OAuth callback 的 state 驗證失敗（可能逾時、重複使用，或是偽造的請求）。")
         return RedirectResponse(
-            oauth_portal.build_return_url("/login", oauth_error="登入驗證逾時或無效，請重新登入一次。")
+            oauth_portal.build_return_url("/login", login_error="登入驗證逾時或無效，請重新登入一次。")
         )
 
     try:
@@ -110,7 +111,7 @@ async def oauth_callback(code: str = "", state: str = "", error: str = ""):
     except Exception as e:
         print(f"[main API] Portal OAuth 換身分失敗：{e}")
         return RedirectResponse(
-            oauth_portal.build_return_url("/login", oauth_error=f"登入失敗，請再試一次。（{e}）")
+            oauth_portal.build_return_url("/login", login_error=f"登入失敗，請再試一次。（{e}）")
         )
 
     username = identity["identifier"]
@@ -134,11 +135,13 @@ class LogoutRequest(BaseModel):
 
 @app.post("/api/logout")
 async def logout(req: LogoutRequest):
-    """登出：讓 token 失效，並順手關掉背景瀏覽器 session（不是必要動作，
-    純粹避免長時間掛著沒人用的 Playwright session 占資源）。
+    """登出：讓這個 token 失效。只有在這個帳號已經沒有其他分頁/裝置持有的
+    有效 token 時，才順手關掉共用的背景瀏覽器 session（避免長時間掛著沒人
+    用的 Playwright session 占資源）——如果貿然一律關掉，會把同一個帳號
+    在其他分頁還在用的 session 也一起弄斷。
     """
     revoke_session_token(req.token)
-    if req.username:
+    if req.username and not has_active_tokens(req.username):
         await reset_session(req.username)
     return {"status": "success"}
 
@@ -159,21 +162,35 @@ class ChatRequest(BaseModel):
     thread_id: str = "default_session"
 
 
-def _resolve_credentials(req: ChatRequest) -> tuple[str, str]:
-    """用 token 換回 username；沒有 token 或 token 已經失效（伺服器重啟過、
-    使用者登出過、從未登入過）一律視為訪客，回傳空字串——不接受任何形式的
-    明文密碼備援，見 ChatRequest.token 的說明。
+def _resolve_credentials(req: ChatRequest) -> tuple[str, str, bool]:
+    """用 token 換回 username，回傳 (username, password, session_expired)。
+
+    `session_expired` 只有在前端「確實帶了 token、但這個 token 換不回任何
+    人」時才是 True——區分「從來沒登入過／訪客模式」（token 本來就是空的，
+    正常情況，不需要特別提示）跟「本來登入好好的，token 卻失效了」（伺服器
+    重啟過、在別的分頁登出過），後者要讓前端知道「你需要重新登入」，不能
+    就這樣默默把使用者當成訪客繼續跑，卻完全不解釋為什麼查詢個人資料的
+    功能突然都不能用了。
     """
     if req.token:
         resolved_username = resolve_session_token(req.token)
         if resolved_username:
-            return resolved_username, ""
-    return "", ""
+            return resolved_username, "", False
+        return "", "", True
+    return "", "", False
 
 @app.post("/api/chat")
 async def chat_with_agent(req: ChatRequest):
     print(f"\n[main API] 收到前端訊息：「{req.user_message}」（thread_id={req.thread_id}）")
-    username, password = _resolve_credentials(req)
+    username, password, session_expired = _resolve_credentials(req)
+
+    if session_expired:
+        return {
+            "status": "session_expired",
+            "response": ["你的登入狀態已經失效（可能是伺服器重啟過，或在其他地方登出了），請重新登入一次。"],
+            "sources": [],
+            "debug_info": {"current_step": "session_expired"},
+        }
 
     try:
         final_state = await run_ncuxplore_agent(
@@ -228,9 +245,17 @@ async def chat_with_agent_stream(req: ChatRequest):
     `supervisor_agent.run_ncuxplore_agent_stream()` 的說明。
     """
     print(f"\n[main API] 收到前端串流請求：「{req.user_message}」（thread_id={req.thread_id}）")
-    username, password = _resolve_credentials(req)
+    username, password, session_expired = _resolve_credentials(req)
 
     async def event_source():
+        if session_expired:
+            expired_event = {
+                "type": "session_expired",
+                "message": "你的登入狀態已經失效（可能是伺服器重啟過，或在其他地方登出了），請重新登入一次。",
+            }
+            yield f"data: {json.dumps(expired_event, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+            return
         try:
             async for event in run_ncuxplore_agent_stream(
                 req.user_message, username, password, thread_id=req.thread_id

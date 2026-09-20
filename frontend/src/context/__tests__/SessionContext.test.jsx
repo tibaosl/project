@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -6,6 +7,7 @@ import { SessionProvider, useSession } from "../SessionContext";
 function Probe() {
   const { session, isLoggedIn, login, loginWithToken, unlockActionsWithPassword, logout, newConversation } =
     useSession();
+  const [lastResult, setLastResult] = useState(null);
   return (
     <div>
       <div data-testid="logged-in">{String(isLoggedIn)}</div>
@@ -14,7 +16,10 @@ function Probe() {
       <div data-testid="chinese-name">{session?.chineseName ?? ""}</div>
       <div data-testid="has-action-access">{String(session?.hasActionAccess ?? false)}</div>
       <div data-testid="thread-id">{session?.threadId ?? ""}</div>
+      <div data-testid="last-result">{lastResult ? JSON.stringify(lastResult) : ""}</div>
       <button onClick={() => login("test_user", "test_pass")}>login</button>
+      <button onClick={async () => setLastResult(await login("test_user", ""))}>login-username-only</button>
+      <button onClick={async () => setLastResult(await login("", "test_pass"))}>login-password-only</button>
       <button onClick={() => loginWithToken("oauth_user", "oauth-token-456", "王小明")}>login-with-token</button>
       <button onClick={() => unlockActionsWithPassword("test_pass")}>unlock-actions</button>
       <button onClick={logout}>logout</button>
@@ -239,5 +244,42 @@ describe("SessionContext", () => {
       expect(global.fetch).toHaveBeenCalled();
     });
     expect(screen.getByTestId("has-action-access")).toHaveTextContent("false");
+  });
+
+  it("手動登入只填帳號沒填密碼時回傳錯誤，不會落到訪客模式", async () => {
+    const fetchSpy = vi.spyOn(global, "fetch");
+
+    const user = userEvent.setup();
+    render(
+      <SessionProvider>
+        <Probe />
+      </SessionProvider>
+    );
+
+    await user.click(screen.getByText("login-username-only"));
+
+    await waitFor(() => {
+      const result = JSON.parse(screen.getByTestId("last-result").textContent);
+      expect(result.ok).toBe(false);
+    });
+    expect(screen.getByTestId("logged-in")).toHaveTextContent("false");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("手動登入只填密碼沒填帳號時也回傳錯誤，不會落到訪客模式", async () => {
+    const user = userEvent.setup();
+    render(
+      <SessionProvider>
+        <Probe />
+      </SessionProvider>
+    );
+
+    await user.click(screen.getByText("login-password-only"));
+
+    await waitFor(() => {
+      const result = JSON.parse(screen.getByTestId("last-result").textContent);
+      expect(result.ok).toBe(false);
+    });
+    expect(screen.getByTestId("logged-in")).toHaveTextContent("false");
   });
 });

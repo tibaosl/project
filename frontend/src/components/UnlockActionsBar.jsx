@@ -6,15 +6,19 @@ import { useSession } from "../context/SessionContext";
 // 功能——中大官方 OAuth API 沒有提供這些資料/操作的介面，只能透過
 // Playwright 背景瀏覽器，而那個仍然需要密碼才能登入一次。這裡讓使用者
 // 「補一次」密碼來啟用這些功能，跟一開始的身分登入是分開的兩件事。
+//
+// 「已啟用」直接看 session.hasActionAccess，不要另外開一個本地 state
+// 重複記同一件事——父層 Chat.jsx 負責控制這個元件在解鎖成功後要繼續
+// 顯示多久（讓使用者看得到這個「已啟用」訊息），這個元件本身只管
+// 「現在該顯示什麼」，不管「還要不要留在畫面上」。
 export default function UnlockActionsBar() {
   const [expanded, setExpanded] = useState(false);
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [unlocked, setUnlocked] = useState(false);
-  const { unlockActionsWithPassword } = useSession();
+  const { session, unlockActionsWithPassword } = useSession();
 
-  if (unlocked) {
+  if (session?.hasActionAccess) {
     return <div className="unlock-actions-bar unlock-actions-done">✅ 已啟用課表/時數/報名功能</div>;
   }
 
@@ -34,7 +38,6 @@ export default function UnlockActionsBar() {
     setIsSubmitting(false);
 
     if (result.ok) {
-      setUnlocked(true);
       setPassword("");
     } else {
       setError(result.message || "設定失敗，請再試一次。");
