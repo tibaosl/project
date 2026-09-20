@@ -260,39 +260,49 @@ class NCUSession:
         """登入 Portal 並建立背景 BrowserContext。"""
 
         self.playwright = await async_playwright().start()
-        login_state, user_agent = await self._login_interactively()
 
-        print("[Action Agent] 啟動背景隱形爬蟲...")
+        try:
+            login_state, user_agent = await self._login_interactively()
 
-        # 這個 browser 只是拿 _login_interactively() 已經登入好的 storage_state
-        # 繼續在背景跑爬蟲/操作，使用者不需要再看到它，所以維持 headless。
-        # 跟下面 _login_interactively() 裡「刻意開可見視窗」的 browser_ui 不同，
-        # 那個是為了讓使用者能手動處理登入時跳出的人機驗證，不能改成 headless。
-        self.browser = await self.playwright.chromium.launch(
-            headless=True
-        )
+            print("[Action Agent] 啟動背景隱形爬蟲...")
 
-        self.context = await self.browser.new_context(
-            storage_state=login_state,
-            viewport={"width": 1920, "height": 1080},
-            user_agent=user_agent,
-            locale="zh-TW",
-        )
-
-        # ====================================================
-        # Portal page
-        # ====================================================
-
-        self.page = await self.context.new_page()
-
-        await self.page.goto(PORTAL_HOME_URL)
-
-        await self.page.wait_for_load_state("networkidle")
-
-        if "login" in self.page.url:
-            raise RuntimeError(
-                "Cookie 傳遞失敗，背景瀏覽器被踢回 Portal 登入頁面！"
+            # 這個 browser 只是拿 _login_interactively() 已經登入好的
+            # storage_state 繼續在背景跑爬蟲/操作，使用者不需要再看到它，
+            # 所以維持 headless。跟上面 _login_interactively() 裡「刻意開
+            # 可見視窗」的 browser_ui 不同，那個是為了讓使用者能手動處理
+            # 登入時跳出的人機驗證，不能改成 headless。
+            self.browser = await self.playwright.chromium.launch(
+                headless=True
             )
+
+            self.context = await self.browser.new_context(
+                storage_state=login_state,
+                viewport={"width": 1920, "height": 1080},
+                user_agent=user_agent,
+                locale="zh-TW",
+            )
+
+            # ====================================================
+            # Portal page
+            # ====================================================
+
+            self.page = await self.context.new_page()
+
+            await self.page.goto(PORTAL_HOME_URL)
+
+            await self.page.wait_for_load_state("networkidle")
+
+            if "login" in self.page.url:
+                raise RuntimeError(
+                    "Cookie 傳遞失敗，背景瀏覽器被踢回 Portal 登入頁面！"
+                )
+        except Exception:
+            # 登入或背景 session 建立過程中途失敗（帳密錯誤、逾時、cookie
+            # 傳遞失敗...），playwright driver／browser／context 可能已經
+            # 起了一部分，這裡統一收尾，不要留下沒人清的背景 process
+            # （呼叫端只會拿到例外，不會知道要另外呼叫 close()）。
+            await self.close()
+            raise
 
         print("[Action Agent] Portal session 建立完成。")
 
@@ -328,22 +338,56 @@ class NCUSession:
         return False
 
     async def _login_interactively(self):
-        """用可見瀏覽器完成需要使用者操作的 Portal 登入。"""
+        """完成 Portal 登入。
 
+        預設全程 headless（不會跳出任何瀏覽器視窗）：先在背景嘗試一次，
+        按下登入後檢查有沒有跳出人機驗證挑戰——沒有的話就直接在背景把
+        登入跑完，使用者完全不會看到瀏覽器視窗。只有真的偵測到需要人工
+        處理的驗證挑戰時，才改開一個看得到的瀏覽器視窗、重新跑一次登入
+        流程讓使用者手動處理（headless 視窗本來就看不到，沒辦法在裡面
+        手動點東西，所以這種情況一定要重開一個看得到的視窗）。
+        """
         assert self.playwright is not None
 
-        browser_ui = await self.playwright.chromium.launch(
-            headless=False
-        )
+        try:
+            result = await self._attempt_portal_login(headless=True)
+            if result is not None:
+                return result
+
+            print(
+                "[Action Agent] 偵測到需要人工處理的人機驗證，背景視窗沒辦法手動操作，"
+                "改開一個看得到的瀏覽器視窗重新登入..."
+            )
+            result = await self._attempt_portal_login(headless=False, wait_for_manual_challenge=True)
+            if result is None:
+                raise RuntimeError("Portal 登入失敗：可見瀏覽器視窗裡的驗證挑戰逾時或未完成。")
+            return result
+
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(
+                f"Portal 登入階段發生錯誤: {exc}"
+            ) from exc
+
+    async def _attempt_portal_login(
+        self, headless: bool, wait_for_manual_challenge: bool = False
+    ):
+        """嘗試一次 Portal 登入流程，回傳 (login_state, user_agent)；失敗回傳 None。
+
+        `headless=True` 且 `wait_for_manual_challenge=False`（預設的背景嘗試）
+        時，如果按下登入後偵測到人機驗證挑戰，會直接放棄這次嘗試回傳
+        None（背景視窗看不到，沒辦法手動處理），由呼叫端決定要不要改開
+        看得到的視窗重來一次。`wait_for_manual_challenge=True` 時，偵測到
+        挑戰會停下來等使用者手動處理，而不是直接放棄。
+        """
+        browser_ui = await self.playwright.chromium.launch(headless=headless)
 
         try:
-            context_ui = await browser_ui.new_context(
-                locale="zh-TW"
-            )
-
+            context_ui = await browser_ui.new_context(locale="zh-TW")
             page_ui = await context_ui.new_page()
 
-            print("[Action Agent] 正在開啟中大 Portal...")
+            print(f"[Action Agent] 正在開啟中大 Portal...（{'背景，不開視窗' if headless else '可見視窗'}）")
 
             await page_ui.goto(PORTAL_LOGIN_URL)
 
@@ -370,22 +414,34 @@ class NCUSession:
 
             challenge_present = await self._captcha_challenge_present(page_ui)
 
+            if challenge_present and not wait_for_manual_challenge:
+                print("[Action Agent] 偵測到人機驗證挑戰，背景模式無法處理，放棄這次嘗試。")
+                return None
+
             if challenge_present:
                 print(
                     "\n=======================================================\n"
                     "[Action Agent 暫停]\n"
-                    "偵測到需要額外的人機驗證，請手動完成驗證挑戰\n"
-                    "（例如打勾「我不是機器人」並視需要解題），"
+                    "偵測到需要額外的人機驗證，請在剛剛跳出的瀏覽器視窗裡手動完成\n"
+                    "驗證挑戰（例如打勾「我不是機器人」並視需要解題），"
                     "完成後請手動點擊「登入 Portal」按鈕。\n"
                     "系統將等待 90 秒...\n"
                     "=======================================================\n"
                 )
+                # 有人在等，才需要給到 90 秒讓使用者手動解驗證挑戰。
+                login_wait_timeout = 90000
             else:
                 print("[Action Agent] 沒有偵測到額外驗證挑戰，繼續自動往下跑...")
+                # 沒有人在等，帳密錯誤這類失敗通常幾秒內 Portal 就會顯示錯誤、
+                # 但登入按鈕不會消失（跟「登入成功、按鈕被導頁帶走」是同一種
+                # 訊號：按鈕一直不消失）。這裡如果沿用 90 秒逾時，帳密打錯時
+                # 使用者會看起來像「卡住」快兩分鐘才等到失敗訊息，體驗很差，
+                # 所以這個分支縮短逾時，讓失敗能更快回報出去。
+                login_wait_timeout = 20000
 
             await login_button.wait_for(
                 state="hidden",
-                timeout=90000,
+                timeout=login_wait_timeout,
             )
 
             print("[Action Agent] Portal 登入成功！")
@@ -429,16 +485,10 @@ class NCUSession:
             login_state = await context_ui.storage_state()
 
             print(
-                "[Action Agent] 畫面關閉，已擷取登入憑證，"
-                "準備轉入背景執行..."
+                "[Action Agent] 已擷取登入憑證，準備轉入背景執行..."
             )
 
             return login_state, real_user_agent
-
-        except Exception as exc:
-            raise RuntimeError(
-                f"Portal 登入階段發生錯誤: {exc}"
-            ) from exc
 
         finally:
             await browser_ui.close()
@@ -855,36 +905,81 @@ class NCUSession:
         return page
 
     async def _login_on_page(self, page: Page):
-        """在既有 page 上完成一次 Portal 登入（供 SSO 轉導頁面使用）。
+        """處理背景 context 執行中途 SSO session 過期、被導回 Portal 登入頁的情況
+        （例如 iNCU token 過期）。
 
-        跟 _login_interactively 邏輯相同，差別是這裡是在背景 context
-        現有的 page 上操作，而不是另外開一個新視窗。
+        背景 context 本身全程 headless（看不到，沒辦法在裡面手動處理人機驗證），
+        所以不直接在傳入的 `page` 上操作，而是複用 `_attempt_portal_login()`——
+        跟 `_login_interactively()` 啟動時同一套邏輯：先背景嘗試，真的偵測到
+        驗證挑戰才改開一個看得到的視窗讓使用者手動處理。拿到新的登入憑證後，
+        把 cookies 灌回目前這個背景 context，讓 `page` 之後的請求自然帶上新
+        session（呼叫端會自行重新導航，這裡不需要處理導航）。
         """
+        assert self.playwright is not None
+        if self.context is None:
+            raise RuntimeError("BrowserContext 尚未建立，無法重新登入。")
 
-        await page.get_by_role("textbox", name="帳號").fill(self.username)
-        await page.get_by_role("textbox", name="密碼").fill(self.password)
+        print("[Action Agent] iNCU/Portal SSO 需要重新驗證，準備重新登入...")
 
-        login_button = page.get_by_role("button", name="登入 Portal")
+        # ⚠️ 跟 _login_interactively() 一樣包 try/except：_attempt_portal_login()
+        # 內部的 login_button.wait_for(...) 逾時（例如存的密碼過期/被改掉，
+        # 但沒有跳出人機驗證）會直接丟出 Playwright 的 TimeoutError，如果這裡
+        # 不接住，會整個從 open_incu_home() 原封不動炸出去，而不是變成清楚
+        # 的錯誤訊息。
+        try:
+            result = await self._attempt_portal_login(headless=True)
+            if result is None:
+                print(
+                    "[Action Agent] 偵測到需要人工處理的人機驗證，背景視窗沒辦法手動操作，"
+                    "改開一個看得到的瀏覽器視窗重新登入..."
+                )
+                result = await self._attempt_portal_login(headless=False, wait_for_manual_challenge=True)
+                if result is None:
+                    raise RuntimeError("SSO 重新登入失敗：可見瀏覽器視窗裡的驗證挑戰逾時或未完成。")
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"SSO 重新登入階段發生錯誤: {exc}") from exc
 
-        print("[Action Agent] iNCU/Portal SSO 需要重新驗證，自動點擊登入...")
-        await login_button.click()
+        login_state, _real_user_agent = result
 
-        if await self._captcha_challenge_present(page):
-            print(
-                "\n=======================================================\n"
-                "[Action Agent 暫停]\n"
-                "偵測到需要額外的人機驗證，請在背景瀏覽器視窗中手動完成\n"
-                "驗證挑戰（例如打勾「我不是機器人」並視需要解題），"
-                "完成後請手動點擊「登入 Portal」按鈕。\n"
-                "系統將等待 90 秒...\n"
-                "=======================================================\n"
-            )
-        else:
-            print("[Action Agent] 沒有偵測到額外驗證挑戰，繼續自動往下跑...")
+        await self.context.add_cookies(login_state["cookies"])
 
-        await login_button.wait_for(state="hidden", timeout=90000)
+        # cookies 之外，storage_state() 拿到的 origins（localStorage）沒辦法
+        # 用一個 API 直接灌回既有 context——只能開一個該 origin 的分頁實際
+        # 執行 script 寫進去。_login_interactively() 啟動時是靠 new_context(
+        # storage_state=...) 一次到位帶進 cookies + origins，這裡是中途
+        # 補登，只能用這個比較笨的方式補上同樣的東西。
+        origins = login_state.get("origins")
+        if origins:
+            await self._restore_origin_storage(origins)
 
-        await page.wait_for_load_state("networkidle")
+        print("[Action Agent] 已取得新的登入憑證並套用到背景 session。")
+
+    async def _restore_origin_storage(self, origins: list[dict]):
+        """把 storage_state() 裡的 origins（每個 origin 各自的 localStorage）
+        套用到目前的背景 context。"""
+        for origin_entry in origins:
+            origin_url = origin_entry.get("origin")
+            local_storage_items = origin_entry.get("localStorage") or []
+            if not origin_url or not local_storage_items:
+                continue
+
+            restore_page = await self.context.new_page()
+            try:
+                await restore_page.goto(origin_url, wait_until="domcontentloaded")
+                await restore_page.evaluate(
+                    """(items) => {
+                        for (const { name, value } of items) {
+                            localStorage.setItem(name, value);
+                        }
+                    }""",
+                    local_storage_items,
+                )
+            except Exception as exc:
+                print(f"[Action Agent] 補寫 {origin_url} 的 localStorage 時發生錯誤（不影響 cookies 已經套用成功）：{exc}")
+            finally:
+                await restore_page.close()
 
     async def _handle_oauth_consent_if_present(self, page: Page):
         """處理 iNCU 部分子系統（例如時數 dashboard）額外要求的 OAuth2 授權同意畫面。

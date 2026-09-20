@@ -1,7 +1,7 @@
 """LangChain tool（function calling）包裝層。
 
 這裡把 action_tools / activity_tools / academic_agent 裡原本的功能，
-包成一個一個帶 docstring／參數說明的 @tool，讓模型自己挑要呼叫哪一個。
+包成一個一個帶 docstring/參數說明的 @tool，讓模型自己挑要呼叫哪一個。
 
 日後要新增功能，只要在這個檔案裡新增一個 @tool 函式（寫清楚 docstring：
 什麼時候該用、參數是什麼），並加進 build_tools() 回傳的清單就好，
@@ -17,6 +17,7 @@
 """
 
 import asyncio
+import secrets
 from typing import Any, Optional
 
 from langchain_core.tools import tool
@@ -36,7 +37,7 @@ from activity_tools import (
 from academic_agent import query_academic_knowledge
 
 NO_CREDENTIALS_MSG = (
-    "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先在左側邊欄輸入帳號密碼！"
+    "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先登入 Portal 帳號密碼！"
 )
 
 # 背景瀏覽器 session 依「帳號」各自保存一份，而不是整個程式共用一個全域
@@ -63,17 +64,54 @@ async def _get_session_lock(username: str) -> asyncio.Lock:
 
 
 async def get_or_create_session(username: str, password: str) -> Optional[NCUSession]:
-    """取得（或視需要重新建立）指定帳號已登入的 NCUSession；缺帳密時回傳 None。"""
-    if not username or not password:
+    """取得（或視需要重新建立）指定帳號已登入的 NCUSession。
+
+    `password` 只有在「這個帳號目前沒有現成 session」時才會用到（拿去建立
+    新的 NCUSession、實際登入一次 Portal）；已經有現成 session 時就直接
+    重用，不會比對傳進來的密碼對不對——這也是 token 登入流程能成立的原因：
+    登入之後的每一輪對話只需要帶 username，不用再夾帶密碼，只要 session
+    還在（沒被 reset_session 清掉），`password=""` 一樣拿得到 session。
+    """
+    if not username:
         return None
 
     lock = await _get_session_lock(username)
     async with lock:
         session = _sessions.get(username)
         if session is None:
+            if not password:
+                return None
             session = NCUSession(username, password)
             await session.start()
             _sessions[username] = session
+        return session
+
+
+async def authenticate_and_get_session(username: str, password: str) -> Optional[NCUSession]:
+    """真正驗證這組帳密（一定會實際跑一次 Portal 登入），給「使用者正在
+    證明自己是誰」的入口用（目前是 main.py 的 /api/login）。
+
+    跟 get_or_create_session() 的關鍵差異：那個是給「呼叫端身分已經確認過」
+    的情境用的（例如已經拿到 token、只是要用現成的 session 執行查詢），
+    現成 session 存在時刻意不比對密碼，才能讓 token 流程只憑 username
+    就重用 session。但 /api/login 收到的帳密是使用者這次自己輸入、還沒
+    驗證過的，如果沿用同一個「有現成 session 就跳過密碼檢查」的邏輯，等於
+    只要某帳號之前有人登入過、留著現成 session，任何人拿那個帳號＋隨便一組
+    密碼呼叫 /api/login 都能換到一個有效 token——這裡一律真的重新跑一次
+    登入來驗證，不管現成 session 存不存在，帳密錯就是會失敗。
+    """
+    if not username or not password:
+        return None
+
+    lock = await _get_session_lock(username)
+    async with lock:
+        old_session = _sessions.pop(username, None)
+        if old_session is not None:
+            await old_session.close()
+
+        session = NCUSession(username, password)
+        await session.start()
+        _sessions[username] = session
         return session
 
 
@@ -84,6 +122,61 @@ async def reset_session(username: str):
         session = _sessions.pop(username, None)
     if session is not None:
         await session.close()
+
+
+# ----------------------------------------------------------------------------
+# Session token：登入成功後發一個不透明 token 給前端，取代「每次對話都夾帶
+# 明文密碼」。純記憶體儲存，伺服器重啟就會全部失效（使用者只是要重新登入
+# 一次，不是資料遺失）。
+#
+# 同一個帳號可以同時持有多組有效 token（例如同一個使用者開兩個分頁各自
+# 登入一次），彼此不會互相頂掉——所有 token 反正都指向同一個共用的
+# NCUSession（見上面 _sessions），讓其中一個分頁失效並不會讓 Playwright
+# session 變得更安全，只會讓另一個分頁的使用者莫名其妙被登出、一頭霧水。
+# `_username_tokens` 是反向索引（username -> 該帳號目前所有有效 token），
+# 用來讓「登出時只清掉自己這個 token，且只有真的是最後一個 token 時才
+# 順便關掉共用的背景瀏覽器」這件事是 O(1) 查表，不用整個 _session_tokens
+# 掃一遍。
+#
+# ⚠️ 沿用上面 get_or_create_session() 既有的行為：只要 username 對得上
+# 現成的 _sessions cache，就不會再比對密碼——token 只是把「不再重複傳密碼」
+# 這件事往前挪到登入當下一次性驗證，不是額外新增的信任假設。
+# ----------------------------------------------------------------------------
+_session_tokens: dict[str, str] = {}
+_username_tokens: dict[str, set[str]] = {}
+
+
+def issue_session_token(username: str) -> str:
+    """核發一個新的 session token，不會動到該帳號其他分頁既有的 token。"""
+    token = secrets.token_urlsafe(32)
+    _session_tokens[token] = username
+    _username_tokens.setdefault(username, set()).add(token)
+    return token
+
+
+def resolve_session_token(token: str) -> Optional[str]:
+    """把 token 換回 username；token 不存在（沒登入過/已登出/伺服器重啟過）回傳 None。"""
+    if not token:
+        return None
+    return _session_tokens.get(token)
+
+
+def revoke_session_token(token: str):
+    username = _session_tokens.pop(token, None)
+    if username is None:
+        return
+    tokens = _username_tokens.get(username)
+    if tokens is not None:
+        tokens.discard(token)
+        if not tokens:
+            _username_tokens.pop(username, None)
+
+
+def has_active_tokens(username: str) -> bool:
+    """這個帳號目前是否還有其他分頁/裝置持有的有效 token——給登出流程
+    判斷「可不可以順便關掉共用的背景瀏覽器」用，見 main.py 的 /api/logout。
+    """
+    return bool(_username_tokens.get(username))
 
 
 def _find_activity_id_by_keyword(keyword: str) -> Optional[str]:
