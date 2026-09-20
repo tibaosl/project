@@ -5,16 +5,18 @@ import asyncio
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, RedirectResponse
 from pydantic import BaseModel
 from supervisor_agent import run_ncuxplore_agent, run_ncuxplore_agent_stream
 from agent_tools import (
-    get_or_create_session,
+    authenticate_and_get_session,
     issue_session_token,
     resolve_session_token,
     revoke_session_token,
+    has_active_tokens,
     reset_session,
 )
+import oauth_portal
 from logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -41,20 +43,18 @@ class LoginRequest(BaseModel):
 
 @app.post("/api/login")
 async def login(req: LoginRequest):
-    """驗證 Portal 帳密（真的跑一次登入，不是只檢查格式），成功後發一個
-    session token 給前端。前端登入成功後只會存這個 token，不會再存密碼，
-    之後每一輪對話也只帶 token，不會再把密碼傳過來。
-
-    ⚠️ 沿用 agent_tools.get_or_create_session() 既有的 session cache 行為：
-    如果這個帳號剛好已經有現成 session（例如另一個分頁剛登入過），這裡會
-    直接重用、不會重新比對密碼。這不是這次改動新增的信任假設，只是把它
-    集中到登入這一個端點，而不是分散在每一次 /api/chat 呼叫裡。
+    """驗證 Portal 帳密（一定會真的重新跑一次登入，不會因為這個帳號剛好
+    已經有現成 session 就跳過密碼檢查——否則只要知道別人的帳號、隨便帶一組
+    密碼就能拿到那個人現成 session 的 token，見 agent_tools.
+    authenticate_and_get_session() 的說明），成功後發一個 session token
+    給前端。前端登入成功後只會存這個 token，不會再存密碼，之後每一輪對話
+    也只帶 token，不會再把密碼傳過來。
     """
     if not req.username or not req.password:
         return {"status": "error", "message": "請輸入帳號和密碼。"}
 
     try:
-        session = await get_or_create_session(req.username, req.password)
+        session = await authenticate_and_get_session(req.username, req.password)
     except Exception as e:
         print(f"[main API] 登入失敗（{req.username}）：{e}")
         return {"status": "error", "message": f"登入失敗，請確認帳號密碼是否正確。（{e}）"}
@@ -67,6 +67,67 @@ async def login(req: LoginRequest):
     return {"status": "success", "token": token, "username": req.username}
 
 
+@app.get("/api/oauth/login")
+async def oauth_login():
+    """把瀏覽器導去中大 Portal 官方 OAuth 授權頁（見 oauth_portal.py 開頭的
+    說明）——使用者在 portal.ncu.edu.tw 自己的頁面輸入帳密，我們完全看不到
+    密碼，只會在使用者同意授權後拿到一個 access token 去換身分。
+
+    這條路是給瀏覽器「整頁導航」用的，不是給前端 fetch/XHR 呼叫（OAuth
+    授權本來就需要離開我們的網站、到 Portal 那邊完成，再被導回來）。
+    """
+    try:
+        url = oauth_portal.build_authorization_url()
+    except RuntimeError as e:
+        return RedirectResponse(oauth_portal.build_return_url("/login", login_error=str(e)))
+    return RedirectResponse(url)
+
+
+@app.get("/api/oauth/callback")
+async def oauth_callback(code: str = "", state: str = "", error: str = ""):
+    """Portal OAuth 授權完成後導回這裡。成功的話換到使用者身分（identifier
+    當作我們系統內的 username），核發跟 /api/login 同一套 session token，
+    再把瀏覽器導回前端、由前端把 token 存起來（見 frontend 的
+    /oauth-complete 頁面）。
+
+    ⚠️ 這裡只驗證了身分，還沒有建立 Playwright 背景 session——課表/時數/
+    選課這些需要自動化操作 Portal/選課系統的功能，第一次使用時仍然會需要
+    使用者另外提供一次密碼（走 /api/login，這裡拿到的 username 可以直接
+    帶進去，不用使用者重打帳號），因為 OAuth 官方 API 沒有提供這些資料/
+    操作的介面。
+    """
+    if error:
+        print(f"[main API] Portal OAuth 授權失敗或被使用者拒絕：{error}")
+        return RedirectResponse(oauth_portal.build_return_url("/login", login_error="Portal 授權失敗或已取消。"))
+
+    if not oauth_portal.consume_state(state):
+        print("[main API] Portal OAuth callback 的 state 驗證失敗（可能逾時、重複使用，或是偽造的請求）。")
+        return RedirectResponse(
+            oauth_portal.build_return_url("/login", login_error="登入驗證逾時或無效，請重新登入一次。")
+        )
+
+    try:
+        identity = await oauth_portal.exchange_code_for_identity(code)
+    except Exception as e:
+        print(f"[main API] Portal OAuth 換身分失敗：{e}")
+        return RedirectResponse(
+            oauth_portal.build_return_url("/login", login_error=f"登入失敗，請再試一次。（{e}）")
+        )
+
+    username = identity["identifier"]
+    token = issue_session_token(username)
+    print(f"[main API] {username}（{identity.get('chinese_name') or '未知姓名'}）透過 Portal OAuth 登入成功。")
+
+    return RedirectResponse(
+        oauth_portal.build_return_url(
+            "/oauth-complete",
+            token=token,
+            username=username,
+            chinese_name=identity.get("chinese_name", ""),
+        )
+    )
+
+
 class LogoutRequest(BaseModel):
     token: str
     username: str = ""
@@ -74,22 +135,26 @@ class LogoutRequest(BaseModel):
 
 @app.post("/api/logout")
 async def logout(req: LogoutRequest):
-    """登出：讓 token 失效，並順手關掉背景瀏覽器 session（不是必要動作，
-    純粹避免長時間掛著沒人用的 Playwright session 占資源）。
+    """登出：讓這個 token 失效。只有在這個帳號已經沒有其他分頁/裝置持有的
+    有效 token 時，才順手關掉共用的背景瀏覽器 session（避免長時間掛著沒人
+    用的 Playwright session 占資源）——如果貿然一律關掉，會把同一個帳號
+    在其他分頁還在用的 session 也一起弄斷。
     """
     revoke_session_token(req.token)
-    if req.username:
+    if req.username and not has_active_tokens(req.username):
         await reset_session(req.username)
     return {"status": "success"}
 
 
 class ChatRequest(BaseModel):
     user_message: str
-    username: str = ""
-    password: str = ""
-    # 登入後的正常路徑會帶 token，不再帶明文密碼；username/password 兩個
-    # 欄位留著只是為了相容舊版呼叫端（例如還沒登出重登入、還在用舊 token
-    # 的分頁）跟「先不登入」的訪客模式（這種情況兩者都會是空字串）。
+    # 登入後只會帶 token，不會再帶明文密碼（訪客模式 token 是空字串）。
+    # ⚠️ 這裡刻意不接受 username/password：get_or_create_session() 對「已有
+    # 現成 session 的帳號」不會比對密碼，如果這裡還留著 username/password
+    # 當作沒有 token 時的備援，等於任何人只要猜到/知道一個已經登入過的
+    # 帳號，就能不帶任何憑證直接冒用該帳號的對話與 Playwright session
+    # （曾經因為「相容舊呼叫端」的理由留著這個備援，但唯一會用到它的舊版
+    # 前端 ui.py 在這個分支已經刪掉了，沒有理由再冒這個風險）。
     token: str = ""
     # 前端每個瀏覽器分頁會各自帶一個獨立的 thread_id，讓不同使用者的對話
     # 歷史、pending_action 不會共用同一份 LangGraph 對話狀態。沒帶的話退回
@@ -97,22 +162,35 @@ class ChatRequest(BaseModel):
     thread_id: str = "default_session"
 
 
-def _resolve_credentials(req: ChatRequest) -> tuple[str, str]:
-    """優先用 token 換回 username（這種情況下密碼一律是空字串，靠後端的
-    session cache 撐著，見 agent_tools.get_or_create_session）；沒有 token
-    或 token 已經失效（伺服器重啟過、使用者登出過）就退回舊的 username/
-    password 欄位，維持相容。
+def _resolve_credentials(req: ChatRequest) -> tuple[str, str, bool]:
+    """用 token 換回 username，回傳 (username, password, session_expired)。
+
+    `session_expired` 只有在前端「確實帶了 token、但這個 token 換不回任何
+    人」時才是 True——區分「從來沒登入過／訪客模式」（token 本來就是空的，
+    正常情況，不需要特別提示）跟「本來登入好好的，token 卻失效了」（伺服器
+    重啟過、在別的分頁登出過），後者要讓前端知道「你需要重新登入」，不能
+    就這樣默默把使用者當成訪客繼續跑，卻完全不解釋為什麼查詢個人資料的
+    功能突然都不能用了。
     """
     if req.token:
         resolved_username = resolve_session_token(req.token)
         if resolved_username:
-            return resolved_username, ""
-    return req.username, req.password
+            return resolved_username, "", False
+        return "", "", True
+    return "", "", False
 
 @app.post("/api/chat")
 async def chat_with_agent(req: ChatRequest):
     print(f"\n[main API] 收到前端訊息：「{req.user_message}」（thread_id={req.thread_id}）")
-    username, password = _resolve_credentials(req)
+    username, password, session_expired = _resolve_credentials(req)
+
+    if session_expired:
+        return {
+            "status": "session_expired",
+            "response": ["你的登入狀態已經失效（可能是伺服器重啟過，或在其他地方登出了），請重新登入一次。"],
+            "sources": [],
+            "debug_info": {"current_step": "session_expired"},
+        }
 
     try:
         final_state = await run_ncuxplore_agent(
@@ -167,9 +245,17 @@ async def chat_with_agent_stream(req: ChatRequest):
     `supervisor_agent.run_ncuxplore_agent_stream()` 的說明。
     """
     print(f"\n[main API] 收到前端串流請求：「{req.user_message}」（thread_id={req.thread_id}）")
-    username, password = _resolve_credentials(req)
+    username, password, session_expired = _resolve_credentials(req)
 
     async def event_source():
+        if session_expired:
+            expired_event = {
+                "type": "session_expired",
+                "message": "你的登入狀態已經失效（可能是伺服器重啟過，或在其他地方登出了），請重新登入一次。",
+            }
+            yield f"data: {json.dumps(expired_event, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+            return
         try:
             async for event in run_ncuxplore_agent_stream(
                 req.user_message, username, password, thread_id=req.thread_id
@@ -211,4 +297,13 @@ if __name__ == "__main__":
     # ⚠️ 這裡的 host 一定要維持 "127.0.0.1"（僅本機可連線）——/files 掛的
     # data/ 資料夾、/api/chat 收的帳號密碼目前都沒有任何驗證機制，
     # 改成 "0.0.0.0" 之前請先看上面 StaticFiles 掛載處的說明。
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
+    # ⚠️ 特意直接傳 app 物件（不是 "main:app" 字串）。字串形式是給
+    # reload=True 用的：uvicorn 需要能夠在檔案變動時重新 import 一次拿到
+    # 新版的 app。但這裡 reload=False，而且本來就已經在 `python main.py`
+    # 這個 process 裡把整支檔案當 __main__ 執行過一次了——如果還傳字串，
+    # uvicorn 會再用模組名稱 "main"（不是 "__main__"，Python 對這是
+    # 兩個不同的 sys.modules cache key）重新 import 一次整支檔案，等於
+    # 這支檔案的最上層程式碼（包含建立 FastAPI() app、上面那些
+    # print/掛載判斷）會跑兩遍，只是第一遍建出來的 app 沒被用到、白跑。
+    # 直接傳物件就不會有這個問題。
+    uvicorn.run(app, host="127.0.0.1", port=8000, reload=False)

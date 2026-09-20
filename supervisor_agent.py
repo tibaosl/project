@@ -1,3 +1,4 @@
+import asyncio
 from typing import TypedDict, Annotated, List
 from langgraph.graph import StateGraph, END
 import operator
@@ -90,6 +91,26 @@ def _summarize_tool_result(result: dict) -> str:
     return "工具已回傳結構化資料，會直接顯示給使用者，不需要再摘要。"
 
 
+async def _iterate_sync_generator_in_thread(gen):
+    """把一個同步 generator 的每一次 next() 都丟到背景 thread 執行，逐個
+    yield 出來——跟 oauth_portal.py 用 asyncio.to_thread 包同步的 requests
+    呼叫是同一個道理。
+
+    academic_agent.query_academic_knowledge_stream() 是一般的同步 generator
+    （檢索、rerank、逐段讀 OpenAI 串流回應都是同步阻塞呼叫），如果直接用
+    `for event in gen:` 在 async function 裡迭代，這整段（生成第一個 token
+    之前的檢索+rerank，加上之後每個 token 之間等 OpenAI 吐下一個字的時間，
+    合計可能十幾秒）都會卡住 FastAPI 唯一的 event loop，讓其他使用者當下
+    的任何請求（甚至只是 /api/health）都要等這個問題問完才會有回應。
+    """
+    sentinel = object()
+    while True:
+        item = await asyncio.to_thread(next, gen, sentinel)
+        if item is sentinel:
+            break
+        yield item
+
+
 async def _agent_turn_events(user_input: str, username: str, password: str, pending_action: dict, history_str: str):
     """一輪對話的核心邏輯，用事件流表達，兩個呼叫端共用：
 
@@ -123,8 +144,8 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
     if pending_action and any(kw in user_input for kw in CONFIRM_KEYWORDS):
         print("[Agent] 偵測到針對 pending_action 的確認回覆，直接送出。")
 
-        if not username or not password:
-            content = "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先在左側邊欄輸入帳號密碼！"
+        if not username:
+            content = "[Action Agent 回報]:\n缺乏帳號，無法執行。請先登入 Portal 帳號密碼！"
             yield {"type": "result", "content": content}
             yield {"type": "final", "agent_results": [content], "sources": [], "pending_action": {}, "called_tools": []}
             return
@@ -135,7 +156,22 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         session_id = pending_action.get("session_id")
 
         try:
+            # ⚠️ token 登入流程下 password 一律是空字串（真正的密碼只在登入
+            # 當下驗證過一次，見 main.py 的 /api/login、agent_tools.py 的
+            # get_or_create_session 說明），所以這裡不能像以前一樣直接把
+            # 「password 是空字串」當成「沒登入」——要看 get_or_create_session
+            # 有沒有真的拿到現成 session（沒有現成 session 又沒帶密碼，才是
+            # 真的沒登入）。
             session = await get_or_create_session(username, password)
+
+            if session is None:
+                content = "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先登入 Portal 帳號密碼！"
+                yield {"type": "result", "content": content}
+                yield {
+                    "type": "final", "agent_results": [content], "sources": [], "pending_action": {},
+                    "called_tools": [],
+                }
+                return
 
             if action_type == "ACTIVITY_REGISTER":
                 result = await session.register_for_activity_session(
@@ -284,7 +320,8 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
                 answer_parts: list[str] = []
                 result_sources: list = []
                 try:
-                    for event in academic_agent.query_academic_knowledge_stream(query, history_str):
+                    sync_gen = academic_agent.query_academic_knowledge_stream(query, history_str)
+                    async for event in _iterate_sync_generator_in_thread(sync_gen):
                         if event["type"] == "status":
                             yield event
                         elif event["type"] == "token":
