@@ -87,6 +87,34 @@ async def get_or_create_session(username: str, password: str) -> Optional[NCUSes
         return session
 
 
+async def authenticate_and_get_session(username: str, password: str) -> Optional[NCUSession]:
+    """真正驗證這組帳密（一定會實際跑一次 Portal 登入），給「使用者正在
+    證明自己是誰」的入口用（目前是 main.py 的 /api/login）。
+
+    跟 get_or_create_session() 的關鍵差異：那個是給「呼叫端身分已經確認過」
+    的情境用的（例如已經拿到 token、只是要用現成的 session 執行查詢），
+    現成 session 存在時刻意不比對密碼，才能讓 token 流程只憑 username
+    就重用 session。但 /api/login 收到的帳密是使用者這次自己輸入、還沒
+    驗證過的，如果沿用同一個「有現成 session 就跳過密碼檢查」的邏輯，等於
+    只要某帳號之前有人登入過、留著現成 session，任何人拿那個帳號＋隨便一組
+    密碼呼叫 /api/login 都能換到一個有效 token——這裡一律真的重新跑一次
+    登入來驗證，不管現成 session 存不存在，帳密錯就是會失敗。
+    """
+    if not username or not password:
+        return None
+
+    lock = await _get_session_lock(username)
+    async with lock:
+        old_session = _sessions.pop(username, None)
+        if old_session is not None:
+            await old_session.close()
+
+        session = NCUSession(username, password)
+        await session.start()
+        _sessions[username] = session
+        return session
+
+
 async def reset_session(username: str):
     """該帳號的登入類操作出錯時關閉並清掉它的 session，下次呼叫會重新登入。"""
     lock = await _get_session_lock(username)

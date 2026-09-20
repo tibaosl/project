@@ -123,8 +123,8 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
     if pending_action and any(kw in user_input for kw in CONFIRM_KEYWORDS):
         print("[Agent] 偵測到針對 pending_action 的確認回覆，直接送出。")
 
-        if not username or not password:
-            content = "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先在左側邊欄輸入帳號密碼！"
+        if not username:
+            content = "[Action Agent 回報]:\n缺乏帳號，無法執行。請先登入 Portal 帳號密碼！"
             yield {"type": "result", "content": content}
             yield {"type": "final", "agent_results": [content], "sources": [], "pending_action": {}, "called_tools": []}
             return
@@ -135,7 +135,22 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         session_id = pending_action.get("session_id")
 
         try:
+            # ⚠️ token 登入流程下 password 一律是空字串（真正的密碼只在登入
+            # 當下驗證過一次，見 main.py 的 /api/login、agent_tools.py 的
+            # get_or_create_session 說明），所以這裡不能像以前一樣直接把
+            # 「password 是空字串」當成「沒登入」——要看 get_or_create_session
+            # 有沒有真的拿到現成 session（沒有現成 session 又沒帶密碼，才是
+            # 真的沒登入）。
             session = await get_or_create_session(username, password)
+
+            if session is None:
+                content = "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先登入 Portal 帳號密碼！"
+                yield {"type": "result", "content": content}
+                yield {
+                    "type": "final", "agent_results": [content], "sources": [], "pending_action": {},
+                    "called_tools": [],
+                }
+                return
 
             if action_type == "ACTIVITY_REGISTER":
                 result = await session.register_for_activity_session(
