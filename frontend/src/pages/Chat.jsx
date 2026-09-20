@@ -13,16 +13,20 @@ function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-export default function Chat() {
-  const { session, isLoggedIn, logout, newConversation } = useSession();
-  const navigate = useNavigate();
-  const [messages, setMessages] = useState([
+function makeGreeting() {
+  return [
     {
       id: makeId(),
       role: "assistant",
       content: "你好！我是 NCUXplore，今天想查點什麼？",
     },
-  ]);
+  ];
+}
+
+export default function Chat() {
+  const { session, isLoggedIn, logout, newConversation } = useSession();
+  const navigate = useNavigate();
+  const [messages, setMessages] = useState(() => makeGreeting());
   const [isStreaming, setIsStreaming] = useState(false);
   const bodyRef = useRef(null);
   const { online, markUnreachable } = useBackendStatus();
@@ -30,8 +34,14 @@ export default function Chat() {
   // 剛好變成 true——如果直接拿 !session.hasActionAccess 當渲染條件，這個
   // 元件會在使用者看到成功訊息之前就被整個拆掉。改成解鎖成功後刻意再多
   // 顯示一段時間，讓那句「已啟用」訊息真的看得到，之後才收起來。
-  const [showUnlockBar, setShowUnlockBar] = useState(!session.hasActionAccess);
-  const prevHasActionAccessRef = useRef(session.hasActionAccess);
+  //
+  // ⚠️ 這些 hooks 都在下面「沒登入就導回登入頁」的 guard 之前，一定要用
+  // `session?.` ——登出當下 session 會先變成 null，Chat 還會照樣重新
+  // render 一次（React 的 hooks 一定要每次 render 都呼叫，不能被 guard
+  // 擋掉），如果這裡直接寫 `session.hasActionAccess` 會在真的導頁之前
+  // 就先丟例外，導致整頁當掉、卡在空白畫面。
+  const [showUnlockBar, setShowUnlockBar] = useState(!session?.hasActionAccess);
+  const prevHasActionAccessRef = useRef(session?.hasActionAccess);
 
   useEffect(() => {
     if (bodyRef.current) {
@@ -40,10 +50,10 @@ export default function Chat() {
   }, [messages]);
 
   useEffect(() => {
-    const justUnlocked = !prevHasActionAccessRef.current && session.hasActionAccess;
-    prevHasActionAccessRef.current = session.hasActionAccess;
+    const justUnlocked = !prevHasActionAccessRef.current && session?.hasActionAccess;
+    prevHasActionAccessRef.current = session?.hasActionAccess;
 
-    if (!session.hasActionAccess) {
+    if (!session?.hasActionAccess) {
       setShowUnlockBar(true);
       return;
     }
@@ -55,7 +65,16 @@ export default function Chat() {
     }
     const timer = setTimeout(() => setShowUnlockBar(false), 2500);
     return () => clearTimeout(timer);
-  }, [session.hasActionAccess]);
+  }, [session?.hasActionAccess]);
+
+  // 「開新對話」只是換掉 threadId（見 SessionContext.newConversation），
+  // 本身不會動到畫面上的訊息列表——沒有這個 effect 的話，使用者點了會
+  // 覺得「按了跟沒按一樣」，因為聊天記錄完全沒變。開新的 threadId 就清空
+  // 畫面回到初始問候語，讓使用者看得到真的換了一個新對話。
+  useEffect(() => {
+    setMessages(makeGreeting());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.threadId]);
 
   if (!isLoggedIn) {
     return <Navigate to="/login" replace />;
