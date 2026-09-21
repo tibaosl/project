@@ -1230,18 +1230,22 @@ class NCUSession:
         return result
 
     async def get_my_activity_registrations(self) -> dict[str, Any]:
-        """查詢使用者自己已經報名過的活動清單。
+        """查詢使用者自己已經報名過的活動清單，會自動翻完所有分頁。
 
         對應網頁：
         https://cis.ncu.edu.tw/iNCU/messageNotice/activityManagement/signup
 
-        ⚠️ 這個頁面目前還沒有用真實帳號驗證過實際的表格欄位長什麼樣子
-        （跟 cancel_activity_registration 目前的狀態一樣），所以這裡刻意
-        不像 get_hours_dashboard() 那樣假設固定的欄位數/欄位順序——而是
-        把每個表格的第一列當表頭，逐列轉成 {表頭文字: 該欄文字} 的 dict。
-        這樣就算欄位名稱、順序跟預期不同，回傳的 registrations 至少會是
-        「表頭:值」對應正確的資料，能直接看出畫面真正長什麼樣，之後有真實
-        帳號驗證過再收斂成更精確的欄位對照表（比照 get_hours_dashboard()）。
+        表格欄位（活動名稱/場次名稱/活動地點/活動場次時間/時數標籤/報名序號/
+        報名狀態/所屬角色/簽到簽退/前測問卷後測問卷/心得與反思/功能）已經
+        2026-09-21 用真實帳號測過、跟真實截圖比對確認過。解析本身仍然是
+        「表頭當 key」的通用做法（不寫死欄位數/順序），欄位對不上時那一列
+        就跳過，不會整支壞掉。
+
+        分頁：畫面下方是頁碼列（‹ 1 2 ›，2026-09-21 用真實截圖確認過長相），
+        但不確定實際 DOM 結構/class 名稱，所以不去找「分頁容器」再從裡面
+        挑連結，而是直接用 role+精確文字比對找「2」「3」...這種純數字頁碼
+        按鈕逐一點擊——不管分頁背後是整頁換網址還是 AJAX 局部更新，點了之後
+        重新掃一次畫面上的表格都吃得下，不需要事先知道是哪一種。
         """
 
         page = await self.open_incu_home()
@@ -1259,40 +1263,65 @@ class NCUSession:
 
         await page.wait_for_timeout(1000)
 
-        raw_tables: list[list[list[str]]] = await page.evaluate(
-            """() => {
-                const tables = Array.from(document.querySelectorAll('table'));
-                return tables.map(t =>
-                    Array.from(t.querySelectorAll('tr')).map(tr =>
-                        Array.from(tr.querySelectorAll('th, td'))
-                            .map(cell => cell.innerText.trim())
-                    ).filter(row => row.length > 0)
-                );
-            }"""
-        )
-
         registrations: list[dict[str, str]] = []
+        raw_tables_all: list[list[list[str]]] = []
 
-        for table in raw_tables:
-            if len(table) < 2:
-                continue
+        async def _scrape_current_page() -> None:
+            raw_tables: list[list[list[str]]] = await page.evaluate(
+                """() => {
+                    const tables = Array.from(document.querySelectorAll('table'));
+                    return tables.map(t =>
+                        Array.from(t.querySelectorAll('tr')).map(tr =>
+                            Array.from(tr.querySelectorAll('th, td'))
+                                .map(cell => cell.innerText.trim())
+                        ).filter(row => row.length > 0)
+                    );
+                }"""
+            )
+            raw_tables_all.extend(raw_tables)
 
-            header = table[0]
-            for row in table[1:]:
-                if len(row) != len(header):
-                    print(f"[iNCU] 略過一列跟表頭欄位數不符的報名紀錄：{row}")
+            for table in raw_tables:
+                if len(table) < 2:
                     continue
-                registrations.append(dict(zip(header, row)))
+
+                header = table[0]
+                for row in table[1:]:
+                    if len(row) != len(header):
+                        print(f"[iNCU] 略過一列跟表頭欄位數不符的報名紀錄：{row}")
+                        continue
+                    registrations.append(dict(zip(header, row)))
+
+        await _scrape_current_page()
+
+        page_number = 1
+        max_pages = 50  # 安全上限，避免分頁行為異常時無限點下去
+        while page_number < max_pages:
+            next_page_number = page_number + 1
+            next_control = page.get_by_role("link", name=str(next_page_number), exact=True)
+            if await next_control.count() == 0:
+                next_control = page.get_by_role(
+                    "button", name=str(next_page_number), exact=True
+                )
+            if await next_control.count() == 0:
+                break
+
+            print(f"[iNCU] 報名紀錄還有第 {next_page_number} 頁，點擊翻頁...")
+            await next_control.first.click()
+            await page.wait_for_timeout(800)
+            page_number = next_page_number
+            await _scrape_current_page()
+        else:
+            print(f"[iNCU] 報名紀錄分頁超過安全上限（{max_pages} 頁），停止繼續翻頁。")
 
         print(
             f"[iNCU] 活動報名紀錄解析完成，共 {len(registrations)} 筆"
-            f"（掃到 {len(raw_tables)} 個表格）。"
+            f"（{page_number} 頁，掃到 {len(raw_tables_all)} 個表格）。"
         )
 
         return {
             "url": page.url,
             "registrations": registrations,
-            "raw_tables": raw_tables,
+            "raw_tables": raw_tables_all,
         }
 
     async def register_for_activity_session(
