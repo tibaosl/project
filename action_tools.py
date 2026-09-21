@@ -31,6 +31,7 @@ REGISTRATION_HOME_URL = "https://cis.ncu.edu.tw/Course/main/sign/selectCourse?st
 INCU_HOME_URL = "https://cis.ncu.edu.tw/iNCU/home"
 INCU_LOGIN_URL = "https://cis.ncu.edu.tw/iNCU/login"
 INCU_HOURS_DASHBOARD_URL = "https://cis.ncu.edu.tw/iNCU/messageNotice/dashboard/signupDashboard"
+INCU_MY_ACTIVITIES_URL = "https://cis.ncu.edu.tw/iNCU/messageNotice/activityManagement/signup"
 
 # 學習護照系統畫面上的四大類別，各自底下的細項子類別「畢業門檻」需要的時數
 # （子類別名稱是時數紀錄表格裡實際出現的名稱）。
@@ -1228,6 +1229,72 @@ class NCUSession:
 
         return result
 
+    async def get_my_activity_registrations(self) -> dict[str, Any]:
+        """查詢使用者自己已經報名過的活動清單。
+
+        對應網頁：
+        https://cis.ncu.edu.tw/iNCU/messageNotice/activityManagement/signup
+
+        ⚠️ 這個頁面目前還沒有用真實帳號驗證過實際的表格欄位長什麼樣子
+        （跟 cancel_activity_registration 目前的狀態一樣），所以這裡刻意
+        不像 get_hours_dashboard() 那樣假設固定的欄位數/欄位順序——而是
+        把每個表格的第一列當表頭，逐列轉成 {表頭文字: 該欄文字} 的 dict。
+        這樣就算欄位名稱、順序跟預期不同，回傳的 registrations 至少會是
+        「表頭:值」對應正確的資料，能直接看出畫面真正長什麼樣，之後有真實
+        帳號驗證過再收斂成更精確的欄位對照表（比照 get_hours_dashboard()）。
+        """
+
+        page = await self.open_incu_home()
+
+        print(f"[iNCU] 正在前往我的活動報名紀錄：{INCU_MY_ACTIVITIES_URL}")
+
+        await page.goto(INCU_MY_ACTIVITIES_URL, wait_until="networkidle")
+
+        await self._handle_oauth_consent_if_present(page)
+
+        if "login" in page.url:
+            raise RuntimeError(
+                "查詢活動報名紀錄需要登入，但目前 session 無效（被導回登入頁）。"
+            )
+
+        await page.wait_for_timeout(1000)
+
+        raw_tables: list[list[list[str]]] = await page.evaluate(
+            """() => {
+                const tables = Array.from(document.querySelectorAll('table'));
+                return tables.map(t =>
+                    Array.from(t.querySelectorAll('tr')).map(tr =>
+                        Array.from(tr.querySelectorAll('th, td'))
+                            .map(cell => cell.innerText.trim())
+                    ).filter(row => row.length > 0)
+                );
+            }"""
+        )
+
+        registrations: list[dict[str, str]] = []
+
+        for table in raw_tables:
+            if len(table) < 2:
+                continue
+
+            header = table[0]
+            for row in table[1:]:
+                if len(row) != len(header):
+                    print(f"[iNCU] 略過一列跟表頭欄位數不符的報名紀錄：{row}")
+                    continue
+                registrations.append(dict(zip(header, row)))
+
+        print(
+            f"[iNCU] 活動報名紀錄解析完成，共 {len(registrations)} 筆"
+            f"（掃到 {len(raw_tables)} 個表格）。"
+        )
+
+        return {
+            "url": page.url,
+            "registrations": registrations,
+            "raw_tables": raw_tables,
+        }
+
     async def register_for_activity_session(
         self,
         activity_id: str,
@@ -1344,7 +1411,11 @@ class NCUSession:
             )
             return {
                 "would_click": None,
-                "reason": "找不到報名按鈕，請查看 log 輸出的按鈕清單與頁面文字。",
+                "reason": (
+                    "在這個場次的頁面上找不到報名按鈕，可能是還沒到開放報名時間、"
+                    "已經額滿、已經報名過，或是不符合這個活動的報名資格（例如參與"
+                    "對象限制）。請直接到活動頁面確認詳細的報名資格與限制條件。"
+                ),
             }
 
         if not confirm:
@@ -1526,7 +1597,11 @@ class NCUSession:
             )
             return {
                 "would_click": None,
-                "reason": "找不到取消報名按鈕，請查看 log 輸出的按鈕清單與頁面文字。",
+                "reason": (
+                    "在這個場次的頁面上找不到取消報名按鈕，可能是根本沒有報名過"
+                    "這個場次，或是已經超過可以自行取消的時間。請直接到活動頁面"
+                    "確認目前的報名狀態。"
+                ),
             }
 
         if not confirm:

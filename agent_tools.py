@@ -272,6 +272,34 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         return {"content": envelope}
 
     @tool
+    async def get_my_registered_activities() -> dict:
+        """查詢使用者自己已經報名過的活動清單（需要登入）。
+
+        使用時機：使用者問「我報名了什麼活動」「我有報名過什麼」「查一下我的
+        報名紀錄」這類想看自己報名狀況的問題。跟 search_campus_activities／
+        recommend_activities_for_my_deficiencies 的差別：這個查的是「已經報名
+        過」的紀錄，不是查有什麼活動可以報名。不需要任何參數。
+        """
+        try:
+            session = await _ensure_session()
+            if session is None:
+                return {"content": NO_CREDENTIALS_MSG}
+            data = await session.get_my_activity_registrations()
+        except Exception as e:
+            await reset_session(username)
+            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+
+        registrations = data.get("registrations", [])
+        if not registrations:
+            return {"content": "**Action Agent 回報**：\n目前沒有查到任何活動報名紀錄。"}
+
+        lines = [f"**你的活動報名紀錄（共 {len(registrations)} 筆）：**\n"]
+        for item in registrations:
+            line = "、".join(f"{k}：{v}" for k, v in item.items() if v)
+            lines.append(f"- {line}")
+        return {"content": "\n".join(lines)}
+
+    @tool
     async def search_campus_activities(keyword: str) -> dict:
         """單純查詢/瀏覽校內活動列表（不需要登入）。
 
@@ -422,7 +450,10 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
 
         if not dry_run.get("would_click"):
-            reason = dry_run.get("reason", "無法執行，請查看後端 log。")
+            reason = dry_run.get(
+                "reason",
+                "目前無法執行這個動作，請確認是否符合報名資格，或有其他限制條件。",
+            )
             return {"content": f"**Action Agent 回報**：\n{reason}"}
 
         detail = get_activity_detail(activity_id)
@@ -499,6 +530,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         get_activity_details,
         recommend_activities_for_my_deficiencies,
         find_activities_by_hour_category,
+        get_my_registered_activities,
         preview_activity_registration,
         preview_activity_cancellation,
         search_campus_regulations,

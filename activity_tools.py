@@ -11,6 +11,7 @@ GET + query string，不是 AJAX API），跟 crawler_tools.py 的作法一致�
 """
 
 import re
+from datetime import datetime
 from typing import Any, Optional
 from urllib.parse import urljoin
 
@@ -408,6 +409,28 @@ def get_activity_detail(activity_id: str) -> dict[str, Any]:
     return info
 
 
+def _signup_deadline_passed(signup_period: str) -> bool:
+    """判斷某場次的報名時間是否已經截止（報名時間的結束時刻早於現在）。
+
+    signup_period 格式是「YYYY-MM-DD HH:MM ~ YYYY-MM-DD HH:MM」（跟
+    get_activity_detail() 判斷 registration_mode 用的是同一個欄位、同一種
+    格式，這裡直接沿用同樣的切法）。解析失敗（格式跟預期不同、或欄位是空的）
+    一律當作「還沒截止」，寧可多顯示一筆讓使用者自己判斷，也不要因為解析
+    出錯就把還沒過期的活動誤刪掉。
+    """
+
+    if not signup_period or "~" not in signup_period:
+        return False
+
+    _, end = (p.strip() for p in signup_period.split("~", 1))
+    try:
+        end_dt = datetime.strptime(end, "%Y-%m-%d %H:%M")
+    except ValueError:
+        return False
+
+    return end_dt < datetime.now()
+
+
 def _scan_activities_for_tag(
     tag_name: str,
     max_candidates: Optional[int],
@@ -468,6 +491,11 @@ def _scan_activities_for_tag(
         for sess in detail.get("sessions", []):
             tag = sess.get("passport_hours_tag") or ""
             if not tag or "不提供時數" in tag or tag_name not in tag:
+                continue
+
+            # 已經超過報名時間（含現場報名場次的活動日期已過）的場次不再
+            # 推薦/列出——使用者實際點進去也報不了名，留著只會讓人白高興。
+            if _signup_deadline_passed(sess.get("signup_period", "")):
                 continue
 
             items.append(
