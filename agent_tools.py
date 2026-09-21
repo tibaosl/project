@@ -211,6 +211,14 @@ def _format_my_registration(item: dict[str, str]) -> str:
     的多行版面在畫面上擠成一整條看不出斷行的文字（第一版真的這樣被使用者
     抓到過）。項目符號清單不受這條規則影響，每個 "- " 開頭的行一定會各自
     斷行，才是這裡故意這樣寫的原因，不要改回單純縮排的純文字。
+
+    活動標題改用 Markdown 三級標題（"### "），不是清單項目——標題是獨立的
+    區塊層級元素，CommonMark 會自動把它跟前後的清單切開，瀏覽器預設的
+    標題樣式（字級變大、有自己的上下留白）剛好同時達成「標題要跟內文有
+    大小區別」跟「不同活動之間要有間隔」這兩個使用者要求的效果，不需要
+    额外寫 CSS。呼叫端（get_my_registered_activities）組多筆結果時，每筆
+    之間還是要留一個空行，讓上一筆的清單跟下一筆的標題確實斷成兩個區塊，
+    不然某些 Markdown 剖析器碰到清單後緊接標題可能會誤判成清單的延伸內容。
     """
 
     title = item.get("活動名稱", "（未知活動）")
@@ -220,7 +228,7 @@ def _format_my_registration(item: dict[str, str]) -> str:
     if session_name and session_name != title:
         header += f"（{session_name}）"
 
-    lines = [f"- **{header}**"]
+    lines = [f"### {header}"]
 
     status = item.get("報名狀態")
     if status:
