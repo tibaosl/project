@@ -1,0 +1,199 @@
+/* 配色靈感仍然來自中央大學官網的紫（見 ncu.edu.tw 首頁 header）+ 金色點綴，
+   但 Round 8 版本用的是 Tailwind violet-700 等「網頁 UI 常用飽和色」，使用者
+   實際用起來反映太搶眼、看久會不舒服。Round 11 全部降低飽和度、往柔和的
+   灰調靠：主色從鮮豔紫改成偏灰的霧紫（plum/lavender），金色從偏橘的琥珀
+   改成柔和的淺駝金，背景/文字也從冷灰藍（slate）改成帶一點暖灰的中性色，
+   整體看起來更像「有質感的霧面」而不是「螢光」。 */
+:root {
+  --ncux-bg: #f8f7fa;
+  --ncux-bg-gradient-top: #efeaf3;
+  --ncux-surface: #ffffff;
+  --ncux-surface-muted: #f8f7fa;
+  --ncux-border: #e2dde6;
+  --ncux-text: #2e2a35;
+  --ncux-text-muted: #746e7d;
+  --ncux-primary: #7c6a9c;
+  --ncux-primary-hover: #6a5a87;
+  --ncux-primary-light: #eee9f5;
+  --ncux-highlight-bg: #eee9f5;
+  --ncux-accent: #ad8a5a;
+  --ncux-violet: #9884b3;
+  --ncux-ok-bg: #dcfce7;
+  --ncux-ok-text: #166534;
+  --ncux-warn-bg: #fef3c7;
+  --ncux-warn-text: #92400e;
+  --ncux-danger-bg: #fef2f2;
+  --ncux-danger-text: #b91c1c;
+  --ncux-confirm-bg: #fbf4ec;
+  --ncux-confirm-border: #dcbb8c;
+  --ncux-confirm-text: #8a6a3f;
+  --ncux-radius: 12px;
+  --ncux-shadow: 0 1px 3px rgba(46, 42, 53, 0.06);
+  --ncux-shadow-hover: 0 4px 14px rgba(46, 42, 53, 0.1);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --ncux-bg: #1c1922;
+  --ncux-bg-gradient-top: #251f2e;
+  --ncux-surface: #262130;
+  --ncux-surface-muted: #211c29;
+  --ncux-border: #3b3446;
+  --ncux-text: #ece8f0;
+  --ncux-text-muted: #a49bb0;
+  --ncux-primary: #b3a1cf;
+  --ncux-primary-hover: #c4b4dc;
+  --ncux-primary-light: #362d45;
+  --ncux-highlight-bg: #362d45;
+  --ncux-accent: #cfab7b;
+  --ncux-violet: #c7bade;
+  --ncux-ok-bg: rgba(34, 197, 94, 0.16);
+  --ncux-ok-text: #4ade80;
+  --ncux-warn-bg: rgba(245, 158, 11, 0.16);
+  --ncux-warn-text: #eab84f;
+  --ncux-danger-bg: rgba(239, 68, 68, 0.16);
+  --ncux-danger-text: #f87171;
+  --ncux-confirm-bg: rgba(207, 171, 123, 0.12);
+  --ncux-confirm-border: #a2825a;
+  --ncux-confirm-text: #dcbb8c;
+  --ncux-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  --ncux-shadow-hover: 0 4px 14px rgba(0, 0, 0, 0.4);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ncux-bg);
+  color: var(--ncux-text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Microsoft JhengHei", Roboto, sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+button {
+  font-family: inherit;
+}
+
+.ncux-logo-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: 9999px;
+  background: linear-gradient(135deg, var(--ncux-primary), var(--ncux-violet));
+  color: #fff;
+  vertical-align: middle;
+  box-shadow: 0 2px 6px rgba(124, 106, 156, 0.35);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--ncux-border);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ncux-text-muted);
+}
+
+.ncux-card {
+  background: var(--ncux-surface);
+  border: 1px solid var(--ncux-border);
+  border-radius: var(--ncux-radius);
+  padding: 14px 16px;
+  margin: 8px 0;
+  box-shadow: var(--ncux-shadow);
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.ncux-card:hover {
+  box-shadow: var(--ncux-shadow-hover);
+  transform: translateY(-1px);
+}
+
+.ncux-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ncux-text);
+  margin-bottom: 4px;
+}
+
+.ncux-card-meta {
+  font-size: 12.5px;
+  color: var(--ncux-text-muted);
+  margin-bottom: 2px;
+}
+
+.ncux-badge {
+  display: inline-block;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+.ncux-badge-ok {
+  background: var(--ncux-ok-bg);
+  color: var(--ncux-ok-text);
+}
+
+.ncux-badge-warn {
+  background: var(--ncux-warn-bg);
+  color: var(--ncux-warn-text);
+}
+
+.ncux-badge-info {
+  background: var(--ncux-primary-light);
+  color: var(--ncux-primary);
+}
+
+.ncux-reason {
+  font-size: 12.5px;
+  color: var(--ncux-violet);
+  margin-top: 4px;
+}
+
+.ncux-banner {
+  border-radius: var(--ncux-radius);
+  padding: 12px 16px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.ncux-banner-ok {
+  background: var(--ncux-ok-bg);
+  color: var(--ncux-ok-text);
+}
+
+.ncux-banner-warn {
+  background: var(--ncux-warn-bg);
+  color: var(--ncux-warn-text);
+}
+
+.ncux-confirm-box {
+  background: var(--ncux-confirm-bg);
+  border: 1px solid var(--ncux-confirm-border);
+  border-radius: var(--ncux-radius);
+  padding: 12px 16px;
+  margin-top: 12px;
+  font-weight: 600;
+  color: var(--ncux-confirm-text);
+}

@@ -1,14 +1,15 @@
 import os
-import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-import urllib3
 import re
 import time
 import io
 import pypdf
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from secure_requests import get_with_fallback
+from logging_config import make_print_logger
+
+print = make_print_logger(__name__)
 
 GENERIC_NAMES = {"pdf", "doc", "docx", "下載", "點我下載", "檔案", "附件", "download", "file", "開啟檔案"}
 # 不爬該關鍵字
@@ -47,7 +48,7 @@ def download_ncu_pdfs(target_url: str, save_dir: str = "data"):
     }
     
     try:
-        response = requests.get(target_url, headers=headers, verify=False)
+        response = get_with_fallback(target_url, headers=headers)
         response.encoding = 'utf-8'
         response.raise_for_status()
     except Exception as e:
@@ -109,7 +110,7 @@ def download_ncu_pdfs(target_url: str, save_dir: str = "data"):
                     continue
 
             try:
-                pdf_res = requests.get(full_pdf_url, headers=headers, verify=False) 
+                pdf_res = get_with_fallback(full_pdf_url, headers=headers)
                 if pdf_res.status_code == 200:
                     if ext == ".pdf" and (not file_name or file_name.lower() in GENERIC_NAMES or len(file_name) <= 3):
                         extracted_title = extract_pdf_title(pdf_res.content)
