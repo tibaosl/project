@@ -187,6 +187,64 @@ def _find_activity_id_by_keyword(keyword: str) -> Optional[str]:
     return matches[0]["activity_id"] if matches else None
 
 
+def _format_my_registration(item: dict[str, str]) -> str:
+    """把 NCUSession.get_my_activity_registrations() 抓回來的一列報名紀錄
+    整理成好讀的文字。
+
+    欄位名稱（活動名稱/場次名稱/活動地點/活動場次時間/時數標籤/報名序號/
+    報名狀態/所屬角色/簽到簽退/前測問卷後測問卷/心得與反思/功能）是 2026-09-21
+    使用者拿真實帳號實際測過、貼真實截圖比對確認的，不是用猜的——但底層的
+    NCUSession.get_my_activity_registrations() 仍然是「表頭當 key」的通用
+    解析，沒有寫死這些欄位一定要存在，所以這裡全部用 .get()，就算校方
+    之後調整了頁面欄位、對不上了，也只是那個欄位不顯示，不會整支壞掉。
+
+    報名序號、所屬角色這兩欄刻意不顯示——前者大部分是「手動報名」或內部
+    流水號，後者幾乎固定是「一般參加者」，對使用者判斷有沒有報名/該做什麼
+    沒有實質幫助，全部列出來只會讓人更難找到真正有用的資訊。前測/後測問卷、
+    心得與反思這兩欄只在「不是無需填寫」時才顯示，避免每一筆都印一樣的
+    「無需填寫」造成雜訊，但真的需要填寫時要讓使用者看得到。
+    """
+
+    title = item.get("活動名稱", "（未知活動）")
+    session_name = item.get("場次名稱", "")
+
+    header = f"【{title}】"
+    if session_name and session_name != title:
+        header += f"（{session_name}）"
+
+    lines = [header]
+
+    status = item.get("報名狀態")
+    if status:
+        lines.append(f"  報名狀態：{status}")
+
+    event_time = item.get("活動場次時間")
+    if event_time:
+        lines.append(f"  時間：{event_time}")
+
+    location = item.get("活動地點")
+    if location:
+        lines.append(f"  地點：{location}")
+
+    hours_tag = item.get("時數標籤")
+    if hours_tag and "不提供時數" not in hours_tag:
+        lines.append(f"  時數標籤：{hours_tag}")
+
+    checkin = item.get("簽到/簽退")
+    if checkin:
+        lines.append(f"  簽到/簽退：{checkin}")
+
+    for field in ("前測問卷/後測問卷", "心得與反思"):
+        value = item.get(field, "")
+        if value and "無需填寫" not in value:
+            lines.append(f"  {field}：{value}")
+
+    if "取消報名" in item.get("功能", ""):
+        lines.append("  （目前可以線上取消這個場次的報名）")
+
+    return "\n".join(lines)
+
+
 def build_tools(username: str, password: str, history_str: str = "無"):
     """組出這一輪對話可以用的完整工具清單。
 
@@ -293,10 +351,10 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         if not registrations:
             return {"content": "**Action Agent 回報**：\n目前沒有查到任何活動報名紀錄。"}
 
-        lines = [f"**你的活動報名紀錄（共 {len(registrations)} 筆）：**\n"]
+        lines = [f"**你的活動報名紀錄（共 {len(registrations)} 筆）：**"]
         for item in registrations:
-            line = "、".join(f"{k}：{v}" for k, v in item.items() if v)
-            lines.append(f"- {line}")
+            lines.append("")
+            lines.append(_format_my_registration(item))
         return {"content": "\n".join(lines)}
 
     @tool
