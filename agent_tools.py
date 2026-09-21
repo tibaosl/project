@@ -203,6 +203,14 @@ def _format_my_registration(item: dict[str, str]) -> str:
     沒有實質幫助，全部列出來只會讓人更難找到真正有用的資訊。前測/後測問卷、
     心得與反思這兩欄只在「不是無需填寫」時才顯示，避免每一筆都印一樣的
     「無需填寫」造成雜訊，但真的需要填寫時要讓使用者看得到。
+
+    ⚠️ 每個欄位都用 Markdown 的項目符號（"- "）開頭、獨立一行，不是單純用
+    換行符號分段——前端是用 react-markdown 原樣渲染這段文字（見
+    MessageContent.jsx），沒有加 remark-breaks 這類外掛，純 CommonMark 規則
+    下同一段落裡「單一個」換行符號會被當成空白直接接在一起，導致原本排好
+    的多行版面在畫面上擠成一整條看不出斷行的文字（第一版真的這樣被使用者
+    抓到過）。項目符號清單不受這條規則影響，每個 "- " 開頭的行一定會各自
+    斷行，才是這裡故意這樣寫的原因，不要改回單純縮排的純文字。
     """
 
     title = item.get("活動名稱", "（未知活動）")
@@ -212,35 +220,35 @@ def _format_my_registration(item: dict[str, str]) -> str:
     if session_name and session_name != title:
         header += f"（{session_name}）"
 
-    lines = [header]
+    lines = [f"- **{header}**"]
 
     status = item.get("報名狀態")
     if status:
-        lines.append(f"  報名狀態：{status}")
+        lines.append(f"- 報名狀態：{status}")
 
     event_time = item.get("活動場次時間")
     if event_time:
-        lines.append(f"  時間：{event_time}")
+        lines.append(f"- 時間：{event_time}")
 
     location = item.get("活動地點")
     if location:
-        lines.append(f"  地點：{location}")
+        lines.append(f"- 地點：{location}")
 
     hours_tag = item.get("時數標籤")
     if hours_tag and "不提供時數" not in hours_tag:
-        lines.append(f"  時數標籤：{hours_tag}")
+        lines.append(f"- 時數標籤：{hours_tag}")
 
     checkin = item.get("簽到/簽退")
     if checkin:
-        lines.append(f"  簽到/簽退：{checkin}")
+        lines.append(f"- 簽到/簽退：{checkin}")
 
     for field in ("前測問卷/後測問卷", "心得與反思"):
         value = item.get(field, "")
         if value and "無需填寫" not in value:
-            lines.append(f"  {field}：{value}")
+            lines.append(f"- {field}：{value}")
 
     if "取消報名" in item.get("功能", ""):
-        lines.append("  （目前可以線上取消這個場次的報名）")
+        lines.append("- （目前可以線上取消這個場次的報名）")
 
     return "\n".join(lines)
 
