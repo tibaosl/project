@@ -1284,12 +1284,21 @@ class NCUSession:
                 if len(table) < 2:
                     continue
 
-                header = table[0]
+                # 表格儲存格的文字（尤其是活動名稱）有時候在原始網頁裡就內嵌
+                # 了換行（例如標題本身分兩行顯示），cell.innerText 會原封不動
+                # 保留這些換行。這些值後來會被組進 Markdown 的標題/清單項目
+                # （agent_tools.py 的 _format_my_registration），而 Markdown
+                # 的標題/清單項目都是「單行」語法，內嵌換行會把一個值硬生生
+                # 從中間截斷成兩個區塊——這裡先把每個儲存格內部的換行/多餘
+                # 空白統一壓成一個空白，確保欄位值一定是單行文字，不管後面
+                # 拿去組什麼 Markdown 語法都不會被截斷。
+                header = [" ".join(cell.split()) for cell in table[0]]
                 for row in table[1:]:
                     if len(row) != len(header):
                         print(f"[iNCU] 略過一列跟表頭欄位數不符的報名紀錄：{row}")
                         continue
-                    registrations.append(dict(zip(header, row)))
+                    cleaned_row = [" ".join(cell.split()) for cell in row]
+                    registrations.append(dict(zip(header, cleaned_row)))
 
         await _scrape_current_page()
 
