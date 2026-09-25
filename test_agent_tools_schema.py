@@ -68,3 +68,15 @@ def test_expected_tools_are_all_registered():
     }
     names = {t.name for t in _tools()}
     assert expected <= names, f"缺少預期的工具：{expected - names}"
+
+
+def test_every_tool_is_registered_for_suggested_questions():
+    # 新增工具時要在 suggestions.TOOL_SUGGESTIONS 補一筆（不適合推薦就讓 examples 留空），
+    # 開場推薦跟「你可能還想問」才會涵蓋到新功能。
+    from suggestions import TOOL_SUGGESTIONS
+
+    names = {t.name for t in _tools()}
+    assert names == set(TOOL_SUGGESTIONS), (
+        f"沒登記建議問題的工具：{names - set(TOOL_SUGGESTIONS)}；"
+        f"登記了但已經不存在的工具：{set(TOOL_SUGGESTIONS) - names}"
+    )

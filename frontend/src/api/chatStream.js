@@ -11,7 +11,9 @@
  *   {type: "result", content}
  *   {type: "sources", sources}
  *   {type: "error", message}
- *   {type: "done"}
+ *   {type: "session_expired", message}
+ *   {type: "done"}                      # 回答結束，可以解鎖輸入框
+ *   {type: "suggestions", questions}    # done 之後才來（可能沒有）：你可能還想問
  */
 
 // 跟單純的網路連線失敗（fetch 直接 throw TypeError）分開，讓呼叫端可以

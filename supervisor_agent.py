@@ -8,6 +8,7 @@ from activity_tools import (
     find_activities_by_hour_tag,
 )
 import academic_agent
+from suggestions import generate_follow_up_questions
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -441,10 +442,13 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
     只要 thread_id 一樣，這輪不管是走串流還是非串流呼叫的，下一輪都能
     接續看到正確的對話歷史/pending_action。
 
-    依序 yield 跟 `_agent_turn_events()` 一樣的事件，額外保證最後一定會
-    有一個 `{"type": "done"}` 收尾（串流端點可以拿這個當作關閉連線的訊號）。
+    依序 yield 跟 `_agent_turn_events()` 一樣的事件，額外保證一定會有一個
+    `{"type": "done"}` 代表回答結束。`done` 之後可能還會有一個
+    `{"type": "suggestions", "questions": [...]}`（你可能還想問）——刻意放在
+    `done` 後面，前端收到 `done` 就能先解鎖輸入框，不用等追問產生完。
     """
     config = {"configurable": {"thread_id": thread_id}}
+    final_event = None
 
     try:
         snapshot = await app.aget_state(config)
@@ -469,6 +473,7 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
     try:
         async for event in _agent_turn_events(user_message, username, password, pending_action, history_str):
             if event["type"] == "final":
+                final_event = event
                 # as_node="agent_node"：LangGraph 的 aupdate_state 需要知道
                 # 這次更新要套用哪個節點的 channel 規則，不然即使圖上只有
                 # 一個節點也會直接丟 "Ambiguous update, specify as_node"，
@@ -494,5 +499,17 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
     except Exception as e:
         print(f"[Agent-Stream] 執行時發生未預期錯誤：{e}")
         yield {"type": "error", "message": str(e)}
+        final_event = None
 
     yield {"type": "done"}
+
+    # 等使用者回覆「確定」送出報名/取消時不給追問，避免把確認流程岔開
+    if final_event and final_event["agent_results"] and not final_event["pending_action"]:
+        questions = await generate_follow_up_questions(
+            user_message,
+            final_event["agent_results"][-1],
+            final_event["called_tools"],
+            logged_in=bool(username),
+        )
+        if questions:
+            yield {"type": "suggestions", "questions": questions}

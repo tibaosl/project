@@ -1,9 +1,14 @@
 import MessageContent from "./MessageContent";
 import StatusIndicator from "./StatusIndicator";
 import SourcesPanel from "./SourcesPanel";
+import FollowUpSuggestions from "./FollowUpSuggestions";
 import { AssistantAvatar, UserAvatar } from "./Avatar";
 
-export default function MessageList({ messages }) {
+export default function MessageList({ messages, onAsk, busy = false }) {
+  const last = messages[messages.length - 1];
+  // 只在最新一則回覆下面給追問，舊的回覆不要一直掛著一排按鈕
+  const showFollowUps = !busy && onAsk && last?.role === "assistant" && last.suggestions?.length > 0;
+
   return (
     <div>
       {messages.map((msg) => (
@@ -20,6 +25,7 @@ export default function MessageList({ messages }) {
           {msg.role === "user" && <UserAvatar />}
         </div>
       ))}
+      {showFollowUps && <FollowUpSuggestions questions={last.suggestions} onAsk={onAsk} />}
     </div>
   );
 }

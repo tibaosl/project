@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
-import { describe, it, expect } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { describe, it, expect, vi } from "vitest";
 import MessageList from "../MessageList";
 
 describe("MessageList", () => {
@@ -33,5 +34,29 @@ describe("MessageList", () => {
     render(<MessageList messages={messages} />);
 
     expect(screen.getByText("（沒有取得回覆）")).toBeInTheDocument();
+  });
+
+  it("只在最新一則回覆下面顯示「你可能還想問」，點了會送出該問題", async () => {
+    const onAsk = vi.fn();
+    const messages = [
+      { id: "1", role: "user", content: "第一題" },
+      { id: "2", role: "assistant", content: "舊回答", suggestions: ["舊的追問"] },
+      { id: "3", role: "user", content: "第二題" },
+      { id: "4", role: "assistant", content: "新回答", suggestions: ["我的累計排名是多少？", "我有沒有需要重修的課？"] },
+    ];
+    render(<MessageList messages={messages} onAsk={onAsk} />);
+
+    expect(screen.getByText("你可能還想問")).toBeInTheDocument();
+    expect(screen.queryByText("舊的追問")).not.toBeInTheDocument();
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "我的累計排名是多少？" }));
+    expect(onAsk).toHaveBeenCalledWith("我的累計排名是多少？");
+  });
+
+  it("還在處理新問題時不顯示追問", () => {
+    const messages = [{ id: "1", role: "assistant", content: "回答", suggestions: ["追問"] }];
+    render(<MessageList messages={messages} onAsk={vi.fn()} busy />);
+
+    expect(screen.queryByText("你可能還想問")).not.toBeInTheDocument();
   });
 });
