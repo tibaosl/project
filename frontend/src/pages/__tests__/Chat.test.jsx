@@ -13,7 +13,7 @@ import Chat from "../Chat";
 function renderChatLoggedIn() {
   sessionStorage.setItem(
     "ncuxplore_session",
-    JSON.stringify({ username: "test_user", token: "tok-123", hasActionAccess: true, threadId: "thread-1" })
+    JSON.stringify({ username: "test_user", token: "tok-123", threadId: "thread-1" })
   );
 
   return render(

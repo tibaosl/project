@@ -24,6 +24,28 @@ export async function requestLogin(username, password) {
   return data.token;
 }
 
+/**
+ * 呼叫 /api/login/chrome：後端會在這台電腦開 Chrome 讓使用者自己登入 Portal，
+ * 這個請求會一直等到使用者在 Chrome 完成登入（最多約 3 分鐘）才回來。
+ * 回傳 { token, username, chineseName }。
+ */
+export async function requestChromeLogin() {
+  const res = await fetch("/api/login/chrome", { method: "POST" });
+
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    throw new Error(`HTTP ${res.status}`);
+  }
+
+  if (!res.ok || data.status !== "success") {
+    throw new Error(data.message || `登入失敗（HTTP ${res.status}）`);
+  }
+
+  return { token: data.token, username: data.username, chineseName: data.chinese_name || "" };
+}
+
 export async function requestLogout(token, username) {
   try {
     await fetch("/api/logout", {

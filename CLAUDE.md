@@ -27,5 +27,6 @@
 * `main` 剛在 2026-09-21 把前端重寫、OAuth 登入、活動功能等 work 併回來。
 * `選課` branch 還在開發中（另一位組員負責），尚未併回 `main`，Claude 不用管。
 * `RAG` branch 暫緩開發（bug 一直修不好），先不要主動處理。
-* 專題企劃書（NCUXplore 智慧校園代理系統）裡規劃的功能，目前規劃但還沒做的主要是「學業分析」（分析個人修課、學分與學業進度）跟「課表規劃」（自動排下學期課表），下一個新功能會從這兩項裡挑。
+* 專題企劃書（NCUXplore 智慧校園代理系統）裡規劃但還沒做的功能主要是「學業分析」跟「課表規劃」。「學業分析」正在 `學業分析` branch 開發（`academic_tools.py`，資料來自 iNCU 成績查詢 + 畢業資格審查表）；「課表規劃」尚未開始。
+* Portal 登入常跳 reCAPTCHA，Playwright 內建瀏覽器連真人都過不了，所以改開真正的 Chrome 讓使用者自己登入再用 CDP 接管。網頁的主要登入是 `/api/login/chrome`：同一個 Chrome 登入 Portal 後接著跑官方 OAuth 拿身分（帳號以官方 API 為準），一次完成身分驗證跟啟用功能；舊的「OAuth 整頁導向 + 另外補密碼」流程已移除。這只適用本機，將來架伺服器要改走官方資料 API 或瀏覽器擴充功能，屆時只需要換登入/抓資料這層，解析跟分析（`academic_tools.py` 等）不用動。登入狀態可以存在 `%LOCALAPPDATA%\NCUXplore` 重複用，但只有 `NCUSession(reuse_saved_state=True)` 才會用，`/api/login` 這種驗證身分的入口不能開（會變成拿錯密碼也能登入）。
 * Claude Code CLI 已經整合進這台機器的 VS Code（裝了官方擴充功能），開發時可以直接在 VS Code 側邊欄跟 Claude Code 對話，不用額外開終端機。

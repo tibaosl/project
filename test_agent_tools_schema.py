@@ -57,6 +57,7 @@ def test_expected_tools_are_all_registered():
         "get_my_schedule",
         "search_course_catalog",
         "get_my_hours_dashboard",
+        "get_my_academic_analysis",
         "search_campus_activities",
         "get_activity_details",
         "recommend_activities_for_my_deficiencies",

@@ -57,18 +57,3 @@ def test_expired_state_is_rejected(monkeypatch):
     # 把這個 state 的建立時間往回撥到超過 TTL，模擬「太久沒用」。
     oauth_portal._pending_states[state] -= oauth_portal._STATE_TTL_SECONDS + 1
     assert oauth_portal.consume_state(state) is False
-
-
-def test_build_return_url_with_and_without_query():
-    assert oauth_portal.build_return_url("/login") == f"{oauth_portal.FRONTEND_ORIGIN}/login"
-
-    url = oauth_portal.build_return_url("/oauth-complete", token="abc123", username="alice")
-    assert url.startswith(f"{oauth_portal.FRONTEND_ORIGIN}/oauth-complete?")
-    assert "token=abc123" in url
-    assert "username=alice" in url
-
-
-def test_build_return_url_drops_empty_values():
-    url = oauth_portal.build_return_url("/login", oauth_error="", username="alice")
-    assert "oauth_error" not in url
-    assert "username=alice" in url

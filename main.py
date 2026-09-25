@@ -5,10 +5,14 @@ import asyncio
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import StreamingResponse, RedirectResponse
+from urllib.parse import parse_qs, urlparse
+
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from supervisor_agent import run_ncuxplore_agent, run_ncuxplore_agent_stream
+from action_tools import NCUSession
 from agent_tools import (
+    adopt_session,
     authenticate_and_get_session,
     issue_session_token,
     resolve_session_token,
@@ -67,65 +71,65 @@ async def login(req: LoginRequest):
     return {"status": "success", "token": token, "username": req.username}
 
 
-@app.get("/api/oauth/login")
-async def oauth_login():
-    """把瀏覽器導去中大 Portal 官方 OAuth 授權頁（見 oauth_portal.py 開頭的
-    說明）——使用者在 portal.ncu.edu.tw 自己的頁面輸入帳密，我們完全看不到
-    密碼，只會在使用者同意授權後拿到一個 access token 去換身分。
-
-    這條路是給瀏覽器「整頁導航」用的，不是給前端 fetch/XHR 呼叫（OAuth
-    授權本來就需要離開我們的網站、到 Portal 那邊完成，再被導回來）。
-    """
-    try:
-        url = oauth_portal.build_authorization_url()
-    except RuntimeError as e:
-        return RedirectResponse(oauth_portal.build_return_url("/login", login_error=str(e)))
-    return RedirectResponse(url)
-
-
 @app.get("/api/oauth/callback")
-async def oauth_callback(code: str = "", state: str = "", error: str = ""):
-    """Portal OAuth 授權完成後導回這裡。成功的話換到使用者身分（identifier
-    當作我們系統內的 username），核發跟 /api/login 同一套 session token，
-    再把瀏覽器導回前端、由前端把 token 存起來（見 frontend 的
-    /oauth-complete 頁面）。
+async def oauth_callback():
+    """Chrome 登入時 Portal 授權完會把 Chrome 導回這裡（REDIRECT_URI 是跟電算中心
+    登記好的，不能改）。code 已經由 NCUSession.start_via_chrome 從網址讀走、在
+    /api/login/chrome 裡換身分，這裡刻意不處理 code，只回一個提示頁。"""
+    return HTMLResponse("<p>NCUXplore 登入完成，這個視窗會自動關閉。</p>")
 
-    ⚠️ 這裡只驗證了身分，還沒有建立 Playwright 背景 session——課表/時數/
-    選課這些需要自動化操作 Portal/選課系統的功能，第一次使用時仍然會需要
-    使用者另外提供一次密碼（走 /api/login，這裡拿到的 username 可以直接
-    帶進去，不用使用者重打帳號），因為 OAuth 官方 API 沒有提供這些資料/
-    操作的介面。
+
+# Chrome 設定檔同一時間只能被一個 Chrome 使用，登入流程一次只跑一個。
+_chrome_login_lock = asyncio.Lock()
+
+
+@app.post("/api/login/chrome")
+async def login_with_chrome():
+    """一次完成「確認身分」跟「啟用課表/時數/學業分析等功能」，我們的網站全程不經手密碼：
+
+    1. 在跑後端的這台電腦開一個真正的 Chrome，使用者自己登入 Portal（有人機
+       驗證就自己勾）。Playwright 內建瀏覽器常常連真人都過不了驗證，一般 Chrome 沒這問題。
+    2. 同一個 Chrome 接著走 Portal 官方 OAuth，已經登入所以不用再輸入帳密；
+       拿導回的 code 跟官方 API 換身分——帳號以官方 API 為準，不是使用者自己填的。
+    3. Chrome 裡的登入狀態接到背景爬蟲，之後的查詢都用它。
+
+    ⚠️ Chrome 視窗開在「跑後端的電腦」上，只適用於在自己電腦跑 run.py 的情況。
+    這個請求會一直等到使用者在 Chrome 完成登入（最多約 3 分鐘）才回應。
     """
-    if error:
-        print(f"[main API] Portal OAuth 授權失敗或被使用者拒絕：{error}")
-        return RedirectResponse(oauth_portal.build_return_url("/login", login_error="Portal 授權失敗或已取消。"))
+    if _chrome_login_lock.locked():
+        return {"status": "error", "message": "已經有一個 Chrome 登入視窗在進行中，請先在那個視窗完成登入。"}
 
-    if not oauth_portal.consume_state(state):
-        print("[main API] Portal OAuth callback 的 state 驗證失敗（可能逾時、重複使用，或是偽造的請求）。")
-        return RedirectResponse(
-            oauth_portal.build_return_url("/login", login_error="登入驗證逾時或無效，請重新登入一次。")
-        )
+    async with _chrome_login_lock:
+        session = NCUSession(username="", password="")
+        try:
+            authorization_url = oauth_portal.build_authorization_url()
+            redirect_url = await session.start_via_chrome(authorization_url, oauth_portal.REDIRECT_URI)
 
-    try:
-        identity = await oauth_portal.exchange_code_for_identity(code)
-    except Exception as e:
-        print(f"[main API] Portal OAuth 換身分失敗：{e}")
-        return RedirectResponse(
-            oauth_portal.build_return_url("/login", login_error=f"登入失敗，請再試一次。（{e}）")
-        )
+            query = parse_qs(urlparse(redirect_url).query)
+            code = query.get("code", [""])[0]
+            if query.get("error") or not code:
+                raise RuntimeError("Portal 授權失敗或已取消。")
+            if not oauth_portal.consume_state(query.get("state", [""])[0]):
+                raise RuntimeError("登入驗證逾時或無效，請重新登入一次。")
 
-    username = identity["identifier"]
+            identity = await oauth_portal.exchange_code_for_identity(code)
+        except Exception as e:
+            await session.close()
+            print(f"[main API] Chrome 登入失敗：{e}")
+            return {"status": "error", "message": f"登入失敗：{e}"}
+
+        username = identity["identifier"]
+        session.username = username
+        await adopt_session(username, session)
+
     token = issue_session_token(username)
-    print(f"[main API] {username}（{identity.get('chinese_name') or '未知姓名'}）透過 Portal OAuth 登入成功。")
-
-    return RedirectResponse(
-        oauth_portal.build_return_url(
-            "/oauth-complete",
-            token=token,
-            username=username,
-            chinese_name=identity.get("chinese_name", ""),
-        )
-    )
+    print(f"[main API] {username}（{identity.get('chinese_name') or '未知姓名'}）透過 Chrome 登入成功。")
+    return {
+        "status": "success",
+        "token": token,
+        "username": username,
+        "chinese_name": identity.get("chinese_name", ""),
+    }
 
 
 class LogoutRequest(BaseModel):

@@ -41,20 +41,22 @@ CONTINUE_MORE_KEYWORDS = ["繼續", "更多", "還有", "再多", "再幾個", "
 
 AGENT_SYSTEM_PROMPT = """\
 你是中央大學 NCUXplore 系統的校園助手，服務全校師生。你可以呼叫提供給你的工具來
-查課表、選課、查詢時數進度、查詢/推薦/報名活動，或查詢校園法規。
+查課表、選課、分析學業（學分／成績／畢業學分缺口）、查詢時數進度、查詢/推薦/報名
+活動，或查詢校園法規。
 
 【對話歷史】：{history_str}
 
 【原則】：
-1. 只有在確定使用者要問「自己的」個人資料/操作（課表、時數進度、選課、活動報名）
-   時才呼叫對應工具；問的是「規則/門檻/費用本身」這種制度規則，才呼叫
+1. 只有在確定使用者要問「自己的」個人資料/操作（課表、學分與成績、時數進度、選課、
+   活動報名）時才呼叫對應工具；問的是「規則/門檻/費用本身」這種制度規則，才呼叫
    search_campus_regulations。
 2. 每輪對話通常只需要呼叫一個工具，不要沒必要地一次呼叫多個工具。
 3. 如果問題範圍太大、缺乏關鍵資訊（例如法規問題沒講系所/學制、選課沒講要選什麼課），
    不要亂猜著呼叫工具，直接用親切的語氣回覆文字，請使用者補充細節。
 4. 如果問題明顯跟中央大學校園服務無關（純閒聊、打招呼、無意義字詞），不要呼叫任何
    工具，直接回覆：「我是 NCUXplore 校園助手，目前提供「校園法規查詢」、「Portal
-   自動化登入／課表／選課」、「個人時數進度查詢」與「活動查詢／推薦／報名」服務喔！
+   自動化登入／課表／選課」、「學業分析（學分／成績／畢業學分缺口）」、「個人時數進度
+   查詢」與「活動查詢／推薦／報名」服務喔！
    其他問題我暫時還聽不懂～」
 5. 報名/取消報名一律只能呼叫 preview_ 開頭的工具做預覽，你沒有辦法、也不應該嘗試
    真的送出；使用者確認後系統會自動處理送出，不需要你再呼叫任何工具完成送出。
@@ -145,7 +147,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         print("[Agent] 偵測到針對 pending_action 的確認回覆，直接送出。")
 
         if not username:
-            content = "[Action Agent 回報]:\n缺乏帳號，無法執行。請先登入 Portal 帳號密碼！"
+            content = "[Action Agent 回報]:\n尚未登入，無法執行。請先用 Portal 登入！"
             yield {"type": "result", "content": content}
             yield {"type": "final", "agent_results": [content], "sources": [], "pending_action": {}, "called_tools": []}
             return
@@ -165,7 +167,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
             session = await get_or_create_session(username, password)
 
             if session is None:
-                content = "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先登入 Portal 帳號密碼！"
+                content = "[Action Agent 回報]:\n尚未登入或登入已失效，無法執行。請登出後重新用 Portal 登入！"
                 yield {"type": "result", "content": content}
                 yield {
                     "type": "final", "agent_results": [content], "sources": [], "pending_action": {},

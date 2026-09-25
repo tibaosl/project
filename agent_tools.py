@@ -18,7 +18,7 @@
 
 import asyncio
 import secrets
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from langchain_core.tools import tool
 
@@ -35,9 +35,10 @@ from activity_tools import (
     find_activities_by_hour_tag,
 )
 from academic_agent import query_academic_knowledge
+from academic_tools import analyze_academic_progress, fetch_academic_records
 
 NO_CREDENTIALS_MSG = (
-    "[Action Agent 回報]:\n缺乏帳號或密碼，無法執行。請先登入 Portal 帳號密碼！"
+    "[Action Agent 回報]:\n尚未登入或登入已失效，無法執行。請登出後重新用 Portal 登入！"
 )
 
 # 背景瀏覽器 session 依「帳號」各自保存一份，而不是整個程式共用一個全域
@@ -113,6 +114,16 @@ async def authenticate_and_get_session(username: str, password: str) -> Optional
         await session.start()
         _sessions[username] = session
         return session
+
+
+async def adopt_session(username: str, session: NCUSession):
+    """登記一個「身分已經由官方 OAuth 驗證過」、已經登入好的 session（Chrome 登入流程用）。"""
+    lock = await _get_session_lock(username)
+    async with lock:
+        old_session = _sessions.pop(username, None)
+        if old_session is not None:
+            await old_session.close()
+        _sessions[username] = session
 
 
 async def reset_session(username: str):
@@ -344,6 +355,36 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             "categories": dashboard_data["categories"],
         }
         return {"content": envelope}
+
+    @tool
+    async def get_my_academic_analysis(
+        focus: Literal["credits", "grades", "overview"] = "overview",
+    ) -> dict:
+        """分析使用者「自己」的學業狀況（需要登入）。
+
+        使用時機：使用者問自己的學分夠不夠畢業、還差幾學分、必修修完了沒、
+        成績/平均/排名、有沒有被當或需要重修的課。
+        不適用於學習護照「時數」進度（請用 get_my_hours_dashboard），也不適用於
+        「畢業學分規定本身是多少」這種制度問題（請用 search_campus_regulations）。
+
+        Args:
+            focus: 只回答使用者問的那一塊，不要附上沒問到的內容。
+                - "credits"：學分／畢業相關（還差幾學分、各畢業類別缺什麼、必修修完沒）。
+                - "grades"：成績相關（學期平均、成績趨勢、班/系排名、累計排名、被當或停修的課）。
+                - "overview"：使用者要「整體學業分析」或同時問到學分跟成績時才用。
+        """
+        try:
+            session = await _ensure_session()
+            if session is None:
+                return {"content": NO_CREDENTIALS_MSG}
+            transcript, graduation = await fetch_academic_records(
+                session, include_graduation=focus != "grades"
+            )
+        except Exception as e:
+            await reset_session(username)
+            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+
+        return {"content": analyze_academic_progress(transcript, graduation, focus)}
 
     @tool
     async def get_my_registered_activities() -> dict:
@@ -600,6 +641,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         get_my_schedule,
         search_course_catalog,
         get_my_hours_dashboard,
+        get_my_academic_analysis,
         search_campus_activities,
         get_activity_details,
         recommend_activities_for_my_deficiencies,

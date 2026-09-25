@@ -1,14 +1,14 @@
 """中央大學 Portal 官方 OAuth 2.0 介接（見 https://portal.ncu.edu.tw/about/howto）。
 
-用「Authorization Code」流程確認使用者身分：使用者被導去 portal.ncu.edu.tw
-自己的頁面輸入帳密，我們的伺服器全程看不到密碼，只會拿到一個 access token，
-再用這個 token 換使用者的 identifier（帳號）/中文姓名。
+用「Authorization Code」流程確認使用者身分：拿到的 code 換 access token，
+再換使用者的 identifier（帳號）/中文姓名。
 
-⚠️ 這個官方 API 只提供「身分驗證」，沒有課表/時數/選課相關的資料或操作
-介面——`action_tools.py` 用 Playwright 模擬瀏覽器操作那些功能，目前沒有
-官方 API 可以取代，OAuth 驗證完身分後，要用那些功能還是得另外走一次
-`/api/login`（帳密）才能建立 Playwright session，見 main.py 的
-`/api/oauth/callback` 與 `/api/login` 之間的分工說明。
+目前授權流程是在「使用者自己登入 Portal 的那個 Chrome 視窗」裡跑的（見 main.py
+的 /api/login/chrome、action_tools.NCUSession.start_via_chrome）：Portal 已經
+登入了，所以不用再打帳密，code 是直接從 Chrome 導回 REDIRECT_URI 的網址讀出來的。
+
+⚠️ 這個官方 API 只提供「身分驗證」，沒有課表/時數/成績相關的資料或操作介面，
+那些還是靠 action_tools.py 用 Playwright 模擬瀏覽器操作。
 """
 
 import asyncio
@@ -32,12 +32,6 @@ CLIENT_SECRET = os.environ.get("NCU_OAUTH_CLIENT_SECRET", "")
 # 登記的 redirect_uri 完全一致（OAuth 規範要求逐字比對），不一致就
 # 只能在 .env 覆寫 NCU_OAUTH_REDIRECT_URI。
 REDIRECT_URI = os.environ.get("NCU_OAUTH_REDIRECT_URI", "http://127.0.0.1:8000/api/oauth/callback")
-
-# OAuth 流程結束後（不管成功或失敗）要把瀏覽器導回前端的哪個網址。
-# 開發時前端是另一個 port 的 Vite dev server；正式環境 main.py 會把
-# build 好的前端一起 serve，這時可以把這個設成空字串或跟後端同源的
-# 相對路徑（見下面 build_return_url 的用法）。
-FRONTEND_ORIGIN = os.environ.get("NCU_OAUTH_FRONTEND_ORIGIN", "http://localhost:5173")
 
 AUTHORIZATION_URL = "https://portal.ncu.edu.tw/oauth2/authorization"
 TOKEN_URL = "https://portal.ncu.edu.tw/oauth2/token"
@@ -140,11 +134,3 @@ async def exchange_code_for_identity(code: str) -> dict[str, Any]:
     引入非同步 HTTP client），丟進 thread 跑，不要卡住 FastAPI 的 event loop。
     """
     return await asyncio.to_thread(_exchange_code_sync, code)
-
-
-def build_return_url(path: str, **query: str) -> str:
-    """組出 OAuth 流程結束後要導回前端的網址（成功會帶 token/username，
-    失敗會帶 login_error）。"""
-    qs = urlencode({k: v for k, v in query.items() if v})
-    base = f"{FRONTEND_ORIGIN}{path}"
-    return f"{base}?{qs}" if qs else base

@@ -44,3 +44,132 @@ describe("MessageContent", () => {
     expect(screen.getByText("一般法規回答文字")).toBeInTheDocument();
   });
 });
+
+const academicAnalysis = {
+  kind: "academic_analysis",
+  department: "測試學系",
+  grade: "三年A班",
+  credits: {
+    earned: 74,
+    required: 128,
+    remaining: 54,
+    passed_threshold: false,
+    by_course_type: { 必修: 56, 通識: 9 },
+  },
+  gpa: {
+    cumulative_average: 85.55,
+    latest_change: -1.15,
+    semesters: [
+      { term: "1141", label: "114-1", average: 82.84, earned_credits: 19, class_rank: "37/52", dept_rank: "79/106" },
+      { term: "1142", label: "114-2", average: 81.69, earned_credits: 16, class_rank: "46/52", dept_rank: "92/105" },
+    ],
+    cumulative_ranks: [
+      { term: "1142", label: "114-2", average: 85.55, class_rank: "28/52", dept_rank: "59/105" },
+      { term: "1151", label: "115-1", average: 85.55, class_rank: "27/52", dept_rank: "58/105" },
+    ],
+  },
+  graduation_available: true,
+  graduation_categories: [
+    {
+      name: "系訂必修學分",
+      passed: false,
+      required_credits: 58,
+      earned_credits: 45,
+      required_courses: 22,
+      earned_courses: 17,
+      percentage: 77.59,
+      unmet_rules: [{ name: "一般系訂必修學分-A類", remaining_credits: 13, remaining_courses: 5, memo: "" }],
+    },
+    {
+      name: "其它學分",
+      passed: false,
+      required_credits: 0,
+      earned_credits: 1,
+      required_courses: 15,
+      earned_courses: 11,
+      percentage: 73.33,
+      unmet_rules: [{ name: "學生學習護照", remaining_credits: 0, remaining_courses: 0, memo: "總時數:91.0(尚未達標)" }],
+    },
+  ],
+  alerts: [
+    {
+      term: "1142", label: "114-2", course_no: "CE3005", name: "演算法", credits: 3,
+      course_type: "必修", score_text: "停修", reason: "停修", required: true,
+    },
+    {
+      term: "1141", label: "114-1", course_no: "LN9001", name: "被當的選修", credits: 3,
+      course_type: "選修", score_text: "50.00", reason: "不及格", required: false,
+    },
+  ],
+};
+
+describe("MessageContent 學業分析卡片", () => {
+  it("overview：學分缺口、重修提醒、畢業類別、成績變化、累計排名都顯示", () => {
+    render(<MessageContent content={academicAnalysis} />);
+
+    expect(screen.getByText(/已修 74 \/ 128 學分，還差 54 學分/)).toBeInTheDocument();
+    expect(screen.getByText("演算法")).toBeInTheDocument();
+    expect(screen.getByText("被當的選修")).toBeInTheDocument();
+    expect(screen.getByText(/必修課需要重新修習/)).toBeInTheDocument();
+    expect(screen.getByText(/一般系訂必修學分-A類：還差 13 學分、5 門/)).toBeInTheDocument();
+    // 學分、門數都不缺但沒通過（例如學習護照時數不夠）要顯示原因，不能寫「還差 0」
+    expect(screen.getByText(/學生學習護照：條件尚未達成（總時數:91.0\(尚未達標\)）/)).toBeInTheDocument();
+    expect(screen.getByText("▼ 1.15")).toBeInTheDocument();
+    expect(screen.getByText("累計排名")).toBeInTheDocument();
+    expect(screen.getByText("58/105")).toBeInTheDocument();
+  });
+
+  it("credits：只回答學分，不顯示成績趨勢跟排名，只提會卡畢業的必修", () => {
+    render(<MessageContent content={{ ...academicAnalysis, focus: "credits" }} />);
+
+    expect(screen.getByText(/還差 54 學分/)).toBeInTheDocument();
+    expect(screen.getByText("畢業類別進度")).toBeInTheDocument();
+    expect(screen.getByText("尚未通過的必修")).toBeInTheDocument();
+    expect(screen.getByText("演算法")).toBeInTheDocument();
+    expect(screen.queryByText("被當的選修")).not.toBeInTheDocument();
+    expect(screen.queryByText("成績趨勢")).not.toBeInTheDocument();
+    expect(screen.queryByText("累計排名")).not.toBeInTheDocument();
+  });
+
+  it("credits：沒有未通過的必修時，整個提醒區塊都不顯示", () => {
+    render(
+      <MessageContent
+        content={{ ...academicAnalysis, focus: "credits", alerts: academicAnalysis.alerts.filter((a) => !a.required) }}
+      />,
+    );
+    expect(screen.queryByText("尚未通過的必修")).not.toBeInTheDocument();
+    expect(screen.queryByText(/沒有不及格或停修/)).not.toBeInTheDocument();
+  });
+
+  it("grades：只回答成績，顯示最新累計排名跟成績趨勢，不顯示學分缺口", () => {
+    render(<MessageContent content={{ ...academicAnalysis, focus: "grades" }} />);
+
+    expect(screen.getByText(/累計排名 班 27\/52、系 58\/105/)).toBeInTheDocument();
+    expect(screen.getByText(/排名截至 115-1/)).toBeInTheDocument();
+    expect(screen.getByText("成績趨勢")).toBeInTheDocument();
+    expect(screen.getByText("被當的選修")).toBeInTheDocument();
+    expect(screen.queryByText(/還差 54 學分/)).not.toBeInTheDocument();
+    expect(screen.queryByText("畢業類別進度")).not.toBeInTheDocument();
+  });
+
+  it("取不到畢業審查表時只顯示已修學分，不顯示畢業類別", () => {
+    render(
+      <MessageContent
+        content={{
+          ...academicAnalysis,
+          graduation_available: false,
+          graduation_categories: [],
+          credits: { ...academicAnalysis.credits, required: null, remaining: null, passed_threshold: null },
+        }}
+      />,
+    );
+
+    expect(screen.getByText(/已修 74 學分（畢業資格審查表暫時取不到/)).toBeInTheDocument();
+    expect(screen.queryByText("畢業類別進度")).not.toBeInTheDocument();
+  });
+
+  it("沒有需要重修的課時顯示通過提示", () => {
+    render(<MessageContent content={{ ...academicAnalysis, alerts: [] }} />);
+    expect(screen.getByText(/沒有不及格或停修/)).toBeInTheDocument();
+  });
+});
