@@ -2,7 +2,6 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { SessionProvider, useSession } from "./context/SessionContext";
 import Login from "./pages/Login";
 import Chat from "./pages/Chat";
-import OAuthComplete from "./pages/OAuthComplete";
 
 function RootRedirect() {
   const { isLoggedIn } = useSession();
@@ -16,7 +15,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<RootRedirect />} />
           <Route path="/login" element={<Login />} />
-          <Route path="/oauth-complete" element={<OAuthComplete />} />
           <Route path="/chat" element={<Chat />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

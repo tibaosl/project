@@ -3,6 +3,7 @@ import HoursDashboard from "./HoursDashboard";
 import ActivityList from "./ActivityList";
 import ActivityDetail from "./ActivityDetail";
 import ScheduleTable from "./ScheduleTable";
+import AcademicAnalysis from "./AcademicAnalysis";
 
 /**
  * 依內容形狀分派渲染方式，對應後端各個工具回傳的 content：
@@ -37,6 +38,8 @@ export default function MessageContent({ content }) {
     switch (content.kind) {
       case "hours_dashboard":
         return <HoursDashboard data={content} />;
+      case "academic_analysis":
+        return <AcademicAnalysis data={content} />;
       case "activity_recommendations":
       case "activity_tag_search":
         return <ActivityList data={content} />;

@@ -10,23 +10,32 @@ export default function Login() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showManualForm, setShowManualForm] = useState(false);
-  const { login } = useSession();
+  const [isWaitingChrome, setIsWaitingChrome] = useState(false);
+  const { login, loginWithChrome } = useSession();
   const navigate = useNavigate();
+  const busy = isSubmitting || isWaitingChrome;
 
-  // 從 /api/oauth/callback 導回來、授權失敗或逾時時會帶 login_error。
+  // 對話中途登入失效時，Chat 頁會帶 login_error 導回這裡說明原因。
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const oauthError = params.get("login_error");
-    if (oauthError) {
-      setError(oauthError);
+    const loginError = params.get("login_error");
+    if (loginError) {
+      setError(loginError);
       window.history.replaceState({}, "", "/login");
     }
   }, []);
 
-  function handleOAuthLogin() {
-    // 整頁導航（不是 fetch）——OAuth 授權本來就需要離開我們的網站，
-    // 到 Portal 自己的頁面輸入帳密，我們全程看不到密碼。
-    window.location.href = "/api/oauth/login";
+  async function handleChromeLogin() {
+    setError("");
+    setIsWaitingChrome(true);
+    const result = await loginWithChrome();
+    setIsWaitingChrome(false);
+
+    if (result.ok) {
+      navigate("/chat");
+    } else {
+      setError(result.message || "登入失敗，請再試一次。");
+    }
   }
 
   async function handleSubmit(e) {
@@ -57,17 +66,20 @@ export default function Login() {
         <div className="login-feature-pills">
           <span className="ncux-badge ncux-badge-info">法規查詢</span>
           <span className="ncux-badge ncux-badge-info">課表</span>
+          <span className="ncux-badge ncux-badge-info">學業分析</span>
           <span className="ncux-badge ncux-badge-info">時數進度</span>
           <span className="ncux-badge ncux-badge-info">活動報名</span>
         </div>
 
         {error && <div className="ncux-banner ncux-banner-warn login-error">⚠️ {error}</div>}
 
-        <button type="button" className="login-submit" onClick={handleOAuthLogin}>
-          使用中央大學 Portal 帳號登入
+        <button type="button" className="login-submit" onClick={handleChromeLogin} disabled={busy}>
+          {isWaitingChrome ? "等待你在 Chrome 視窗登入..." : "使用中央大學 Portal 帳號登入"}
         </button>
         <p className="login-oauth-note">
-          會導到 portal.ncu.edu.tw 官方頁面輸入帳密，我們完全不會看到你的密碼。
+          {isWaitingChrome
+            ? "請到 Chrome 視窗登入 Portal（有驗證就勾選「我不是機器人」），登入完成後會自動回到這裡。「記住我」會先幫你勾好，29 天內不用再輸入密碼。"
+            : "會開一個 Chrome 視窗讓你在 Portal 官方頁面登入，我們完全不會看到你的密碼；登入一次就能使用課表、時數、學業分析等功能。"}
         </p>
 
         {!showManualForm ? (
@@ -75,6 +87,7 @@ export default function Login() {
             type="button"
             className="login-skip"
             onClick={() => setShowManualForm(true)}
+            disabled={busy}
           >
             改用帳號密碼手動登入
           </button>
@@ -118,7 +131,7 @@ export default function Login() {
           </form>
         )}
 
-        <button type="button" className="login-skip" onClick={handleSkip} disabled={isSubmitting}>
+        <button type="button" className="login-skip" onClick={handleSkip} disabled={busy}>
           先不登入，只查法規／活動資訊
         </button>
       </div>
