@@ -14,6 +14,7 @@ from playwright.async_api import (
     BrowserContext,
     Page,
     Playwright,
+    TimeoutError as PlaywrightTimeoutError,
     async_playwright,
 )
 from playwright_stealth import Stealth
@@ -290,6 +291,18 @@ async def parse_ncu_schedule_table(
         print("-" * 50)
 
     return parsed_courses
+
+
+class RegistrationUnavailableError(RuntimeError):
+    """選課系統登不進去或目前不能用。
+
+    選課系統跟 Portal 是分開登入的，這種錯誤不代表 Portal 登入失效，
+    呼叫端不用因此把整個 session 關掉重登。
+    """
+
+
+# 選課系統沒登入時打開選課頁，網址不會被導回登入頁，而是停在原網址顯示這段提示
+REGISTRATION_RELOGIN_HINT = "需要重新登入"
 
 
 class NCUSession:
@@ -884,6 +897,15 @@ class NCUSession:
             if not self.registration_page.is_closed():
                 return self.registration_page
 
+        # 選課系統只收帳號密碼、沒有 Portal SSO；用 Chrome 登入的 session 沒有密碼，
+        # 硬登只會失敗，直接講清楚比較好
+        if not self.password:
+            raise RegistrationUnavailableError(
+                "選課系統跟 Portal 是分開登入的，只接受帳號密碼；"
+                "目前是用 Chrome 視窗登入 Portal，程式沒有密碼可以登入選課系統，"
+                "所以暫時無法查詢選課系統的課程。"
+            )
+
         print(
             "[Action Agent] 正在開啟 NCU 選課系統登入頁..."
         )
@@ -1060,9 +1082,18 @@ class NCUSession:
 
         # ========================================================
         # 9. 判斷是否真的被踢回登入頁
+        #
+        # 沒登入成功時不一定會被導回 /Course/main/login：
+        # 選課頁常常停在原網址，只顯示「您可能因為閒置時間過長,
+        # 需要重新登入」，所以也要看頁面文字。
         # ========================================================
 
-        if "/Course/main/login" in page.url:
+        body_text = await page.locator("body").inner_text()
+
+        if (
+            "/Course/main/login" in page.url
+            or REGISTRATION_RELOGIN_HINT in body_text
+        ):
 
             print(
                 "[Registration] 進入選課頁後仍被導回登入頁"
@@ -1094,23 +1125,23 @@ class NCUSession:
             )
 
             # 把登入頁 HTML 前面一部分印出來
-            html = await page.locator(
-                "body"
-            ).inner_text()
-
             print(
                 "\n========== 選課系統目前頁面內容 ==========\n"
             )
 
-            print(html[:3000])
+            print(body_text[:3000])
 
             print(
                 "\n===========================================\n"
             )
 
-            raise RuntimeError(
-                "選課系統登入失敗："
-                "進入 selectCourse 後被重新導回登入頁。"
+            # 失敗的分頁不要留著，不然下次會被當成已登入直接重用
+            await page.close()
+            self.registration_page = None
+
+            raise RegistrationUnavailableError(
+                "選課系統登入失敗：帳號密碼可能不正確，"
+                "或選課系統目前不開放登入。"
             )
 
         # ========================================================
@@ -2039,11 +2070,26 @@ async def search_courses(
 
     # ==================================================
     # 1. 點擊「依關鍵字」
+    #
+    # 非選課階段選課頁不會有這顆按鈕，等不到就直接回報，
+    # 不要卡滿 Playwright 預設的 30 秒。
     # ==================================================
-    await page.get_by_role(
+    keyword_button = page.get_by_role(
         "button",
         name="依關鍵字",
-    ).click()
+    )
+
+    try:
+        await keyword_button.wait_for(
+            state="visible",
+            timeout=10000,
+        )
+    except PlaywrightTimeoutError:
+        raise RegistrationUnavailableError(
+            "選課頁找不到「依關鍵字」搜尋，目前可能是非選課階段。"
+        ) from None
+
+    await keyword_button.click()
 
     # ==================================================
     # 2. 找到搜尋輸入框

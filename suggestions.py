@@ -36,11 +36,9 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "我這學期的課表",
         "我這學期修了哪些課？",
     )),
-    "search_course_catalog": FeatureSuggestions("課程搜尋", True, (
-        "幫我找微積分的課",
-        "有哪些日文課可以選？",
-        "找程式設計相關的課程",
-    )),
+    # 選課系統要另外用帳密登入，Chrome 登入沒有密碼、非選課階段也搜不到，
+    # 課程搜尋改好之前先不推薦（改好後補回例如「幫我找微積分的課」）
+    "search_course_catalog": FeatureSuggestions("課程搜尋", True),
     "get_my_hours_dashboard": FeatureSuggestions("學習護照時數", True, (
         "我的學習護照時數還差多少？",
         "我的時數達到畢業門檻了嗎？",
