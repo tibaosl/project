@@ -21,6 +21,7 @@ from agent_tools import (
     reset_session,
 )
 import oauth_portal
+from suggestions import pick_starter_questions
 from logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -240,6 +241,22 @@ async def chat_with_agent(req: ChatRequest):
             "executed_agent": ", ".join(called_tools) if called_tools else "（沒有呼叫任何工具，直接回覆文字）",
         }
     }
+
+
+class SuggestionRequest(BaseModel):
+    token: str = ""
+    # 「換一批」時畫面上正在顯示的題目，盡量不要再出現
+    exclude: list[str] = []
+
+
+@app.post("/api/suggestions")
+async def starter_suggestions(req: SuggestionRequest):
+    """開場推薦問題，每次隨機挑；沒登入只推薦不需要登入的功能。
+
+    用 POST 帶 token 而不是放在網址上，避免 token 出現在存取紀錄裡。
+    """
+    logged_in = bool(req.token and resolve_session_token(req.token))
+    return {"questions": pick_starter_questions(logged_in, exclude=frozenset(req.exclude))}
 
 
 @app.post("/api/chat/stream")

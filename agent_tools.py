@@ -24,6 +24,7 @@ from langchain_core.tools import tool
 
 from action_tools import (
     NCUSession,
+    RegistrationUnavailableError,
     get_schedule,
     search_courses,
     get_deficiency_details,
@@ -320,6 +321,9 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             if session is None:
                 return {"content": NO_CREDENTIALS_MSG}
             search_data = await search_courses(session, keyword)
+        except RegistrationUnavailableError as e:
+            # 只是選課系統進不去，Portal 登入還好好的，不要把整個 session 清掉害使用者被登出
+            return {"content": f"**Action Agent 回報**：\n{e}"}
         except Exception as e:
             await reset_session(username)
             return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}

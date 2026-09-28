@@ -365,6 +365,217 @@
   50% { opacity: 1; transform: scale(1.1); }
 }
 
+/* ---- 歡迎畫面與推薦問題 ---- */
+
+.welcome {
+  max-width: 720px;
+  margin: 4vh auto 0;
+  animation: ncux-rise-in 0.3s ease;
+}
+
+.welcome-hero {
+  text-align: center;
+  margin-bottom: 22px;
+}
+
+.welcome-logo {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 12px;
+  border-radius: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--ncux-primary-light);
+  color: var(--ncux-primary);
+}
+
+.welcome-hero h2 {
+  margin: 0 0 6px;
+  font-size: 22px;
+  color: var(--ncux-text);
+}
+
+.welcome-hero p {
+  margin: 0;
+  color: var(--ncux-text-muted);
+  font-size: 14px;
+}
+
+.suggestion-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.suggestion-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-height: 76px;
+  padding: 12px 36px 12px 14px;
+  text-align: left;
+  font: inherit;
+  color: var(--ncux-text);
+  background: var(--ncux-surface);
+  border: 1px solid var(--ncux-border);
+  border-radius: var(--ncux-radius);
+  box-shadow: var(--ncux-shadow);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.suggestion-card:hover {
+  border-color: var(--ncux-primary);
+  box-shadow: var(--ncux-shadow-hover);
+  transform: translateY(-1px);
+}
+
+.suggestion-card:active {
+  transform: translateY(0);
+}
+
+.suggestion-card:focus-visible,
+.follow-up-chip:focus-visible,
+.suggestion-refresh:focus-visible {
+  outline: 2px solid var(--ncux-primary);
+  outline-offset: 2px;
+}
+
+.suggestion-card-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ncux-accent);
+  letter-spacing: 0.02em;
+}
+
+.suggestion-card-text {
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.suggestion-card-arrow {
+  position: absolute;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--ncux-text-muted);
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+
+.suggestion-card:hover .suggestion-card-arrow {
+  color: var(--ncux-primary);
+  transform: translate(3px, -50%);
+}
+
+.suggestion-card-skeleton {
+  cursor: default;
+  background: linear-gradient(
+    90deg,
+    var(--ncux-surface-muted) 25%,
+    var(--ncux-border) 50%,
+    var(--ncux-surface-muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: ncux-shimmer 1.2s ease-in-out infinite;
+}
+
+.suggestion-card-skeleton:hover {
+  transform: none;
+  border-color: var(--ncux-border);
+  box-shadow: var(--ncux-shadow);
+}
+
+@keyframes ncux-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+.welcome-footer {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 14px;
+  font-size: 12.5px;
+  color: var(--ncux-text-muted);
+}
+
+.suggestion-refresh {
+  padding: 6px 14px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ncux-primary);
+  background: transparent;
+  border: 1px solid var(--ncux-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.suggestion-refresh:hover:not(:disabled) {
+  background: var(--ncux-primary-light);
+  border-color: var(--ncux-primary);
+}
+
+.suggestion-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.welcome-error {
+  text-align: center;
+  color: var(--ncux-text-muted);
+  font-size: 13.5px;
+}
+
+.follow-ups {
+  margin: -4px 0 18px 38px;
+  animation: ncux-rise-in 0.25s ease;
+}
+
+.follow-ups-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ncux-text-muted);
+  margin-bottom: 8px;
+}
+
+.follow-ups-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.follow-up-chip {
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--ncux-primary);
+  background: var(--ncux-primary-light);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.follow-up-chip:hover {
+  border-color: var(--ncux-primary);
+  transform: translateY(-1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome,
+  .follow-ups,
+  .suggestion-card-skeleton {
+    animation: none;
+  }
+}
+
 .chat-input-bar {
   border-top: 1px solid var(--ncux-border);
   background: var(--ncux-surface);
@@ -555,6 +766,23 @@
 
   .chat-input-bar {
     padding: 10px 14px;
+  }
+
+  .welcome {
+    margin-top: 2vh;
+  }
+
+  .suggestion-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .suggestion-card {
+    min-height: 0;
+  }
+
+  .follow-ups {
+    margin-left: 34px;
   }
 
   .chat-input-form input {

@@ -3,6 +3,7 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { useSession } from "../context/SessionContext";
 import { streamChat, HttpStatusError } from "../api/chatStream";
 import MessageList from "../components/MessageList";
+import WelcomePanel from "../components/WelcomePanel";
 import ChatInput from "../components/ChatInput";
 import ThemeToggle from "../components/ThemeToggle";
 import ConnectionBanner from "../components/ConnectionBanner";
@@ -13,22 +14,15 @@ function makeId() {
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function makeGreeting() {
-  return [
-    {
-      id: makeId(),
-      role: "assistant",
-      content: "你好！我是 NCUXplore，今天想查點什麼？",
-    },
-  ];
-}
-
 export default function Chat() {
   const { session, isLoggedIn, logout, newConversation } = useSession();
   const navigate = useNavigate();
-  const [messages, setMessages] = useState(() => makeGreeting());
+  const [messages, setMessages] = useState([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const bodyRef = useRef(null);
+  // 每送出一次加一：`done` 之後串流還會等「你可能還想問」，舊請求的串流晚一點
+  // 才結束時，不能把新請求進行中的輸入框解鎖。
+  const latestRequestRef = useRef(0);
   const { online, markUnreachable } = useBackendStatus();
 
   useEffect(() => {
@@ -43,9 +37,9 @@ export default function Chat() {
   // 「開新對話」只是換掉 threadId（見 SessionContext.newConversation），
   // 本身不會動到畫面上的訊息列表——沒有這個 effect 的話，使用者點了會
   // 覺得「按了跟沒按一樣」，因為聊天記錄完全沒變。開新的 threadId 就清空
-  // 畫面回到初始問候語，讓使用者看得到真的換了一個新對話。
+  // 畫面回到歡迎畫面，讓使用者看得到真的換了一個新對話。
   useEffect(() => {
-    setMessages(makeGreeting());
+    setMessages([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.threadId]);
 
@@ -58,6 +52,11 @@ export default function Chat() {
   }
 
   async function handleSend(text) {
+    if (isStreaming) return;
+    const requestId = ++latestRequestRef.current;
+    const finishRequest = () => {
+      if (requestId === latestRequestRef.current) setIsStreaming(false);
+    };
     const userMsg = { id: makeId(), role: "user", content: text };
     const assistantId = makeId();
     const assistantMsg = { id: assistantId, role: "assistant", content: null, status: null, isStreaming: true };
@@ -88,6 +87,9 @@ export default function Chat() {
             }));
           } else if (event.type === "done") {
             updateMessage(assistantId, (m) => ({ ...m, status: null, isStreaming: false }));
+            finishRequest();
+          } else if (event.type === "suggestions") {
+            updateMessage(assistantId, (m) => ({ ...m, suggestions: event.questions }));
           } else if (event.type === "session_expired") {
             // 後端明確告訴我們 token 已經失效了（跟單純訪客模式不一樣，見
             // main.py _resolve_credentials 的說明）——清掉這個過期的本地
@@ -109,7 +111,7 @@ export default function Chat() {
         content: m.content || `⚠️ 連線發生錯誤：${err.message}`,
       }));
     } finally {
-      setIsStreaming(false);
+      finishRequest();
     }
   }
 
@@ -127,7 +129,16 @@ export default function Chat() {
 
       <div className="chat-body" ref={bodyRef}>
         {!online && <ConnectionBanner />}
-        <MessageList messages={messages} />
+        {messages.length === 0 ? (
+          <WelcomePanel
+            chineseName={session.chineseName}
+            isGuest={!session.username}
+            token={session.token}
+            onAsk={handleSend}
+          />
+        ) : (
+          <MessageList messages={messages} onAsk={handleSend} busy={isStreaming} />
+        )}
       </div>
 
       <div className="chat-input-bar">
