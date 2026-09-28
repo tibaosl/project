@@ -63,11 +63,13 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "哪些活動有人文藝術時數？",
         "有提供自我探索與生涯規劃時數的活動嗎？",
     )),
+    # 法規查詢只能回答 data/ 裡有的文件，範例要挑文件裡查得到的（獎學金、停修目前都沒有文件）
     "search_campus_regulations": FeatureSuggestions("校園法規", False, (
         "資工系的英文畢業門檻是什麼？",
-        "獎學金要怎麼申請？",
-        "停修的規定和期限是什麼？",
-        "教室場地借用要怎麼申請？",
+        "學生證不見了要怎麼補辦？",
+        "在學證明要怎麼申請？",
+        "選課是先搶先贏嗎？",
+        "教研大樓的教室要怎麼借？",
     )),
     "get_activity_details": FeatureSuggestions("活動詳情", False),
     "preview_activity_registration": FeatureSuggestions("活動報名", True),

@@ -9,12 +9,15 @@
 * 目前的 branch 對應：
   * `main`：整合後主線，不要直接改。
   * `選課`：選課功能開發，**是另一位組員負責的範圍，Claude 不用主動去改這條 branch**。
-  * `RAG`：RAG 相關功能開發，**目前暫緩**（一直修不好），先不要主動接手或修改這條 branch，除非使用者明確要求。
+  * `RAG`：舊的 RAG 開發 branch，**已經落後 main、不要再用**（2026-09-28 起 RAG 改在 `RAG重構` 重寫）。
+  * `RAG重構`：RAG 重寫（文件解析、目錄挑文件、評估題庫），從 main 開出來的。
 * commit / push 前，照系統既有的安全守則跟使用者確認（尤其是 push、以及任何會影響到共用 branch 的操作）。
 
 ## 新增功能時
 
-* 新增 agent 工具（`agent_tools.py` 的 `@tool`）時，一定要在 `suggestions.py` 的 `TOOL_SUGGESTIONS` 登記：功能名稱、需不需要登入、幾個範例問題（不適合推薦就讓範例留空）。開場推薦問題跟「你可能還想問」都是從這裡產生的，前端不用改。範例要挑實際查得到結果的問題（例如活動搜尋是比對標題關鍵字，「藝文」常常查不到）。
+* 新增 agent 工具（`agent_tools.py` 的 `@tool`）時，一定要在 `suggestions.py` 的 `TOOL_SUGGESTIONS` 登記：功能名稱、需不需要登入、幾個範例問題（不適合推薦就讓範例留空）。開場推薦問題跟「你可能還想問」都是從這裡產生的，前端不用改。範例要挑實際查得到結果的問題（例如活動搜尋是比對標題關鍵字，「藝文」常常查不到；法規查詢只答得出 `data/` 裡有的文件，獎學金、停修目前都沒有）。
+* 新增工具或改了工具說明、`AGENT_SYSTEM_PROMPT`、supervisor 的模型之後，跑 `python agent_eval/run_routing.py`（跟 `--holdout`）確認 agent 選工具沒有變差；新增工具時也在裡面的 `CASES` 補幾題會用到它的問法。supervisor 用 gpt-5.4-mini 走 Responses API，模型直接回文字時 `content` 是 list，取文字要用 `.text`。
+* 改 RAG（`academic_agent.py`、`rag_documents.py`）之前跟之後都要跑 `python rag_eval/run_eval.py`，分數沒變差才算改好；改挑文件的 prompt 可以先用 `--router-only` 快速檢查。`rag_eval/holdout.json` 是保留測試題，不要照著它調 prompt。改了解析或卡片的邏輯要把 `rag_documents.py` 的 `PARSER_VERSION`／`CARD_VERSION` 加一，舊快取才會失效。
 
 ## 開發環境重點
 
@@ -22,7 +25,7 @@
 * 專案根目錄的 `.env`（不受 git 追蹤）要有 `OPENAI_API_KEY`、`NCU_OAUTH_CLIENT_ID`/`NCU_OAUTH_CLIENT_SECRET`/`NCU_OAUTH_REDIRECT_URI` 才能用到 RAG 問答跟 OAuth 登入相關功能；沒有這些值專案仍能啟動，只是這些功能會不能用。
 * 執行整個專案：`python run.py`（同時啟動 FastAPI 後端 `:8000` 跟 Vite 前端 `:5173`）。
 * 測試：
-  * 後端：`python -m pytest test_schedule_helpers.py test_oauth_portal.py`
+  * 後端：`python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py`
   * 前端：`cd frontend && npm test`
   * `test_agent_tools_schema.py`、`test_hours_activity.py` 需要 `.env` 裡有真的 `OPENAI_API_KEY`（甚至帳密）才能跑，一般改動不一定用得到。
 
@@ -30,7 +33,7 @@
 
 * `main` 剛在 2026-09-21 把前端重寫、OAuth 登入、活動功能等 work 併回來。
 * `選課` branch 還在開發中（另一位組員負責），尚未併回 `main`，Claude 不用管。
-* `RAG` branch 暫緩開發（bug 一直修不好），先不要主動處理。
+* RAG 在 2026-09-28 於 `RAG重構` branch 重寫：舊版的問題主要出在文件解析（有表格的頁面整頁文字被丟掉、Big5 亂碼、相容字/康熙部首、Word 合併儲存格重複）跟切 chunk 後分不出是哪個學院/年度的文件。新版用 PyMuPDF 重新解析，改成「看文件目錄卡片挑文件 → 讀整份文件回答」，評估題庫在 `rag_eval/`。`data/` 的文件不在 git 裡。
 * 專題企劃書（NCUXplore 智慧校園代理系統）裡規劃但還沒做的功能主要是「學業分析」跟「課表規劃」。「學業分析」正在 `學業分析` branch 開發（`academic_tools.py`，資料來自 iNCU 成績查詢 + 畢業資格審查表）；「課表規劃」尚未開始。
 * Portal 登入常跳 reCAPTCHA，Playwright 內建瀏覽器連真人都過不了，所以改開真正的 Chrome 讓使用者自己登入再用 CDP 接管。網頁的主要登入是 `/api/login/chrome`：同一個 Chrome 登入 Portal 後接著跑官方 OAuth 拿身分（帳號以官方 API 為準），一次完成身分驗證跟啟用功能；舊的「OAuth 整頁導向 + 另外補密碼」流程已移除。這只適用本機，將來架伺服器要改走官方資料 API 或瀏覽器擴充功能，屆時只需要換登入/抓資料這層，解析跟分析（`academic_tools.py` 等）不用動。登入狀態可以存在 `%LOCALAPPDATA%\NCUXplore` 重複用，但只有 `NCUSession(reuse_saved_state=True)` 才會用，`/api/login` 這種驗證身分的入口不能開（會變成拿錯密碼也能登入）。
 * 選課系統（`cis.ncu.edu.tw/Course`）跟 Portal 分開登入、只收帳號密碼，Chrome 登入的 session 沒有密碼所以登不進去；非選課階段選課頁也沒有「依關鍵字」。目前 `search_courses` 遇到這些情況會丟 `RegistrationUnavailableError`（不會清掉 Portal session），課程搜尋也先從推薦問題拿掉。選課系統有不用登入的公開查詢頁（`/Course/main/query/byKeywords` 等），之後課程搜尋可以改用它——這是選課組員的範圍，要改先跟使用者確認。

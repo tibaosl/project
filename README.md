@@ -6,7 +6,8 @@
 
 ## 目前有的功能
 
-* **校園法規問答**：RAG 檢索中央大學的法規/辦法文件，回答附上來源出處（`academic_agent.py`）。
+* **校園法規問答**：先看文件目錄挑出相關文件、再讀整份文件回答，回答附上來源出處
+  （`rag_documents.py` 處理文件、`academic_agent.py` 查詢，細節見下面「校園法規問答（RAG）」）。
 * **登入**：兩種方式擇一，登入後給一個一次性通行證（token），不會每次對話都重傳密碼。
   * 用 Portal 帳號登入（推薦）：程式在這台電腦開一個 Chrome 視窗，你在 Portal 官方頁面
     自己登入（有人機驗證就自己勾），我們的網站完全不經手密碼；身分由 Portal 官方 OAuth
@@ -104,16 +105,51 @@ python run.py
 會同時啟動後端（FastAPI，`http://127.0.0.1:8000`）跟前端（Vite dev server，
 `http://localhost:5173`），並自動開瀏覽器。關掉的話在終端機按 `Ctrl+C` 即可。
 
+## 校園法規問答（RAG）
+
+法規文件放在 `data/`（PDF、Word，`.doc` 需要裝 [LibreOffice](https://www.libreoffice.org/download/download/)
+自動轉檔）。這些檔案不在 git 裡，要跟有檔案的組員拿。
+
+每個問題的流程：
+
+1. **挑文件**：把問題、對話歷史跟全部文件的「目錄卡片」（標題、類型、適用範圍、版本、摘要、
+   能回答的問題）交給模型，挑出最多 4 份文件，或判斷要反問使用者、資料庫裡沒有。
+   判斷成「沒有」時會用關鍵字比對找候選文件，再確認一次。
+2. **回答**：把挑中文件的全文交給模型回答，標注引用 [1]、[2]。
+
+文件解析結果跟目錄卡片都快取在 `storage/rag/`（以檔案內容的 hash 當 key，檔案沒變就不會
+重做）。`data/` 新增或修改檔案後，下一次查詢會自動補做，也可以先手動建好：
+
+```powershell
+python rag_documents.py   # 解析全部文件、補齊卡片，並印出目錄
+```
+
+**改 RAG 之前跟之後都要跑評估**，分數沒變差才算改好（之前改了很多版一直修不好，就是因為
+沒有固定的測試題，修好一題又弄壞另一題也不會發現）：
+
+```powershell
+python rag_eval/run_eval.py                        # 開發用題目（rag_eval/questions.json）
+python rag_eval/run_eval.py --file holdout.json    # 保留測試題，不要照著它調 prompt
+python rag_eval/run_eval.py --router-only          # 只測挑文件那一步，快又便宜
+```
+
+使用的模型可以用環境變數換：`RAG_ROUTER_MODEL`（挑文件，預設 gpt-5.4-mini）、
+`RAG_ANSWER_MODEL`（回答，預設 gpt-5.4）、`RAG_CARD_MODEL`（產生卡片，預設 gpt-5.4）。
+
 ## 測試
 
 ```powershell
 # 後端（pytest）
-python -m pytest test_schedule_helpers.py test_oauth_portal.py
+python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py
 
 # 前端（Vitest）
 cd frontend
 npm test
 ```
+
+改了 agent 的系統提示、工具說明（`agent_tools.py` 的 docstring）或 supervisor 用的模型之後，
+跑 `python agent_eval/run_routing.py` 檢查 agent 會不會選對工具（只看選了哪個工具，不會真的
+執行，不用登入，但需要 `OPENAI_API_KEY`）。
 
 `test_agent_tools_schema.py`、`test_hours_activity.py` 這兩個需要 `.env` 裡有真的
 `OPENAI_API_KEY`（甚至 `NCU_USERNAME`/`NCU_PASSWORD`）才能跑，一般開發改動前端/一般工具

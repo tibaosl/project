@@ -19,7 +19,12 @@ from logging_config import make_print_logger
 print = make_print_logger(__name__)
 
 load_dotenv()
-llm_smart = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+# 選工具用 gpt-5.4-mini 開低推理強度：工具選擇測試從 44/48（gpt-4o-mini）進步到全對，
+# 換了說法的保留題也是 18/21 → 21/21（例如「我會不會被二一」「那韓文呢」），選工具這一步
+# 中位數大約多 0.3 秒。不開推理的話換成更大的模型也只有 45、46 題。
+# Chat Completions 在帶工具時不能開推理，所以走 Responses API；這樣回覆的 content 會是
+# 內容區塊的 list，取文字要用 .text。
+llm_smart = ChatOpenAI(model="gpt-5.4-mini", use_responses_api=True, reasoning={"effort": "low"})
 memory = MemorySaver()
 
 # 對話歷史要往回看幾輪，餵給 agent 當上下文。
@@ -49,16 +54,21 @@ AGENT_SYSTEM_PROMPT = """\
 
 【原則】：
 1. 只有在確定使用者要問「自己的」個人資料/操作（課表、學分與成績、時數進度、選課、
-   活動報名）時才呼叫對應工具；問的是「規則/門檻/費用本身」這種制度規則，才呼叫
-   search_campus_regulations。
+   活動報名）時才呼叫對應工具；問的是中央大學的規定、辦法、申請流程、表單、費用、
+   期限、門檻（例如學生證遺失、在學證明、成績單、教室借用、外文畢業門檻、學雜費、
+   選課規則），一律呼叫 search_campus_regulations 查文件，不要用你自己的知識回答——
+   學校的規定你不一定知道，也可能已經改過。
 2. 每輪對話通常只需要呼叫一個工具，不要沒必要地一次呼叫多個工具。
-3. 如果問題範圍太大、缺乏關鍵資訊（例如法規問題沒講系所/學制、選課沒講要選什麼課），
-   不要亂猜著呼叫工具，直接用親切的語氣回覆文字，請使用者補充細節。
+3. 如果問題範圍太大、缺乏關鍵資訊（例如選課沒講要選什麼課），不要亂猜著呼叫工具，
+   直接用親切的語氣回覆文字，請使用者補充細節。法規問題例外：就算沒講系所或學制，
+   也直接呼叫 search_campus_regulations，它會依文件內容判斷需不需要請使用者補充。
 4. 如果問題明顯跟中央大學校園服務無關（純閒聊、打招呼、無意義字詞），不要呼叫任何
    工具，直接回覆：「我是 NCUXplore 校園助手，目前提供「校園法規查詢」、「Portal
    自動化登入／課表／選課」、「學業分析（學分／成績／畢業學分缺口）」、「個人時數進度
    查詢」與「活動查詢／推薦／報名」服務喔！
    其他問題我暫時還聽不懂～」
+   但使用者如果只是在說明自己的身分或背景（例如「我是物理系的」「我大二」），那是在
+   提供之後提問的條件，簡短確認並問他想查什麼就好，不要回覆上面那段制式訊息。
 5. 報名/取消報名一律只能呼叫 preview_ 開頭的工具做預覽，你沒有辦法、也不應該嘗試
    真的送出；使用者確認後系統會自動處理送出，不需要你再呼叫任何工具完成送出。
 """
@@ -294,9 +304,10 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         ai_msg = await llm_with_tools.ainvoke(messages)
 
         if not ai_msg.tool_calls:
-            if ai_msg.content:
-                agent_results.append(ai_msg.content)
-                yield {"type": "token", "text": ai_msg.content}
+            reply = ai_msg.text
+            if reply:
+                agent_results.append(reply)
+                yield {"type": "token", "text": reply}
             break
 
         messages.append(ai_msg)
@@ -338,7 +349,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
                     print(f"[Agent] search_campus_regulations 串流失敗：{e}")
                     answer_parts.append(f"查詢法規時發生錯誤：{e}")
 
-                content = f"**Academic Agent 回報**：\n{''.join(answer_parts)}"
+                content = "".join(answer_parts)
                 agent_results.append(content)
                 sources = result_sources
                 stop = True

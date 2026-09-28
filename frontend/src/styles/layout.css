@@ -343,6 +343,39 @@
   margin-bottom: 0;
 }
 
+/* ---- 回答裡的 Markdown 表格（法規回答的門檻、費用對照等） ---- */
+
+.markdown-table-wrap {
+  overflow-x: auto;
+  margin: 10px 0;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--ncux-border);
+  padding: 6px 12px;
+  text-align: left;
+  vertical-align: top;
+  /* 跟對話泡泡一樣的漸變，切換深淺色時表格才不會先變色 */
+  transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.markdown-body th {
+  background: var(--ncux-primary-light);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.markdown-body tbody tr:nth-child(even) td {
+  background: var(--ncux-surface-muted);
+}
+
 .status-indicator {
   display: inline-flex;
   align-items: center;
