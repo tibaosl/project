@@ -10,6 +10,8 @@
 
 2026-09-28 的結果：gpt-4o-mini 44/48、保留題 18/21，gpt-5.4-mini（低推理）48/48、21/21，
 不開推理的 gpt-4.1-mini、gpt-5.4-nano、gpt-5.4 都在 45～46 題。
+2026-10-03 加了 6 題「系統反問之後，使用者點選項回答」（歷史裡有 [系統反問]／[系統] 那句），
+gpt-5.4-mini 54/54。
 """
 
 import argparse
@@ -60,6 +62,15 @@ CASES = [
     ("我是物理系的", [], {NOT_CANNED}), ("我大二", [], {NOT_CANNED}),
     ("那地科學院呢？", ["文學院的外文畢業門檻多益要幾分？"], {R}), ("學費多少？", ["我是資工系的"], {R}),
     ("那我還差幾學分畢業？", ["我這學期的課表"], {"get_my_academic_analysis"}),
+    # 系統反問之後，使用者點選項回答（回答通常很短，要靠歷史裡的反問才看得懂）
+    ("地球科學學院", ["英文畢業門檻是多少？", "[系統反問]: 請問你是哪個學院的學生？"], {R}),
+    ("要", ["英文門檻是多少？", "[系統反問]: 要我把各學院的英文畢業門檻都列出來嗎？"], {R}),
+    ("微積分", ["我要選課", "[系統反問]: 請問你想找什麼課？"], {"search_course_catalog"}),
+    ("日文", ["幫我選課", "[系統]: 可以，請告訴我你想找哪一門課或關鍵字，例如「微積分」、「程式設計」。"],
+     {"search_course_catalog"}),
+    ("看我的時數進度", ["我想查時數", "[系統反問]: 你是要看自己的時數進度，還是想知道時數畢業門檻的規定？"],
+     {"get_my_hours_dashboard"}),
+    ("不用了", ["學生證不見了怎麼辦？", "[系統反問]: 需要我說明悠遊卡餘額怎麼退嗎？"], {NONE}),
 ]
 
 # 換了說法的保留題：平常不要照著它調 prompt，改完之後跑一次確認不是只對 CASES 有效
@@ -92,7 +103,8 @@ def make_llm(spec: str) -> ChatOpenAI:
 async def choose_tool(llm, message: str, history: list[str], semaphore) -> tuple[str, dict, str, float]:
     """組出跟 supervisor_agent._agent_turn_events 一樣的訊息，只看模型第一步的決定。"""
     async with semaphore:
-        history_str = " -> ".join(f"[使用者]: {m}" for m in history + [message])
+        # 歷史裡的系統反問直接寫成 "[系統反問]: ..."，其他句子當成使用者說的話
+        history_str = " -> ".join(m if m.startswith("[") else f"[使用者]: {m}" for m in history + [message])
         llm_with_tools = llm.bind_tools(build_tools("", "", history_str), parallel_tool_calls=False)
         messages = [
             SystemMessage(content=supervisor_agent.AGENT_SYSTEM_PROMPT.format(history_str=history_str)),

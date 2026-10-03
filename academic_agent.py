@@ -7,13 +7,15 @@
    會帶著候選再確認一次（見 choose_documents）。
 2. 回答：把挑中文件的「全文」交給模型，照規則回答並標注引用 [1]、[2]。
 
-為什麼不再把文件切成 chunk 做向量 + BM25 檢索：data/ 全部加起來才十四萬字左右，
-一份文件最長一萬字出頭。舊版找錯檔案，大多是因為各學院、各年度的表單內容長得
-很像，切成片段之後就分不出是哪個學院、哪一年的；片段也常把表頭或適用對象切掉，
-模型拿到的是缺了前提的數字。改成看目錄挑文件、讀整份文件之後，這兩個問題都不
-存在了，也少了 query 改寫、多組檢索、rerank 這幾輪呼叫。
-文件如果多到目錄放不進一次提示（大約幾百份以上），在第 1 步前面加一層關鍵字或
-向量初篩、只把候選文件的卡片交給模型就好，第 2 步不用改。
+為什麼不再把文件切成 chunk 做向量 + BM25 檢索：舊版找錯檔案，大多是因為各學院、
+各年度的表單內容長得很像，切成片段之後就分不出是哪個學院、哪一年的，片段也常把
+表頭或適用對象切掉，模型拿到的是缺了前提的數字。改成看目錄挑文件、讀整份文件之後，
+這兩個問題都不存在了，也少了 query 改寫、多組檢索、rerank 這幾輪呼叫。
+
+文件量（2026-10，crawler.py 從各單位網站抓完之後）：321 份、約 87 萬字，目錄約 17 萬
+token。目錄放在固定的 system 開頭，OpenAI 會快取，挑文件一次約 3～9 秒（75 份時約 3 秒）。
+文件再多下去、或想讓挑文件更快，在第 1 步前面加一層關鍵字或向量初篩、只把候選文件的
+卡片交給模型就好，第 2 步不用改。
 
 改這裡之前先跑 `python rag_eval/run_eval.py` 記下分數，改完再跑一次比較。
 """
@@ -23,6 +25,7 @@ import math
 import os
 import re
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -47,8 +50,8 @@ MAX_DOCUMENTS = 4
 # 關鍵字二次確認的門檻：用評估題目看過，真的相關的文件分數大多在 10 以上，只因為
 # 「申請」「學生」這類常見字而比對到的在 8 以下（例如問宿舍、停車證）。
 MIN_KEYWORD_SCORE = 8.0
-# 單一文件超過這個長度時，只留開頭跟跟問題最相關的段落（目前最長的文件約一萬一千字，
-# 還用不到，是給之後加入學則這類長篇法規用的）。
+# 單一文件超過這個長度時，只留開頭跟跟問題最相關的段落（2026-10 爬蟲抓進來的文件裡，
+# 中英對照的宿舍管理辦法約四萬四千字、學位論文撰寫體例參考約三萬字會用到）。
 MAX_DOCUMENT_CHARS = 20000
 
 ACADEMIC_MAPPING_FILE = Path(__file__).resolve().parent / "academic_hierarchy.json"
@@ -195,12 +198,29 @@ def keyword_candidates(
     return [doc for _, doc in scored[:limit]]
 
 
+def today_context(now: Optional[datetime] = None) -> str:
+    """今天的日期跟學年度學期。校曆這類文件收進來之後，「這學期加退選」「今年畢業典禮」
+    要知道今天是哪一學期才答得出來（不然只能反問）。第 1 學期是 8 月到隔年 1 月。
+    """
+    now = now or datetime.now()
+    roc_year = now.year - 1911
+    if now.month >= 8:
+        academic_year, term = roc_year, 1
+    elif now.month == 1:
+        academic_year, term = roc_year - 1, 1
+    else:
+        academic_year, term = roc_year - 1, 2
+    return f"今天是 {now.year} 年 {now.month} 月 {now.day} 日（{academic_year} 學年度第 {term} 學期）"
+
+
 def plan_query(query_str: str, history_str: str, catalog: list[rag_documents.CatalogDocument], hints: list = ()) -> dict:
     instructions = ROUTER_INSTRUCTIONS.format(
         max_documents=MAX_DOCUMENTS, departments=department_directory(), catalog=format_catalog(catalog),
     )
+    # 日期放在 user 訊息，不放 system：system 開頭的目錄每天都一樣，OpenAI 才能一直快取
     request = (
-        f"對話紀錄（只有使用者說過的話，最後一句是這一次的問題）：{history_str or '無'}\n"
+        f"{today_context()}\n"
+        f"對話紀錄（使用者說過的話，以及系統反問或請使用者補充的話，最後一句是這一次的問題）：{history_str or '無'}\n"
         f"這一次的問題：{query_str}"
     )
     if hints:
@@ -260,6 +280,8 @@ ANSWER_INSTRUCTIONS = """你是中央大學 NCUXplore 的校園法規助理，�
    - 文件裡沒有使用者所屬單位的規定時，要明說查不到，不能拿其他單位的規定代替；
      若要順帶提其他單位的規定，要講清楚那不是使用者的規定。
    - 同一種文件有多個年度版本時，以最新版本為主；依入學年度等條件而不同時，分別說明。
+   - 好幾份文件都寫到同一件事、但寫法或數字不一樣時（例如辦法跟申請說明、新舊公告），
+     以日期較新、或專門講這件事的那份為準，不要把每份的說法都列出來。
 4. 規定依條件（學院、身分、學制等）而不同，使用者又沒說是哪一種時，簡短分情況列出，或請使用者補充。
 5. 引用來源：只用到一份文件時不要標編號（畫面下方會列出來源檔案）。用到多份文件時，在段落或
    條列項目的結尾標注編號，例如 [1]、[2]，對應下面文件前面的 [編號]，不要編造編號，同一段標一次就好，
@@ -318,7 +340,8 @@ def build_answer_request(plan: dict, query_str: str, history_str: str) -> str:
         blocks.append(f"[{i}] {card['title']}（{meta}）\n{fit_document(doc.text, plan['question'])}")
 
     return (
-        f"對話紀錄（只有使用者說過的話）：{history_str or '無'}\n"
+        f"{today_context()}\n"
+        f"對話紀錄（使用者說過的話，以及系統反問或請使用者補充的話）：{history_str or '無'}\n"
         f"使用者這一次的問題：{query_str}\n"
         f"整理後的完整問題：{plan['question']}\n\n"
         "文件：\n\n" + "\n\n==========\n\n".join(blocks)

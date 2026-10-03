@@ -29,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -56,7 +57,8 @@ DOC_CONVERTED_CACHE_DIR = BASE_DIR / "doc_converted_cache"
 PARSER_VERSION = "2"
 CARD_VERSION = "2"
 
-SUPPORTED_SUFFIXES = (".pdf", ".docx", ".doc")
+# .odt、.doc 用 LibreOffice 轉成 .docx 再讀，.md 是爬蟲把網頁內容存下來的（crawler.py）。
+SUPPORTED_SUFFIXES = (".pdf", ".docx", ".doc", ".odt", ".md")
 
 VISION_MODEL = os.getenv("RAG_VISION_MODEL", "gpt-5.4")
 CARD_MODEL = os.getenv("RAG_CARD_MODEL", "gpt-5.4")
@@ -287,7 +289,7 @@ def parse_pdf(path: Path) -> tuple[str, int]:
 
 
 # ============================================================
-# Word（.docx，以及透過 LibreOffice 轉成 .docx 的 .doc）
+# Word（.docx，以及透過 LibreOffice 轉成 .docx 的 .doc、.odt）
 # ============================================================
 def _xml_text(element) -> str:
     parts = []
@@ -370,32 +372,40 @@ def _find_soffice() -> Optional[str]:
     return shutil.which("soffice")
 
 
-def convert_doc_to_docx(doc_path: Path) -> Optional[Path]:
-    """舊版二進位 .doc 用 LibreOffice 無頭轉檔成 .docx（結果快取），轉不了回傳 None。"""
+def convert_to_docx(path: Path, file_hash: str) -> Optional[Path]:
+    """舊版 .doc、OpenDocument 的 .odt 用 LibreOffice 無頭轉檔成 .docx，轉不了回傳 None。
+    結果以檔案內容的 hash 快取：爬蟲會在不同資料夾放同名檔案，用檔名當 key 會互相蓋掉。
+    """
     DOC_CONVERTED_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cached = DOC_CONVERTED_CACHE_DIR / (doc_path.stem + ".docx")
-    if cached.exists() and cached.stat().st_mtime >= doc_path.stat().st_mtime:
+    cached = DOC_CONVERTED_CACHE_DIR / f"{file_hash}.docx"
+    if cached.exists():
         return cached
 
     soffice = _find_soffice()
     if not soffice:
         print(
-            f"[{doc_path.name}] 找不到 LibreOffice，沒辦法轉 .doc。請安裝 "
+            f"[{path.name}] 找不到 LibreOffice，沒辦法轉 {path.suffix}。請安裝 "
             "https://www.libreoffice.org/download/download/ 或設定 LIBREOFFICE_PATH。"
         )
         return None
 
-    try:
-        result = subprocess.run(
-            [soffice, "--headless", "--convert-to", "docx", "--outdir", str(DOC_CONVERTED_CACHE_DIR), str(doc_path)],
-            capture_output=True, text=True, timeout=120,
-        )
-    except subprocess.TimeoutExpired:
-        print(f"[{doc_path.name}] LibreOffice 轉檔超過 120 秒，略過這個檔案。")
-        return None
-    if result.returncode != 0 or not cached.exists():
-        print(f"[{doc_path.name}] LibreOffice 轉檔失敗：{result.stderr.strip() or result.stdout.strip()}")
-        return None
+    with tempfile.TemporaryDirectory() as work_dir:
+        # 複製成 ASCII 檔名再轉：LibreOffice 遇到某些中文、全形符號的路徑會轉檔失敗
+        source = Path(work_dir) / f"input{path.suffix.lower()}"
+        shutil.copyfile(path, source)
+        try:
+            result = subprocess.run(
+                [soffice, "--headless", "--convert-to", "docx", "--outdir", work_dir, str(source)],
+                capture_output=True, text=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[{path.name}] LibreOffice 轉檔超過 120 秒，略過這個檔案。")
+            return None
+        converted = Path(work_dir) / "input.docx"
+        if result.returncode != 0 or not converted.exists():
+            print(f"[{path.name}] LibreOffice 轉檔失敗：{result.stderr.strip() or result.stdout.strip()}")
+            return None
+        shutil.move(str(converted), str(cached))
     return cached
 
 
@@ -449,11 +459,13 @@ def parse_file(path: Path) -> Optional[ParsedDocument]:
             text, page_count = parse_pdf(path)
         elif suffix == ".docx":
             text, page_count = parse_docx(path)
-        elif suffix == ".doc":
-            converted = convert_doc_to_docx(path)
+        elif suffix in (".doc", ".odt"):
+            converted = convert_to_docx(path, file_hash)
             if converted is None:
                 return None
             text, page_count = parse_docx(converted)
+        elif suffix == ".md":
+            text, page_count = normalize_text(path.read_text(encoding="utf-8")), 0
         else:
             return None
     except Exception as e:

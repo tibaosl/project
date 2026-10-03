@@ -107,3 +107,17 @@ def test_versions_are_not_marked_when_years_are_unknown_or_tied():
     tied = [_doc("D03", "離校同意書", version="114.10.15"), _doc("D04", "離校同意書", version="114.10.15")]
     rd.mark_superseded_versions(unknown + tied)
     assert all(d.superseded_by == "" for d in unknown + tied)
+
+
+def test_markdown_snapshots_from_the_crawler_are_read_as_text(tmp_path, monkeypatch):
+    monkeypatch.setattr(rd, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(rd, "CACHE_DIR", tmp_path / "cache")
+    page = tmp_path / "data" / "學務處生活輔導組" / "校內獎學金一覽.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("# 校內獎學金一覽\n\n| 名稱 | 金額 |\n| --- | --- |\n| 書卷獎 | 5,000 元 |\n", encoding="utf-8")
+
+    assert rd.list_data_files() == [page]
+    doc = rd.parse_file(page)
+    # 爬蟲的檔案放在來源資料夾底下，檔名要帶資料夾，前端才連得到 /files/<來源>/<檔名>
+    assert doc.file_name == "學務處生活輔導組/校內獎學金一覽.md"
+    assert "| 書卷獎 | 5,000 元 |" in doc.text

@@ -13,7 +13,8 @@
  *   {type: "error", message}
  *   {type: "session_expired", message}
  *   {type: "done"}                      # 回答結束，可以解鎖輸入框
- *   {type: "suggestions", questions}    # done 之後才來（可能沒有）：你可能還想問
+ *   {type: "suggestions", questions, kind}  # done 之後才來（可能沒有）：kind 是 "answers" 時是
+ *                                           # 系統反問的回答選項，"follow_ups" 是你可能還想問
  */
 
 // 跟單純的網路連線失敗（fetch 直接 throw TypeError）分開，讓呼叫端可以

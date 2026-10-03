@@ -8,6 +8,8 @@
 
 * **校園法規問答**：先看文件目錄挑出相關文件、再讀整份文件回答，回答附上來源出處
   （`rag_documents.py` 處理文件、`academic_agent.py` 查詢，細節見下面「校園法規問答（RAG）」）。
+* **學校網站文件爬蟲**：`python crawler.py` 把教務處、資工系、語言中心、學務處網站上的法規、
+  表單跟說明網頁抓到 `data/`，給法規問答用（`crawler.py`，要抓哪些網站設定在 `crawler_sources.py`）。
 * **登入**：兩種方式擇一，登入後給一個一次性通行證（token），不會每次對話都重傳密碼。
   * 用 Portal 帳號登入（推薦）：程式在這台電腦開一個 Chrome 視窗，你在 Portal 官方頁面
     自己登入（有人機驗證就自己勾），我們的網站完全不經手密碼；身分由 Portal 官方 OAuth
@@ -26,8 +28,9 @@
   報名時間已經截止的場次（`activity_tools.py`）。
 * **查詢自己的活動報名紀錄**、**活動報名/取消報名**：報名/取消一定要使用者在對話裡明確回覆
   「確定」才會真的送出，不會被機器人自己誤觸發。
-* **建議問題**：一進對話頁會隨機推薦幾個可以直接點的問題（沒登入只推薦不需登入的功能）；
-  每輪回答完會用 LLM 產生 3 個「你可能還想問」的追問（`suggestions.py`）。
+* **建議問題**：一進對話頁會隨機推薦幾個可以直接點的問題（沒登入只推薦不需登入的功能）。
+  每輪回答完會在下面放可以直接點的選項（`suggestions.py`）：系統在反問使用者時，選項是那個反問的
+  回答（例如學院名稱，是非題就只有「要／不用了」，數量看問題決定），其他時候是 3 個「你可能還想問」。
 
 ## 開發注意事項
 
@@ -107,8 +110,23 @@ python run.py
 
 ## 校園法規問答（RAG）
 
-法規文件放在 `data/`（PDF、Word，`.doc` 需要裝 [LibreOffice](https://www.libreoffice.org/download/download/)
-自動轉檔）。這些檔案不在 git 裡，要跟有檔案的組員拿。
+法規文件放在 `data/`（PDF、Word、OpenDocument，`.doc`、`.odt` 需要裝
+[LibreOffice](https://www.libreoffice.org/download/download/) 自動轉檔）。這些檔案不在 git 裡，
+用爬蟲從學校網站抓：
+
+```powershell
+python crawler.py --dry-run   # 先看會抓哪些檔案、檔名對不對
+python crawler.py             # 抓到 data/<來源>/，例如 data/教務處註冊組/
+```
+
+* 要抓哪些網站設定在 `crawler_sources.py`（每個網站的狀況都寫在裡面）。重抓時沒變的檔案不會再下載，
+  網站上更新的檔案會覆蓋，網站上已經拿掉的檔案會移到 `storage/crawler/removed/`。
+* 有些資訊不是附檔而是網頁本身（獎學金一覽、宿舍 Q&A），會存成 `.md`，海報圖片（英文畢業門檻）
+  另存成 PDF，讓 RAG 用圖片轉錄讀。
+* 每個檔案的來源網址記在 `data/.crawler_manifest.json`。不在裡面的檔案（自己手動放進 `data/` 的）
+  爬蟲不會動。`python crawler.py --legacy` 可以檢查這些手動檔跟爬到的檔案有沒有重複，
+  加 `--move-duplicate-legacy` 會把內容一模一樣的移到 `storage/crawler/legacy_backup/`。
+  之前跟組員拿的舊 `data/`（根目錄那 77 個檔案）都已經有爬蟲抓的新版，可以直接移走再爬一次。
 
 每個問題的流程：
 
@@ -140,7 +158,7 @@ python rag_eval/run_eval.py --router-only          # 只測挑文件那一步，
 
 ```powershell
 # 後端（pytest）
-python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py
+python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py
 
 # 前端（Vitest）
 cd frontend

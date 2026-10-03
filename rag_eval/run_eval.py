@@ -80,6 +80,21 @@ def _norm(name: str) -> str:
     return unicodedata.normalize("NFKC", name).split(" (第")[0].strip()
 
 
+def equivalent_names(module, names) -> set:
+    """內容相同、在目錄裡合併成一份的文件都算同一份（例如教務章則彙編跟課務組的法規頁
+    放了同一個辦法，目錄只留其中一個檔名，題庫寫的是另一個也算挑對）。
+    """
+    groups = {}
+    for doc in module.get_catalog():
+        group = {_norm(doc.file_name), *(_norm(name) for name in doc.duplicates)}
+        for name in group:
+            groups[name] = group
+    result = set()
+    for name in names:
+        result |= groups.get(_norm(name), {_norm(name)})
+    return result
+
+
 def load_module(spec: str):
     if spec.endswith(".py"):
         path = Path(spec).resolve()
@@ -91,8 +106,10 @@ def load_module(spec: str):
 
 
 def history_string(history: list[str], question: str) -> str:
-    """跟 supervisor_agent 組歷史的方式一樣：只有使用者說過的話，含這一輪。"""
-    turns = [f"[使用者]: {q}" for q in history + [question]]
+    """跟 supervisor_agent 組歷史的方式一樣：使用者說過的話（含這一輪），以及系統的反問。
+    題庫裡的系統反問直接寫成 "[系統反問]: ..."，其他句子當成使用者說的話。
+    """
+    turns = [q if q.startswith("[") else f"[使用者]: {q}" for q in history + [question]]
     return " -> ".join(turns)
 
 
@@ -125,7 +142,7 @@ def run_one(module, client: OpenAI, item: dict) -> dict:
     answer = result.get("answer", "")
     sources = result.get("sources", [])
     gold = {_norm(g) for g in item.get("gold", [])}
-    cited = {_norm(s) for s in sources}
+    cited = equivalent_names(module, sources)
     verdict = judge(client, item, answer)
     return {
         "id": item["id"],
@@ -144,7 +161,7 @@ def check_routing(module, item: dict) -> dict:
     """只跑挑文件那一步：該回答的題目要挑到標準文件，查無資料的題目要判成 not_found。"""
     started = time.time()
     plan = module.choose_documents(item["question"], history_string(item.get("history", []), item["question"]), module.get_catalog())
-    picked = {_norm(doc.file_name) for doc in plan["documents"]}
+    picked = equivalent_names(module, [doc.file_name for doc in plan["documents"]])
     gold = {_norm(g) for g in item.get("gold", [])}
     if item["expect"] == "not_found":
         ok = plan["decision"] == "not_found"

@@ -8,7 +8,7 @@ from activity_tools import (
     find_activities_by_hour_tag,
 )
 import academic_agent
-from suggestions import generate_follow_up_questions
+from suggestions import extract_question_to_user, generate_suggestions
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -395,6 +395,26 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
     }
 
 
+def _system_history_entry(agent_results: list, called_tools: list) -> list[str]:
+    """把系統這一輪「在等使用者回答」的話記進對話歷史。
+
+    歷史原本只記使用者說的話，但系統反問或請使用者補充之後，使用者常常只回「要」
+    「理學院」「微積分」（前端還會把回答做成選項讓使用者直接點），沒有前一句就看不懂。
+    - 回覆結尾有問句：記那句反問。
+    - 沒呼叫任何工具、直接回文字：多半是在請使用者補充（例如「請告訴我你想找哪一門課」，
+      不一定有問號），記回覆的開頭。
+    """
+    reply = agent_results[-1] if agent_results else None
+    if not isinstance(reply, str):
+        return []
+    question = extract_question_to_user(reply)
+    if question:
+        return [f"[系統反問]: {question}"]
+    if not called_tools:
+        return [f"[系統]: {' '.join(reply.split())[:150]}"]
+    return []
+
+
 async def agent_node(state: AgentState):
     user_input = state["user_input"]
     username = state.get("username", "")
@@ -410,6 +430,8 @@ async def agent_node(state: AgentState):
                 "sources": event["sources"],
                 "pending_action": event["pending_action"],
                 "called_tools": event["called_tools"],
+                # 使用者這句話已經由 run_ncuxplore_agent 的 initial_state 併進去了，這裡只補系統的話
+                "past_queries": _system_history_entry(event["agent_results"], event["called_tools"]),
             }
 
     # _agent_turn_events 保證一定會 yield 一個 "final" 事件才結束；
@@ -455,8 +477,9 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
 
     依序 yield 跟 `_agent_turn_events()` 一樣的事件，額外保證一定會有一個
     `{"type": "done"}` 代表回答結束。`done` 之後可能還會有一個
-    `{"type": "suggestions", "questions": [...]}`（你可能還想問）——刻意放在
-    `done` 後面，前端收到 `done` 就能先解鎖輸入框，不用等追問產生完。
+    `{"type": "suggestions", "questions": [...], "kind": ...}`——kind 是 "answers"
+    時代表這輪在等使用者回答、questions 是回答選項，"follow_ups" 是「你可能還想問」。
+    刻意放在 `done` 後面，前端收到 `done` 就能先解鎖輸入框，不用等選項產生完。
     """
     config = {"configurable": {"thread_id": thread_id}}
     final_event = None
@@ -496,7 +519,8 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
                         "username": username,
                         "password": password,
                         "agent_results": event["agent_results"],
-                        "past_queries": [f"[使用者]: {user_message}"],
+                        "past_queries": [f"[使用者]: {user_message}"]
+                        + _system_history_entry(event["agent_results"], event["called_tools"]),
                         "sources": event["sources"],
                         "pending_action": event["pending_action"],
                         "called_tools": event["called_tools"],
@@ -516,11 +540,11 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
 
     # 等使用者回覆「確定」送出報名/取消時不給追問，避免把確認流程岔開
     if final_event and final_event["agent_results"] and not final_event["pending_action"]:
-        questions = await generate_follow_up_questions(
+        kind, questions = await generate_suggestions(
             user_message,
             final_event["agent_results"][-1],
             final_event["called_tools"],
             logged_in=bool(username),
         )
         if questions:
-            yield {"type": "suggestions", "questions": questions}
+            yield {"type": "suggestions", "questions": questions, "kind": kind}

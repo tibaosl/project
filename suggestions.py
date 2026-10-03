@@ -1,4 +1,9 @@
-"""建議問題：開場推薦問題，以及每輪回答後的「你可能還想問」。
+"""建議問題：開場推薦問題，以及每輪回答後顯示在下面的選項。
+
+回答後的選項有兩種，由模型看系統的回覆決定（generate_suggestions）：
+- 回覆在等使用者補充資訊或做選擇（例如「請問你是哪個學院的？」「請告訴我你想找哪一門課」）
+  → 給能直接回答它的選項，數量看問題決定，是非題就只給兩個。
+- 已經回答完了 →「你可能還想問」的追問。
 
 每個 agent 工具都在 TOOL_SUGGESTIONS 登記一筆：前端顯示用的功能名稱、需不需要登入、
 幾個範例問題。新增工具時在這裡補一筆（test_agent_tools_schema.py 會檢查有沒有漏），
@@ -70,6 +75,9 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "在學證明要怎麼申請？",
         "選課是先搶先贏嗎？",
         "教研大樓的教室要怎麼借？",
+        "書卷獎可以拿多少錢？",
+        "停修有什麼限制？",
+        "學生生病要怎麼請假？",
     )),
     "get_activity_details": FeatureSuggestions("活動詳情", False),
     "preview_activity_registration": FeatureSuggestions("活動報名", True),
@@ -122,31 +130,61 @@ def pick_starter_questions(
 
 
 # ============================================================
-# 追問（你可能還想問）
+# 回答後的選項：等使用者回答時給回答選項，回答完了給「你可能還想問」
 # ============================================================
 
-_follow_up_llm = None
+MAX_REPLY_OPTIONS = 8
+MAX_OPTION_LENGTH = 20
+COLLEGES = "文學院、理學院、工學院、管理學院、資訊電機學院、地球科學學院、客家學院、生醫理工學院"
+_QUESTION_SENTENCE = re.compile(r"[^。！!？?\n]*[？?]")
+_QUOTED = re.compile(r"「[^」]*」|『[^』]*』|“[^”]*”|\"[^\"]*\"")
+
+_suggestion_llm = None
 
 
-def _get_follow_up_llm():
-    global _follow_up_llm
-    if _follow_up_llm is None:
+def _get_suggestion_llm():
+    """gpt-5.4-mini 開低推理：比過 gpt-4o-mini（同一題跑兩次結果不一致，還會把學院名稱套到
+    「想找什麼課」），也比過不開推理（要使用者提供活動名稱時，6 次有 5 次會放「活動名稱」這種
+    佔位選項，開低推理 12 次都正確地不給選項）。選項在回答結束後才顯示，多花一點時間沒關係。
+    """
+    global _suggestion_llm
+    if _suggestion_llm is None:
         from langchain_openai import ChatOpenAI
 
-        _follow_up_llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.7, timeout=10, max_retries=1)
-    return _follow_up_llm
+        _suggestion_llm = ChatOpenAI(model="gpt-5.4-mini", reasoning_effort="low", timeout=15, max_retries=1)
+    return _suggestion_llm
 
 
 def describe_answer(content: Any) -> str:
-    """把這輪回覆轉成給 LLM 看的簡短描述（卡片類的結構化內容只描述類型）。"""
+    """把這輪回覆轉成給 LLM 看的描述（卡片類的結構化內容只描述類型）。
+    長的回覆留開頭跟結尾，反問通常放在最後。
+    """
     if isinstance(content, str):
-        return content.strip()[:600]
+        text = content.strip()
+        return text if len(text) <= 800 else f"{text[:400]}\n……\n{text[-400:]}"
     if isinstance(content, dict) and content.get("kind"):
         extra = f"，顯示重點：{content['focus']}" if content.get("focus") else ""
         return f"（以卡片顯示結構化資料，類型：{content['kind']}{extra}）"
     if isinstance(content, list):
         return "（以表格顯示，例如課表）"
     return ""
+
+
+def extract_question_to_user(reply: Any) -> str:
+    """回覆最後兩行裡如果有問句，回傳最後一句，沒有就回傳空字串。
+
+    只看結尾：反問一定放在最後（常見的是「請問你想查什麼呢？例如課表、成績。」），
+    法規回答中間偶爾會引用常見問答的問句，那不是在問使用者。引號裡的問號也不算，那是在引用
+    （「你要查「英文門檻」還是「外文門檻」？」結尾的問號在引號外，還是算）。
+    「請告訴我你想找哪一門課」這種沒有問號的請求要靠模型判斷。
+    """
+    if not isinstance(reply, str):
+        return ""
+    lines = [line.strip() for line in reply.replace("*", "").splitlines() if line.strip()]
+    # 引號裡的問號先換成別的字元，找完問句再換回來
+    tail = _QUOTED.sub(lambda m: m.group(0).replace("？", "\x01").replace("?", "\x02"), "\n".join(lines[-2:]))
+    questions = [q.strip(" -：:") for q in _QUESTION_SENTENCE.findall(tail) if q.strip(" -：:")]
+    return questions[-1].replace("\x01", "？").replace("\x02", "?")[:150] if questions else ""
 
 
 def _feature_catalog(logged_in: bool) -> str:
@@ -156,22 +194,46 @@ def _feature_catalog(logged_in: bool) -> str:
     )
 
 
-def _build_follow_up_prompt(user_message: str, answer: str, used_labels: list[str], logged_in: bool) -> str:
-    return f"""你是中央大學校園助手 NCUXplore 的介面，要在回答後提供「你可能還想問」的追問建議。
+def _build_suggestion_prompt(
+    user_message: str, answer: str, question: str, used_labels: list[str], logged_in: bool
+) -> str:
+    return f"""你是中央大學校園助手 NCUXplore 的介面，要在系統的回覆下面放幾個讓使用者直接點選的選項。
 
-系統目前能處理的功能（只能建議這些功能做得到的問題）：
+系統的功能（選項只能是這些功能做得到的事）：
 {_feature_catalog(logged_in)}
 
-使用者剛剛問：{user_message}
+使用者剛剛說：{user_message}
 系統這輪用到的功能：{"、".join(used_labels) or "無（直接文字回覆）"}
-回答內容摘要：{answer or "（無）"}
+系統的回覆：
+{answer or "（無）"}
+回覆結尾的問句：{question or "（沒有問句）"}
 
-請給出 {FOLLOW_UP_COUNT} 個使用者接下來最可能想問的問題：
-- 要跟剛才的問答相關、是自然的下一步，不要重複剛剛問過的問題
-- 用使用者的口吻、繁體中文、每題 25 字以內，不要編號
-- 只能是上面功能做得到的問題
+先判斷系統的回覆是不是在等使用者補充資訊或做選擇（例如反問、請使用者提供課名或活動名稱、
+問要不要），再依判斷給選項。
 
-只輸出 JSON 字串陣列，例如 ["問題一", "問題二", "問題三"]。"""
+一、在等使用者回答 → kind 填 "answers"，options 是使用者對它的回答，不是新的問題：
+- 有結尾問句時，選項要直接回答那一句，不要回答使用者原本的問題
+  （例如問「要我把各學院的門檻都列出來嗎？」就給「要」「不用了」，不要給學院名稱）。
+- 數量看問題決定：
+  - 是非題或二選一：給 2 個（例如「要」「不用了」）。
+  - 答案是固定幾種（例如學院、大學部或研究所）：全部列出，最多 {MAX_REPLY_OPTIONS} 個。
+  - 開放式問題：給 3 到 4 個具體的例子（例如問想找什麼課，就給「微積分」「程式設計」這種具體課名，
+    不要給「必修課」「通識課」這種籠統的分類）。
+- 同時問了好幾件事時，只針對最主要的一件給選項，不要排列組合（同時問學院跟學制時以學院為主，
+  因為規定大多是依學院不同）。
+- 要使用者提供實際存在的名稱、但你不知道實際有哪些時（例如要報名哪一場活動），options 一定給空陣列 []：
+  不要自己編名稱（像「Python 入門工作坊」），也不要放「活動名稱」「工作坊名稱」這種佔位文字，
+  這種選項點下去沒有用，使用者自己打字比較快。
+- 每個 {MAX_OPTION_LENGTH} 字以內。系統看得到剛剛的對話，所以選項可以很短。
+- 只有在問「哪個學院」時才用這些學院名稱：{COLLEGES}。
+- 問使用者想查什麼時，給具體、系統做得到的事（例如「英文畢業門檻」「最近的講座」）。
+
+二、已經回答完了 → kind 填 "follow_ups"，options 給 {FOLLOW_UP_COUNT} 個使用者接下來最可能想問的問題：
+- 要跟剛才的問答相關、是自然的下一步，不要重複剛剛問過的問題。
+- 每題 25 字以內，只能是上面功能做得到的問題。
+
+選項都用使用者的口吻、繁體中文，不要編號。
+只輸出 JSON，例如 {{"kind": "answers", "options": ["要", "不用了"]}}。"""
 
 
 def parse_question_list(text: str) -> list[str]:
@@ -188,11 +250,28 @@ def parse_question_list(text: str) -> list[str]:
     return [q.strip() for q in data if isinstance(q, str) and q.strip()]
 
 
-def _clean_questions(questions: list[str], user_message: str) -> list[str]:
+def parse_suggestion(text: str) -> Optional[tuple[str, list[str]]]:
+    """從 LLM 回覆裡抓出 {"kind": ..., "options": [...]}；格式不對回傳 None。"""
+    match = re.search(r"\{.*\}", text, re.S)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group(0))
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or data.get("kind") not in ("answers", "follow_ups"):
+        return None
+    options = data.get("options")
+    if not isinstance(options, list):
+        return None
+    return data["kind"], [o.strip() for o in options if isinstance(o, str) and o.strip()]
+
+
+def _clean_questions(questions: list[str], user_message: str, max_length: int = MAX_QUESTION_LENGTH) -> list[str]:
     asked = user_message.strip()
     cleaned: list[str] = []
     for q in questions:
-        if q != asked and q not in cleaned and len(q) <= MAX_QUESTION_LENGTH:
+        if q != asked and q not in cleaned and len(q) <= max_length:
             cleaned.append(q)
     return cleaned
 
@@ -212,26 +291,51 @@ def _fallback_follow_ups(
     return _clean_questions(candidates, user_message)
 
 
-async def generate_follow_up_questions(
+async def generate_suggestions(
     user_message: str,
     answer: Any,
     called_tools: list[str],
     logged_in: bool,
     rng: Optional[random.Random] = None,
-) -> list[str]:
+) -> tuple[str, list[str]]:
+    """回答後要顯示的選項，回傳 (種類, 選項)：
+    "answers" 是回答系統反問的選項（可能是空的），"follow_ups" 是「你可能還想問」。
+    """
     rng = rng or random.Random()
     used_labels = [TOOL_SUGGESTIONS[t].label for t in called_tools if t in TOOL_SUGGESTIONS]
 
-    questions: list[str] = []
+    question = extract_question_to_user(answer)
+    parsed = None
     try:
-        prompt = _build_follow_up_prompt(user_message, describe_answer(answer), used_labels, logged_in)
-        reply = await _get_follow_up_llm().ainvoke(prompt)
-        questions = _clean_questions(parse_question_list(reply.content), user_message)
+        prompt = _build_suggestion_prompt(user_message, describe_answer(answer), question, used_labels, logged_in)
+        reply = await _get_suggestion_llm().ainvoke(prompt)
+        parsed = parse_suggestion(reply.content)
     except Exception as exc:
-        print(f"[Suggestions] 產生追問失敗，改用範例問題：{exc}")
+        print(f"[Suggestions] 產生選項失敗，改用備案：{exc}")
 
+    model_kind, options = parsed if parsed else (None, [])
+
+    # 看得出來的情況用規則決定，模型只負責判斷「沒呼叫工具的直接回覆」是不是在請使用者補充
+    # （例如「請告訴我你想找哪一門課」）。全部交給模型時，同一題跑幾次偶爾會判錯。
+    if not isinstance(answer, str):
+        kind = "follow_ups"  # 課表、時數這類卡片是已經查好的資料
+    elif question:
+        kind = "answers"  # 結尾有問句就是在反問
+    elif called_tools:
+        kind = "follow_ups"  # 工具已經回答完了（法規回答、找不到活動……）
+    else:
+        kind = model_kind or "follow_ups"
+
+    if model_kind != kind:
+        # 模型給的是另一種選項，不能拿來用：反問下面寧可不顯示，也不要放跟它無關的追問
+        options = []
+
+    if kind == "answers":
+        return kind, _clean_questions(options, user_message, MAX_OPTION_LENGTH)[:MAX_REPLY_OPTIONS]
+
+    questions = _clean_questions(options, user_message)
     if len(questions) < FOLLOW_UP_COUNT:
         for q in _fallback_follow_ups(user_message, called_tools, logged_in, rng):
             if q not in questions:
                 questions.append(q)
-    return questions[:FOLLOW_UP_COUNT]
+    return kind, questions[:FOLLOW_UP_COUNT]

@@ -152,3 +152,13 @@ def test_fit_document_keeps_head_and_relevant_sections():
     assert relevant in fitted
     assert "中間省略" in fitted
     assert agent.fit_document("短文件", "問題") == "短文件"
+
+
+def test_today_context_names_the_academic_year_and_term():
+    from datetime import datetime
+
+    # 第 1 學期是 8 月到隔年 1 月，第 2 學期是 2 月到 7 月（民國年 = 西元年 - 1911）
+    assert agent.today_context(datetime(2026, 10, 4)) == "今天是 2026 年 10 月 4 日（115 學年度第 1 學期）"
+    assert agent.today_context(datetime(2027, 1, 20)).endswith("（115 學年度第 1 學期）")
+    assert agent.today_context(datetime(2027, 3, 1)).endswith("（115 學年度第 2 學期）")
+    assert agent.today_context(datetime(2027, 8, 1)).endswith("（116 學年度第 1 學期）")
