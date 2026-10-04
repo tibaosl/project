@@ -121,3 +121,54 @@ def test_markdown_snapshots_from_the_crawler_are_read_as_text(tmp_path, monkeypa
     # 爬蟲的檔案放在來源資料夾底下，檔名要帶資料夾，前端才連得到 /files/<來源>/<檔名>
     assert doc.file_name == "學務處生活輔導組/校內獎學金一覽.md"
     assert "| 書卷獎 | 5,000 元 |" in doc.text
+
+
+def _catalog_doc(doc_id, title, scope="全校", folder="教務處"):
+    card = {"title": title, "doc_type": "法規辦法", "issuer": "", "scope": scope, "applies_to": "", "version": "",
+            "summary": "摘要", "answers": ["問題？"]}
+    return rd.CatalogDocument(doc_id, f"{folder}/{title}.pdf", "全文", card)
+
+
+def test_versions_with_different_scopes_are_separate_series():
+    # 兩個系的「碩士班修業規定」標題一樣，不能把物理系的舊版指到化學系的新版
+    physics = _catalog_doc("D01", "112學年度碩士班修業規定", "物理學系", "物理學系")
+    chemistry = _catalog_doc("D02", "114學年度碩士班修業規定", "化學學系", "化學學系")
+    # 同一份全校性辦法放在兩個單位的網站上、一新一舊，還是要標出舊版
+    old = _catalog_doc("D03", "112學年度學分抵免辦法", folder="教務處課務組")
+    new = _catalog_doc("D04", "114學年度學分抵免辦法", folder="教務處")
+    rd.mark_superseded_versions([physics, chemistry, old, new])
+    assert (physics.superseded_by, chemistry.superseded_by) == ("", "")
+    assert old.superseded_by == "D04"
+
+
+def test_card_embeddings_are_cached_by_card_content(tmp_path, monkeypatch):
+    import numpy as np
+
+    monkeypatch.setattr(rd, "CACHE_DIR", tmp_path)
+    embedded = []
+
+    def embed(texts):
+        embedded.extend(texts)
+        return np.ones((len(texts), 4), dtype=np.float32) / 2
+
+    monkeypatch.setattr(rd, "embed_texts", embed)
+    docs = [_catalog_doc("D01", "學則"), _catalog_doc("D02", "選課辦法")]
+    rd.attach_embeddings(docs)
+    assert len(embedded) == 2 and all(d.embedding is not None for d in docs)
+
+    docs[1].card = {**docs[1].card, "summary": "改過的摘要"}
+    again = [_catalog_doc("D01", "學則"), docs[1]]
+    rd.attach_embeddings(again)
+    assert len(embedded) == 3 and "改過的摘要" in embedded[-1]  # 只重算卡片有變的那份
+    assert again[0].embedding is not None
+
+
+def test_failed_embeddings_leave_documents_without_vectors(tmp_path, monkeypatch):
+    def broken(texts):
+        raise RuntimeError("沒有網路")
+
+    monkeypatch.setattr(rd, "CACHE_DIR", tmp_path)
+    monkeypatch.setattr(rd, "embed_texts", broken)
+    docs = [_catalog_doc("D01", "學則")]
+    rd.attach_embeddings(docs)
+    assert docs[0].embedding is None

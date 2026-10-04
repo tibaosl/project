@@ -52,7 +52,7 @@ import urllib3
 from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 from requests.utils import requote_uri
 
-from crawler_sources import SOURCES, Follow, Page, Source
+from crawler_sources import COHORT_YEARS_KEPT, GLOBAL_EXCLUDE, SOURCES, TERM_LATEST_ONLY, Follow, Page, Source
 from logging_config import make_print_logger
 from rag_documents import normalize_text, rows_to_markdown
 
@@ -78,6 +78,8 @@ PREFERRED_TYPES = (".pdf", ".docx", ".odt", ".doc")
 DOC_EXTENSIONS = {"pdf", "doc", "docx", "odt", "ods", "odp", "xls", "xlsx", "ppt", "pptx", "rtf", "zip", "rar", "7z"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico"}
 GOOGLE_HOSTS = {"drive.google.com", "docs.google.com"}
+# 學校網站委外廠商放附檔的網域（工學院的規章表單在 assets.ppnet.tw）
+FILE_HOSTS = {"assets.ppnet.tw"}
 SKIP_REASONS = {
     ".html": "連到的是網頁，不是文件",
     ".ods": "試算表，RAG 讀不了", ".xls": "試算表，RAG 讀不了", ".xlsx": "試算表，RAG 讀不了",
@@ -125,7 +127,7 @@ def url_key(url: str) -> str:
 
 def allowed_host(url: str) -> bool:
     host = urlparse(url).hostname or ""
-    return host == "ncu.edu.tw" or host.endswith(".ncu.edu.tw") or host in GOOGLE_HOSTS
+    return host == "ncu.edu.tw" or host.endswith(".ncu.edu.tw") or host in GOOGLE_HOSTS or host in FILE_HOSTS
 
 
 def google_download_url(url: str) -> Optional[str]:
@@ -145,7 +147,9 @@ def google_download_url(url: str) -> Optional[str]:
     return None
 
 
-_FILE_URL_HINT = re.compile(r"/(static|var)/file/|/s/[\w-]+/?$|downloadfile|/download\.php|[?&](file|fname|filename)=", re.I)
+_FILE_URL_HINT = re.compile(r"/(static|var)/file/|/s/[\w-]+/?$|downloadfile|/download\.php|/readfile/|[?&](file|fname|filename)=|"
+    # 生科系的 /readfile/index.html?p=laws&n=6239761195770.pdf：檔名寫在參數裡
+    r"=[^&=]*\.(pdf|docx?|odt|ods|xlsx?|pptx?)(&|$)", re.I)
 
 
 def link_kind(url: str) -> str:
@@ -254,12 +258,28 @@ _BOILERPLATE = [re.compile(p, re.I) for p in (
     r"\.?(pdf|odt|ods|odp|docx?|xlsx?|pptx?)\s*檔案?",
     r"\.(pdf|odt|ods|odp|docx?|xlsx?|pptx?)\s*$",
     r"(?<=[\u3400-\u9fff])\s*(pdf|odt|ods|docx?|xlsx?)\s*$",
+    r"(?<=[）)])\s*(pdf|odt|ods|docx?|xlsx?)\s*$",  # 太空系「…（審定結果）ODT」
     r"(按我|點我|點此|按此|請點選?)\s*(下載|看|觀看|查看|閱讀)?",
     r"^form\d+(-\d+)*",  # 教務處表單編號的英文前綴（form02-07-1國立中央大學…）
     r"^下載\s*(?=\S)",  # title 寫成「下載83年次(不含)以前申請文件 Word 格式」
     r"(?<=[－\s])下載\s*(?=[中英])",  # 「3-05 指導教授推薦書－下載中文版」
     r"\s*(Word|OpenDocument|ODF|PDF|ODT|DOCX?)\s*格式$",
+    # 2026-10 加進全校各系所網站之後看到的
+    r"[（(]?\s*opens? (in )?a new (tab|window)\s*[）)]?",  # WordPress 的無障礙說明文字
+    r"在(新|本)視窗開啟",  # Orbit 系統（zh_tw 網址）把這幾個字放在連結文字前面
+    # 「[]院務會議設置辦法」「[word 表格]升等個人資料表」：檔案類型圖示的替代文字（「[寒暑期營隊]」這種分類要留著）
+    r"^\s*\[\s*((word|pdf|odt|docx?|xlsx?|excel)\s*(表格|檔案?)?)?\s*\]\s*",
+    r"^\s*(PDF|DOCX?|ODT|XLSX?)\s+(?=\S)",  # 「PDF 114國立中央大學環境工程研究所博士班修業辦法.pdf 更新日期：…」
+    r"(\s+(PDF|DOCX?|ODT))?\s*更新日期\s*[:：]?.*$",  # 「…修業辦法 PDF 更新日期 115.04.23」
+    r"[（(]\s*(pdf|docx?|odt|xlsx?|pptx?)\s*[,，]\s*[\d.]+\s*[KMG]?B?\s*[）)]?",  # 「(PDF, 102KB)」
+    r"^\d{1,2}\)\s*",  # 光電系的「05) 光電系免修學分申請表」
+    r"^(請參閱|請參考|詳見)\s*",
+    # 生科系附件的 title 寫成「(國立中央大學生命科學系助學工讀辦法.pdf)(pdf檔下載」
+    r"[（(]\s*(pdf|odt|docx?)?\s*檔?\s*下載\s*[)）]?\s*$",
+    r"\.(pdf|odt|ods|odp|docx?|xlsx?|pptx?)(?=[)）]\s*$)",
 )]
+# 檔案類型圖示、裝飾用的符號（化材系的「📄 碩士班修業辦法」、「★ 113 學年度課程地圖」）
+_SYMBOLS = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u25A0-\u25FF\u2190-\u21FF\uFE0F]")
 # 名稱後面整串的英文翻譯（住宿組的「國立中央大學學生宿舍管理辦法The Regulation of Student
 # Dormitories in National Central University」），中文名稱夠長時拿掉，檔名才不會長到被截斷
 _ENGLISH_TRANSLATION = re.compile(r"\s*[A-Z][A-Za-z’'&,.\-]*(\s+[A-Za-z’'&,.\-]+){2,}\s*")
@@ -268,7 +288,7 @@ _INSTRUCTION_PREFIX = re.compile(r"^.*?(請填妥|請填寫|請下載|請參閱|
 _SEPARATORS = " \t\n》>»→：:，,、。；;|｜-–—_"
 _GENERIC_WORDS = re.compile(
     r"下載|檔案|附件|連結|點我|點此|點選|按我|按此|請點|這裡|此處|查看|檢視|開啟|瀏覽|觀看|閱讀|全文|詳見|詳細|更多|"
-    r"pdf|odt|ods|docx?|xlsx?|pptx?|click|here|download|file|link|view|more|open|進入|enter",
+    r"pdf|odt|ods|docx?|xlsx?|pptx?|click|here|download|file|link|view|more|open|進入|enter|image|img|icon|圖片|縮圖|圖示",
     re.I,
 )
 _DOC_WORDS = re.compile(
@@ -280,8 +300,16 @@ _DOC_WORDS = re.compile(
 # 網站管理者留在名稱裡的雜訊：表單代碼、長串日期流水號、「移除連結-改信箱」這種修改註記
 _JUNK = re.compile(r"\d{7,}|移除連結|改信箱|_v\d{6,}|[(（]\d[)）]$|複本|copy|final|FIN$|_pdf$|_odt$", re.I)
 _QUALIFIER = re.compile(
-    r"(中文|英文|中英文)版?(說明)?|English( version)?|說明|使用說明|委託書|範例|填寫範例|附件[一二三四五六七八九十\d]*", re.I,
+    r"(中文|英文|中英文)版?(說明)?|English( version)?|說明|使用說明|委託書|範例|填寫範例|附件[一二三四五六七八九十\d]*|"
+    # 物理系「王立文女士獎學金辦法　申請表」：連結文字只有「申請表」，名稱要接在同一行的辦法後面
+    r"申請(表|書|單)|表格|切結書|同意書|範本|檢核表",
+    re.I,
 )
+# 只有文件類型的連結文字（通識中心的「辦法」、化材系的「獎勵辦法」）：真正的名稱在網址或同一行裡，
+# 要借上下文的名稱，但不會像「中文版」那樣接在別的名稱後面
+_BARE_TYPE = re.compile(r"(選修|修業|申請|實施|施行|作業|獎勵|補助)?(辦法|要點|規定|細則)|簡章|表單|檔案")
+# 只有年度的連結文字（物理系「大學部課程地圖：108學年度｜109學年度」），名稱要接在上下文後面
+_YEAR_ONLY = re.compile(r"(\d{2,4}\s*(學年度?|級|年度?|學期)?\s*(入學|適用|入學適用|入學新生適用|以後|以前|起)?[\s\-~～至、]*)+")
 
 
 def tidy(text: str) -> str:
@@ -294,7 +322,9 @@ def tidy(text: str) -> str:
 
 def clean_name(text: str) -> str:
     """拿掉「（另開新視窗）」「下載 PDF：」「(.pdf)」這類跟名稱無關的字，認不出名稱回傳空字串。"""
-    name = tidy(normalize_text(text or ""))  # 網址、標題裡也有相容字（國立的「立」是 U+F9F7）
+    name = tidy(_SYMBOLS.sub(" ", normalize_text(text or "")))  # 網址、標題裡也有相容字（國立的「立」是 U+F9F7）
+    if re.match(r"\s*https?://", name):
+        return ""  # 連結文字直接寫網址
     for _ in range(2):
         for pattern in _BOILERPLATE:
             name = pattern.sub("", name)
@@ -312,6 +342,10 @@ def clean_name(text: str) -> str:
     for left, right in (("「", "」"), ("『", "』")):
         if name.count(left) != name.count(right):
             name = name.replace(left, "").replace(right, "")
+    if re.fullmatch(r"[（(][^()（）]+[)）]", name):
+        name = name[1:-1]  # 整個名稱被括號包起來
+    name = re.sub(r"[\s:：]*[（(]\s*$", "", name)  # 「…相關修業辦法： (下載)」拿掉「下載)」之後剩下的半個括號
+    name = re.sub(r"[\s_-]+(pdf|docx?|odt)\s*$", "", name, flags=re.I)  # 化學系的「博士班修業辦法-1070321 pdf」
     name = tidy(name)
     return "" if is_generic(name) else name
 
@@ -351,13 +385,17 @@ def choose_name(candidates: list[tuple[int, str]]) -> str:
     ranked = sorted(cleaned, key=lambda c: name_score(c[1], c[0]), reverse=True)
     # 頁面標題、PDF 第一行只在完全沒有別的名稱時才拿來當名稱，平常只當「中文版」的前半段
     best = next((n for p, n in ranked if p > P_FALLBACK), ranked[0][1])
-    if _QUALIFIER.fullmatch(best):
-        context = next((n for _, n in ranked[1:] if not _QUALIFIER.fullmatch(n) and best not in n), "")
+    if _QUALIFIER.fullmatch(best) or _BARE_TYPE.fullmatch(best) or _YEAR_ONLY.fullmatch(best):
+        context = next((n for _, n in ranked if n != best and not _QUALIFIER.fullmatch(n)
+                        and not _BARE_TYPE.fullmatch(n) and not _YEAR_ONLY.fullmatch(n)), "")
+        if context and best in context:
+            return context  # 「辦法」接在「創意學分學程選修辦法」後面是多餘的
         return f"{context}（{best}）" if context else best
     # 「辦法：[中文版]、[英文版]」：名稱取自同一行，連結文字的版本別要接在後面，兩份才分得開
     qualifier = next((n for p, n in cleaned if p == P_LINK_TEXT and _QUALIFIER.fullmatch(n)), "")
     core = re.sub(r"版|說明|version", "", qualifier, flags=re.I).strip()  # 「英文版說明」→「英文」
-    if qualifier and qualifier not in best and not (core and core in best):
+    already_english = core == "英文" and not re.search(r"[\u3400-\u9fff]", best)
+    if qualifier and qualifier not in best and not (core and core in best) and not already_english:
         return f"{best}（{qualifier}）"
     return best
 
@@ -389,7 +427,8 @@ def _line_around(link: Tag) -> tuple[str, str, int, int]:
             elif isinstance(child, Comment):
                 continue
             elif isinstance(child, NavigableString):
-                add(str(child), inside_link)
+                # 原始碼裡的換行只是排版用的空白，真正的換行是 <br> 跟區塊元素
+                add(re.sub(r"\s+", " ", str(child)), inside_link)
             elif isinstance(child, Tag) and child.name not in ("script", "style"):
                 if child.name == "br" or child.name in _BLOCK_TAGS:
                     add("\n", False)
@@ -481,7 +520,7 @@ def url_name(url: str) -> str:
     stem = Path(unquote(urlparse(url).path)).name
     stem = re.sub(r"\.[A-Za-z0-9]{2,5}$", "", stem)
     stem = re.sub(r"(_(pdf|odt|ods|docx?))+$", "", stem, flags=re.I)
-    if not stem or re.fullmatch(r"[\d_\-.]+|[0-9a-fA-F\-]{16,}|reg-form[\w-]*|download|view|uc|export", stem, re.I):
+    if not stem or re.fullmatch(r"[\d_\-.]+|\W*[0-9a-fA-F\-]{16,}\W*|reg-form[\w-]*|download|view|uc|export", stem, re.I):
         return ""
     return stem
 
@@ -533,12 +572,23 @@ def link_names(link: Tag, url: str) -> list[tuple[int, str]]:
     for image in link.find_all("img"):
         candidates.append((P_LINK_TEXT, image.get("alt") or ""))
     line, before, start, end = _line_around(link)
+    # 學務處下載中心一格裡先放中文標題跟檔案圖示、換行再放英文標題跟英文版的圖示：連結前面整行都是
+    # 英文的，就是英文版（「英文版」是修飾語，會接在表格欄位的中文名稱後面，兩份才分得開）
+    if len(re.findall(r"[A-Za-z]{2,}", before)) >= 3 and not re.search(r"[\u3400-\u9fff]", before):
+        candidates.append((P_LINK_TEXT, "英文版"))
     candidates.append((P_QUOTE, _quote_name(line, start, end)))
     clause = next((c for c in reversed(re.split(r"[。；;！!？?：:，,]", before)) if c.strip()), "")
     candidates.append((P_LINE, _INSTRUCTION_PREFIX.sub("", clause)))
     candidates.append((P_HEADING, _heading_name(link)))
     candidates.append((P_TABLE, _table_name(link)))
     return [(priority, text) for priority, text in candidates if text and text.strip()]
+
+
+def base_url(soup: BeautifulSoup, page_url: str) -> str:
+    """相對連結要用的基準網址：頁面有 <base href> 就以它為準（圖書館的頁面放了 <base href="/">，
+    「rule/xxx.pdf」其實是網站根目錄底下的 /rule/xxx.pdf，照頁面所在目錄算會全部 404）。"""
+    tag = soup.find("base", href=True)
+    return urljoin(page_url, tag["href"]) if tag else page_url
 
 
 def page_title(soup: BeautifulSoup) -> str:
@@ -561,6 +611,42 @@ def find_document_links(soup: BeautifulSoup, page_url: str) -> list[tuple[str, l
         url = absolute_url(frame.get("src") or frame.get("data"), page_url)
         if url and allowed_host(url) and link_kind(url) == "doc":
             found.append((url, [(P_HEADING, title), (P_URL, url_name(url))]))
+    found.extend(_json_attribute_links(soup, page_url))
+    return found
+
+
+def _json_attribute_links(soup: BeautifulSoup, page_url: str) -> list[tuple[str, list[tuple[int, str]]]]:
+    """數學系網站是 Vue 寫的，檔案清單以 JSON 放在元件的屬性裡（<college-card files="[{name, file, year}]">），
+    網頁上沒有 <a> 連結。屬性值是含 file/url 欄位的 JSON 陣列時，把每一筆當成一個文件連結。"""
+    def records(value):  # 碩博士班的是 {"deductions": [...], "rules": [...]}，一路往下找有 file 欄位的
+        if isinstance(value, list):
+            for item in value:
+                yield from records(item)
+        elif isinstance(value, dict):
+            if isinstance(value.get("file") or value.get("url"), str):
+                yield value
+            for item in value.values():
+                if isinstance(item, (list, dict)):
+                    yield from records(item)
+
+    found = []
+    for tag in soup.find_all(True):
+        for value in tag.attrs.values():
+            if not isinstance(value, str) or not value.lstrip().startswith(("[", "{")) or '"file"' not in value and '"url"' not in value:
+                continue
+            try:
+                parsed = json.loads(value)
+            except ValueError:
+                continue
+            for item in records(parsed):
+                path = item.get("file") or item.get("url") or ""
+                url = absolute_url(path if "://" in path or path.startswith("/") else "/" + path, page_url) if path else None
+                if url and allowed_host(url) and link_kind(url) == "doc":
+                    name = str(item.get("name") or item.get("title") or "")
+                    year = str(item.get("year") or "")
+                    if name and year.isdigit() and year not in name:
+                        name = f"{name}（{year}）"
+                    found.append((url, [(P_LINK_TEXT, name), (P_URL, url_name(url))]))
     return found
 
 
@@ -732,13 +818,32 @@ def _render_table(table: Tag, base_url: str) -> str:
     return rows_to_markdown(rows)
 
 
-def page_markdown(soup: BeautifulSoup, page: Page, url: str) -> tuple[str, Tag]:
+_VIEW_COUNTER_CLASS = re.compile(r"(?<![a-z])(view|hit|visit)[-_]?(count|counter)s?(?![a-z])", re.I)
+_VIEW_COUNTER_TEXT = re.compile(r"^\s*(瀏覽人次|瀏覽次數|點閱次數|點閱率|點擊次數)\s*[:：]?\s*[\d,]+\s*$", re.M)
+
+
+def _drop_view_counters(root: Tag) -> None:
+    """拿掉瀏覽人次：Orbit 系統的 <div class="view_count">、衛保組網站「眼睛圖示 + 數字」的 <span>。
+    只刪文字很短的，萬一哪個網站拿這種 class 包住內容，也不會整段被刪掉。"""
+    for tag in root.find_all(True):
+        if (not tag.decomposed and len(tag.get_text(strip=True)) <= 30
+                and _VIEW_COUNTER_CLASS.search(" ".join(tag.get("class") or []) + " " + (tag.get("id") or ""))):
+            tag.decompose()
+    for icon in root.select('svg[data-icon="eye"], i.fa-eye'):
+        parent = icon.parent
+        if not icon.decomposed and parent is not None and re.fullmatch(r"[\d,\s]*", parent.get_text(strip=True)):
+            parent.decompose()
+
+
+def page_markdown(soup: BeautifulSoup, page: Page, url: str, base: str = "") -> tuple[str, Tag]:
+    """base 是相對連結的基準網址（頁面有 <base href> 時跟 url 不一樣），url 是記在文件開頭的來源網頁。"""
     root = main_content(soup, page.selector)
+    # 每次抓都不一樣的東西（瀏覽人次、今天的日期）要拿掉，不然 RAG 會以為文件改版、每次都重做卡片
+    _drop_view_counters(root)
     blocks: list[str] = []
-    _render(root, url, blocks)
-    body = normalize_text("\n\n".join(blocks))
-    # 有些頁面會印出「今天的日期」（住宿證明申請表的日期欄），留著的話內容每天都不一樣，
-    # RAG 會以為文件改版、每次都重做卡片
+    _render(root, base or url, blocks)
+    body = _VIEW_COUNTER_TEXT.sub("", normalize_text("\n\n".join(blocks)))
+    # 有些頁面會印出「今天的日期」（住宿證明申請表的日期欄）
     today = datetime.now()
     for stamp in {today.strftime("%Y-%m-%d"), today.strftime("%Y/%m/%d"), f"{today.year}/{today.month}/{today.day}"}:
         body = body.replace(stamp, "")
@@ -831,17 +936,20 @@ class Fetcher:
 
     def _request(self, url: str, headers: dict, stream: bool = True) -> requests.Response:
         host = urlparse(url).hostname or ""
+        insecure = host in self._insecure_hosts
         for attempt in range(3):
             try:
-                response = self.session.get(
-                    url, headers=headers, timeout=TIMEOUT, stream=stream, verify=host not in self._insecure_hosts,
-                )
+                response = self.session.get(url, headers=headers, timeout=TIMEOUT, stream=stream, verify=not insecure)
             except requests.exceptions.SSLError as e:
-                if host in self._insecure_hosts:
+                # 憑證有問題的可能是轉址之後的網站（資工系的老師個人網頁轉到 web.ss.ncu.edu.tw），
+                # 只對學校自己的網站放寬，外面的網站憑證有問題就當成讀不到
+                failing = urlparse(getattr(e.request, "url", None) or url).hostname or host
+                if insecure or not (failing == "ncu.edu.tw" or failing.endswith(".ncu.edu.tw")):
                     raise
-                print(f"⚠️ {host} 的 TLS 憑證驗證失敗（{str(e)[:120]}），這個網站改用不驗證憑證的方式連線。")
+                print(f"⚠️ {failing} 的 TLS 憑證驗證失敗（{str(e)[:120]}），這個網站改用不驗證憑證的方式連線。")
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-                self._insecure_hosts.add(host)
+                self._insecure_hosts.add(failing)
+                insecure = True
                 continue
             except (requests.ConnectionError, requests.Timeout):
                 if attempt == 2:
@@ -891,7 +999,9 @@ class Fetcher:
             response.close()
             raise FetchError(f"HTTP {response.status_code}")
         data = self.read(response)
-        return decode_html(data, response.headers.get("Content-Type", "")), response.url
+        html = decode_html(data, response.headers.get("Content-Type", ""))
+        # 藝術所的頁面開頭先多了一組 </body></html>，lxml 會把後面整頁當成文件結束之後的東西丟掉
+        return re.sub(r"^\s*(</(body|html)>\s*)+", "", html, flags=re.I), response.url
 
     def get_bytes(self, url: str) -> bytes:
         response = self.get(url)
@@ -910,11 +1020,21 @@ def decode_html(data: bytes, content_type: str) -> str:
     if isinstance(encoding, bytes):
         encoding = encoding.decode("ascii", "ignore")
     aliases = {"big5": "cp950", "big-5": "cp950", "gb2312": "gbk"}
-    for candidate in filter(None, (aliases.get((encoding or "").lower(), encoding), "utf-8")):
+    candidates = list(dict.fromkeys(filter(None, (aliases.get((encoding or "").lower(), encoding), "utf-8"))))
+    for candidate in candidates:
         try:
             return data.decode(candidate)
         except (LookupError, UnicodeDecodeError):
             continue
+    # 只有零星幾個壞掉的位元組（WordPress 把文章摘要截在中文字的中間）時還是照宣告的編碼解，
+    # 不然整頁會被當成 Big5 解成亂碼
+    for candidate in candidates:
+        try:
+            text = data.decode(candidate, errors="replace")
+        except LookupError:
+            continue
+        if text.count("\ufffd") <= max(3, len(text) // 5000):
+            return text
     return data.decode("cp950", errors="replace")
 
 
@@ -926,6 +1046,15 @@ def _google_confirm_url(html: str) -> Optional[str]:
         return None
     params = "&".join(f"{i['name']}={i.get('value', '')}" for i in form.find_all("input", attrs={"name": True}))
     return f"{form['action']}?{params}"
+
+
+def _viewer_file_url(html: str, page_url: str) -> Optional[str]:
+    """Orbit 系統（網址有 zh_tw 的系所網站）的 /xhr/archive/download 有時候回傳 PDF.js 線上檢視器，
+    真正的檔案路徑寫在檢視器頁面裡（uploads/archive_file_multiple/file/…/檔名.pdf）。"""
+    if "pdf.js" not in html.lower() and "PDFViewerApplication" not in html and "Mozilla Foundation" not in html:
+        return None
+    match = re.search(r"""["'(]?/?(uploads/[^"'\s<>()]+?\.(?:pdf|docx?|odt))""", html, re.I)
+    return absolute_url("/" + match.group(1), page_url) if match else None
 
 
 # ============================================================
@@ -998,6 +1127,37 @@ def excluded(source: Source, names: list[str]) -> bool:
     return any(re.search(pattern, name) for pattern in source.exclude for name in names if name)
 
 
+def current_academic_year(now: Optional[datetime] = None) -> int:
+    """民國學年度，8 月開始新的學年。"""
+    now = now or datetime.now()
+    return now.year - 1911 - (0 if now.month >= 8 else 1)
+
+
+# 「110學年度入學」「114級」「111-113 學年度」；後面接「起」「以後」的是「從那年開始適用」，不算舊
+_COHORT_YEAR = re.compile(
+    r"(?<!\d)(\d{2,3})\s*(?:[-~～至]\s*(\d{2,3})\s*)?(?:學年度?|級)(?!度)"
+    # 後面接「起」「以後」（可能先有「入學生」）是「從那年開始適用」，接「修訂」「通過」是修法日期，都不是舊的入學年度
+    r"(?!\s*[(（]?含?[)）]?\s*(?:入學(?:新?生)?)?\s*(?:起|以後|之後|後|以上))"
+    r"(?!\s*(?:第\s*\d+\s*次)?\s*(?:修訂|修正|通過|核備|訂定|制定|系務|院務|所務|教務|會議))"
+)
+
+
+def too_old(name: str, now: Optional[datetime] = None) -> bool:
+    years = [int(y) for match in _COHORT_YEAR.finditer(name) for y in match.groups() if y]
+    return bool(years) and max(years) < current_academic_year(now) - COHORT_YEARS_KEPT
+
+
+def global_skip_reason(source: Source, name: str) -> str:
+    """全校共用的規則（crawler_sources.GLOBAL_EXCLUDE、入學年度太舊）要不要略過，回傳原因或空字串。"""
+    if not name or any(re.search(pattern, name) for pattern in source.include):
+        return ""
+    if any(re.search(pattern, name) for pattern in GLOBAL_EXCLUDE):
+        return "不是學生用的文件"
+    if too_old(name):
+        return "入學年度太舊"
+    return ""
+
+
 def safe_filename(name: str, max_length: int = 90) -> str:
     table = str.maketrans({"\\": "＼", "/": "／", ":": "：", "*": "＊", "?": "？", '"': "＂", "<": "＜", ">": "＞", "|": "｜"})
     name = re.sub(r"[\x00-\x1f]", "", name.translate(table)).strip(" .")
@@ -1008,15 +1168,27 @@ def _series_key(name: str, match: re.Match) -> str:
     return (name[:match.start()] + name[match.end():]).strip()
 
 
+_TERM_NUMBER = {"1": 1, "一": 1, "上": 1, "2": 2, "二": 2, "下": 2}
+
+
+def _version_number(match: re.Match) -> Optional[int]:
+    """第一個群組是年度；有第二個群組的話是學期（1、一、上…），合成 年度*10+學期 來比大小。"""
+    if not (match.group(1) or "").isdigit():
+        return None
+    term = _TERM_NUMBER.get(match.group(2) or "", 0) if match.re.groups >= 2 else 0
+    return int(match.group(1)) * 10 + term
+
+
 def keep_latest(items: list, name_of, patterns: tuple[str, ...]) -> tuple[list, list]:
-    """名稱符合 pattern 的，同一系列（年度以外都一樣）只留年度最大的。回傳（保留, 捨棄）。"""
+    """名稱符合 pattern 的，同一系列（年度以外都一樣）只留年度（學期）最新的。回傳（保留, 捨棄）。"""
     keep, drop = list(items), []
     for pattern in patterns:
         series: dict[str, list[tuple[int, object]]] = {}
         for item in keep:
             match = re.search(pattern, name_of(item))
-            if match and match.group(1) and match.group(1).isdigit():
-                series.setdefault(_series_key(name_of(item), match), []).append((int(match.group(1)), item))
+            number = _version_number(match) if match else None
+            if number is not None:
+                series.setdefault(_series_key(name_of(item), match), []).append((number, item))
         for members in series.values():
             newest = max(year for year, _ in members)
             drop.extend(item for year, item in members if year != newest)
@@ -1041,6 +1213,38 @@ def disambiguate(planned: list[tuple[str, "Download"]]) -> list[tuple[str, "Down
     return result
 
 
+def ee_documents(fetcher: Fetcher) -> list[tuple[str, list[tuple[int, str]], str]]:
+    """電機系網站（www2.ee.ncu.edu.tw）的「表格辦法」頁是前端用 JavaScript 呼叫 data.ee.ncu.edu.tw 的 API
+    畫出來的，網頁本身沒有任何連結。type 1、2 是網頁上的兩個分頁，一頁 20 筆，一筆可能有好幾個檔案。
+    回傳（檔案網址, 候選名稱, 所在網頁）。
+    """
+    api = "https://data.ee.ncu.edu.tw"
+    found = []
+    for kind in (1, 2):
+        page_url = f"https://www2.ee.ncu.edu.tw/approach_table.html?type={kind}"
+        current = 1
+        while True:
+            data = json.loads(fetcher.get_bytes(
+                f"{api}/ApproachTable?approach_table_type={kind}&current={current}&rowCount=20&searchPhrase="
+            ))
+            for row in data.get("rows", []):
+                files = json.loads(fetcher.get_bytes(f"{api}/ApproachTableAllFile?id={row['approach_table_id']}"))
+                title = row.get("approach_table_title") or ""
+                for file in files:
+                    stem = Path(file.get("att_file_name") or "").stem
+                    # 一筆只有一個檔案時用那一筆的標題，好幾個檔案時用各自的檔名，名稱才不會撞在一起
+                    names = [(P_LINK_TEXT, title), (P_URL, stem)] if len(files) == 1 else [(P_LINK_TEXT, stem), (P_HEADING, title)]
+                    found.append((f"{api}/ApproachTableFile?id={file['att_id']}", names, page_url))
+            if current * int(data.get("rowCount") or 20) >= int(data.get("total") or 0):
+                break
+            current += 1
+    return found
+
+
+# Source.api 對應的函式：網頁沒有連結、文件清單要另外呼叫網站 API 取得的來源
+API_PROVIDERS = {"ee": ee_documents}
+
+
 class Crawler:
     def __init__(self, fetcher: Fetcher, manifest: Manifest, dry_run: bool = False):
         self.fetcher = fetcher
@@ -1055,6 +1259,15 @@ class Crawler:
         pages = {url_key(p.url): p for p in source.pages}
         queue = [(url, 0) for url in source.seeds] + [(p.url, 0) for p in source.pages]
         seen: set[str] = set()
+        if source.api:
+            try:
+                for doc_url, names, page_url in API_PROVIDERS[source.api](self.fetcher):
+                    info = links.setdefault(url_key(doc_url), LinkInfo(doc_url))
+                    info.names.extend(names)
+                    info.pages.append((page_url, ""))
+            except (FetchError, ValueError, KeyError, TypeError) as e:
+                report.errors.append(f"讀不到 {source.name} 的文件清單（{source.api} API）：{e}")
+                report.pages_ok = False
         while queue:
             url, depth = queue.pop(0)
             if url_key(url) in seen:
@@ -1068,12 +1281,13 @@ class Crawler:
                 continue
             soup = BeautifulSoup(html, "lxml")
             title = page_title(soup)
-            for doc_url, names in find_document_links(soup, final_url):
+            base = base_url(soup, final_url)
+            for doc_url, names in find_document_links(soup, base):
                 info = links.setdefault(url_key(doc_url), LinkInfo(doc_url))
                 info.names.extend(names)
                 info.pages.append((final_url, title))
             if depth == 0 and source.follow:
-                queue.extend((target, 1) for target in follow_targets(soup, final_url, source.follow))
+                queue.extend((target, 1) for target in follow_targets(soup, base, source.follow))
             page = pages.get(url_key(url))
             if page is not None:
                 snapshots.append((page, final_url, html))
@@ -1107,6 +1321,11 @@ class Crawler:
             if confirm:
                 data = self.fetcher.get_bytes(confirm)
                 extension = sniff_extension(data)
+        elif extension == ".html":
+            embedded = _viewer_file_url(data.decode("utf-8", "ignore"), final_url)
+            if embedded:
+                data = self.fetcher.get_bytes(embedded)
+                extension, final_url = sniff_extension(data), embedded
         extra = [(P_DISPOSITION, disposition_name(disposition)), (P_URL, url_name(final_url))]
         if extension == ".pdf":
             extra.append((P_FALLBACK, pdf_title(data)))
@@ -1148,28 +1367,40 @@ class Crawler:
             context_names = [clean_name(text) for priority, text in info.names if priority > P_URL]
             if excluded(source, [name] + context_names):
                 report.skipped.append(f"{name}（設定排除）")
+            elif global_skip_reason(source, name):
+                report.skipped.append(f"{name}（{global_skip_reason(source, name)}）")
             else:
                 named.append((info, name))
         by_name: dict[str, list[tuple[LinkInfo, str]]] = {}
         for info, name in named:
             by_name.setdefault(re.sub(r"\s", "", name).lower(), []).append((info, name))
         wanted = []
+        backups: list[tuple[list[LinkInfo], LinkInfo, str]] = []  # (挑中的格式, 備用的格式, 名稱)
         rank = {ext: i for i, ext in enumerate(PREFERRED_TYPES)}
         for group in by_name.values():
             extensions = [url_extension(info.url) for info, _ in group]
             if len(group) > 1 and all(extensions) and len(set(extensions)) > 1:
                 best = min(extensions, key=lambda ext: rank.get(ext, 99))
-                for (info, name), extension in zip(group, extensions):
-                    if extension == best:
-                        wanted.append(info)
-                    else:
-                        report.skipped.append(f"{name}{extension}（同一份文件已經有 {best} 版）")
+                chosen = [info for (info, _), extension in zip(group, extensions) if extension == best]
+                wanted.extend(chosen)
+                others = sorted(((info, name, ext) for (info, name), ext in zip(group, extensions) if ext != best),
+                                key=lambda other: rank.get(other[2], 99))
+                for info, name, extension in others:
+                    report.skipped.append(f"{name}{extension}（同一份文件已經有 {best} 版）")
+                backups.append((chosen, others[0][0], others[0][1]))
             else:
                 wanted.extend(info for info, _ in group)
 
-        # 2. 下載，內容相同的合併成一份
+        # 2. 下載，內容相同的合併成一份。挑中的格式連結壞掉（圖書館、土木系都有 PDF 404、ODT 正常的），
+        #    改抓另一種格式
         merged: dict[str, Download] = {}
         downloads, failed = self.download_all(wanted, source, report)
+        retry = [(backup, name) for chosen, backup, name in backups if all(url_key(info.url) in failed for info in chosen)]
+        if retry:
+            report.skipped.extend(f"{name}（偏好的格式下載失敗，改抓 {url_extension(backup.url)} 版）" for backup, name in retry)
+            more, more_failed = self.download_all([backup for backup, _ in retry], source, report)
+            downloads.extend(more)
+            failed |= more_failed
         for item in downloads:
             if item.extension not in PREFERRED_TYPES:
                 reason = SKIP_REASONS.get(item.extension, "格式認不出來")
@@ -1190,11 +1421,13 @@ class Crawler:
                 report.skipped.append(f"{choose_name(item.links[0].names)}（跟 {others[item.sha256]} 是同一個檔案）")
                 continue
             name = choose_name([n for info in item.links for n in info.names] + item.extra_names) or "未命名文件"
-            if excluded(source, [name]):
-                report.skipped.append(f"{name}（設定排除）")
+            reason = "設定排除" if excluded(source, [name]) else global_skip_reason(source, name)
+            if reason:
+                report.skipped.append(f"{name}（{reason}）")
                 continue
             planned.append((name, item))
-        planned, older = keep_latest(planned, lambda pair: pair[0], source.latest_only)
+        planned = self._prefer_format(planned, report)
+        planned, older = keep_latest(planned, lambda pair: pair[0], source.latest_only + TERM_LATEST_ONLY)
         report.skipped.extend(f"{name}（只留最新年度）" for name, _ in older)
         planned = disambiguate(planned)
 
@@ -1236,6 +1469,24 @@ class Crawler:
                 self._move_away(path, REMOVED_DIR / self.run_stamp)
                 self.manifest.files.pop(path, None)
         return report
+
+    @staticmethod
+    def _prefer_format(planned: list[tuple[str, "Download"]], report: Report) -> list[tuple[str, "Download"]]:
+        """網址看不出副檔名（Orbit 的 /xhr/archive/download?file=…）時，同一份文件的 .doc、.pdf 要下載之後
+        才知道是兩種格式：同名、格式不同的只留排前面的格式。同名同格式的是不同文件，交給 disambiguate。"""
+        rank = {ext: i for i, ext in enumerate(PREFERRED_TYPES)}
+        by_name: dict[str, list[tuple[str, Download]]] = {}
+        for name, item in planned:
+            by_name.setdefault(re.sub(r"\s", "", name).lower(), []).append((name, item))
+        result = []
+        for group in by_name.values():
+            best = min(rank.get(item.extension, 99) for _, item in group)
+            for name, item in group:
+                if rank.get(item.extension, 99) == best:
+                    result.append((name, item))
+                else:
+                    report.skipped.append(f"{name}{item.extension}（同一份文件已經有 {PREFERRED_TYPES[best]} 版）")
+        return result
 
     def _unique_path(self, source_name: str, name: str, extension: str, taken: set[str]) -> str:
         base = safe_filename(name)
@@ -1308,12 +1559,13 @@ class Crawler:
 
     def _write_snapshot(self, source: Source, page: Page, url: str, html: str, report: Report) -> list[str]:
         soup = BeautifulSoup(html, "lxml")
-        markdown, root = page_markdown(soup, page, url)
+        base = base_url(soup, url)
+        markdown, root = page_markdown(soup, page, url, base)
         written = []
         image_bytes: list[bytes] = []
         image_urls: list[str] = []
         if page.images:
-            for image_url in content_images(root, url):
+            for image_url in content_images(root, base):
                 try:
                     data = self.fetcher.get_bytes(image_url)
                 except FetchError as e:

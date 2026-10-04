@@ -8,8 +8,9 @@
 
 * **校園法規問答**：先看文件目錄挑出相關文件、再讀整份文件回答，回答附上來源出處
   （`rag_documents.py` 處理文件、`academic_agent.py` 查詢，細節見下面「校園法規問答（RAG）」）。
-* **學校網站文件爬蟲**：`python crawler.py` 把教務處、資工系、語言中心、學務處網站上的法規、
-  表單跟說明網頁抓到 `data/`，給法規問答用（`crawler.py`，要抓哪些網站設定在 `crawler_sources.py`）。
+* **學校網站文件爬蟲**：`python crawler.py` 把全校各行政單位（教務處、學務處各組、國際處、圖書館、
+  計中、通識、體育室…）跟各學院、系所網站上的法規、修業規定、表單、說明網頁抓到 `data/`，給法規問答用
+  （`crawler.py`，要抓哪些網站設定在 `crawler_sources.py`）。
 * **登入**：兩種方式擇一，登入後給一個一次性通行證（token），不會每次對話都重傳密碼。
   * 用 Portal 帳號登入（推薦）：程式在這台電腦開一個 Chrome 視窗，你在 Portal 官方頁面
     自己登入（有人機驗證就自己勾），我們的網站完全不經手密碼；身分由 Portal 官方 OAuth
@@ -119,10 +120,11 @@ python crawler.py --dry-run   # 先看會抓哪些檔案、檔名對不對
 python crawler.py             # 抓到 data/<來源>/，例如 data/教務處註冊組/
 ```
 
-* 要抓哪些網站設定在 `crawler_sources.py`（每個網站的狀況都寫在裡面）。重抓時沒變的檔案不會再下載，
+* 要抓哪些網站設定在 `crawler_sources.py`（約 80 個單位，每個網站的狀況都寫在裡面）。重抓時沒變的檔案不會再下載，
   網站上更新的檔案會覆蓋，網站上已經拿掉的檔案會移到 `storage/crawler/removed/`。
 * 有些資訊不是附檔而是網頁本身（獎學金一覽、宿舍 Q&A），會存成 `.md`，海報圖片（英文畢業門檻）
-  另存成 PDF，讓 RAG 用圖片轉錄讀。
+  另存成 PDF，讓 RAG 用圖片轉錄讀（挑到網頁時會一起帶上）。網頁裡的瀏覽人次、今天日期這類每次都不一樣的
+  內容會拿掉，不然每次重抓都會被當成改版、重做卡片。
 * 每個檔案的來源網址記在 `data/.crawler_manifest.json`。不在裡面的檔案（自己手動放進 `data/` 的）
   爬蟲不會動。`python crawler.py --legacy` 可以檢查這些手動檔跟爬到的檔案有沒有重複，
   加 `--move-duplicate-legacy` 會把內容一模一樣的移到 `storage/crawler/legacy_backup/`。
@@ -130,17 +132,23 @@ python crawler.py             # 抓到 data/<來源>/，例如 data/教務處註
 
 每個問題的流程：
 
-1. **挑文件**：把問題、對話歷史跟全部文件的「目錄卡片」（標題、類型、適用範圍、版本、摘要、
+0. **初篩**：文件有一千八百份左右，目錄沒辦法整份交給模型。先用卡片的向量（`text-embedding-3-large`）
+   跟關鍵字各排一次名，合併之後取前 60 份。問題或對話裡提到系所時，那個系所的文件會優先放進來。
+1. **挑文件**：把問題、對話歷史跟初篩出來的「目錄卡片」（標題、類型、適用範圍、版本、摘要、
    能回答的問題）交給模型，挑出最多 4 份文件，或判斷要反問使用者、資料庫裡沒有。
    判斷成「沒有」時會用關鍵字比對找候選文件，再確認一次。
 2. **回答**：把挑中文件的全文交給模型回答，標注引用 [1]、[2]。
 
-文件解析結果跟目錄卡片都快取在 `storage/rag/`（以檔案內容的 hash 當 key，檔案沒變就不會
+文件解析結果、目錄卡片跟卡片向量都快取在 `storage/rag/`（以內容的 hash 當 key，檔案沒變就不會
 重做）。`data/` 新增或修改檔案後，下一次查詢會自動補做，也可以先手動建好：
 
 ```powershell
-python rag_documents.py   # 解析全部文件、補齊卡片，並印出目錄
+python rag_documents.py   # 解析全部文件、補齊卡片，並印出目錄（用 6 個行程平行解析）
 ```
+
+第一次建好全部一千八百份左右的文件要一兩個小時：掃描版的 PDF 每頁要用圖片轉錄（每份最多 30 頁，
+`RAG_VISION_MAX_PAGES`），`.doc`、`.odt` 要用 LibreOffice 轉檔，每份文件還要呼叫模型產生卡片，
+都會花 OpenAI 的費用。之後只會補新增或改過的檔案。
 
 **改 RAG 之前跟之後都要跑評估**，分數沒變差才算改好（之前改了很多版一直修不好，就是因為
 沒有固定的測試題，修好一題又弄壞另一題也不會發現）：
@@ -149,10 +157,12 @@ python rag_documents.py   # 解析全部文件、補齊卡片，並印出目錄
 python rag_eval/run_eval.py                        # 開發用題目（rag_eval/questions.json）
 python rag_eval/run_eval.py --file holdout.json    # 保留測試題，不要照著它調 prompt
 python rag_eval/run_eval.py --router-only          # 只測挑文件那一步，快又便宜
+python rag_eval/check_retrieval.py                 # 只看初篩有沒有把標準文件排進前 60 份，不呼叫 LLM
 ```
 
-使用的模型可以用環境變數換：`RAG_ROUTER_MODEL`（挑文件，預設 gpt-5.4-mini）、
-`RAG_ANSWER_MODEL`（回答，預設 gpt-5.4）、`RAG_CARD_MODEL`（產生卡片，預設 gpt-5.4）。
+使用的模型可以用環境變數換：`RAG_ROUTER_MODEL`（挑文件，預設 gpt-5.4、不推理，`RAG_ROUTER_REASONING=none`）、
+`RAG_ANSWER_MODEL`（回答，預設 gpt-5.4）、`RAG_CARD_MODEL`（產生卡片，預設 gpt-5.4）、
+`RAG_EMBEDDING_MODEL`（初篩的向量，預設 text-embedding-3-large），初篩留幾份是 `RAG_ROUTER_CANDIDATES`（預設 60）。
 
 ## 測試
 

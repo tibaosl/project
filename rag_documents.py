@@ -38,6 +38,7 @@ from typing import Optional
 
 import docx as python_docx
 import fitz  # PyMuPDF
+import numpy as np
 from docx.oxml.ns import qn
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -62,6 +63,9 @@ SUPPORTED_SUFFIXES = (".pdf", ".docx", ".doc", ".odt", ".md")
 
 VISION_MODEL = os.getenv("RAG_VISION_MODEL", "gpt-5.4")
 CARD_MODEL = os.getenv("RAG_CARD_MODEL", "gpt-5.4")
+# 卡片的向量給 academic_agent.py 初篩用（文件太多，目錄沒辦法整份交給挑文件的模型）
+EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-large")
+EMBEDDING_DIMENSIONS = 1024
 
 # 卡片只需要看懂文件在講什麼，太長的文件截斷前面這麼多字就夠了。
 CARD_INPUT_MAX_CHARS = 24000
@@ -196,8 +200,8 @@ def _continues_sentence(previous: str, following: str) -> bool:
     """
     return (
         bool(previous) and bool(following)
-        and re.match(r"[㐀-鿿，、（(「]", previous[-1]) is not None
-        and re.match(r"[㐀-鿿）)」，、。]", following[0]) is not None
+        and re.match(r"[\u3400-\u9fff，、（(「]", previous[-1]) is not None
+        and re.match(r"[\u3400-\u9fff）)」，、。]", following[0]) is not None
         and not _PARAGRAPH_START_RE.match(following)
     )
 
@@ -272,12 +276,18 @@ def _vision_transcribe(page, text_layer: str) -> str:
     return result
 
 
+# 一份文件最多幾頁用圖片轉錄（整本掃描的手冊動輒上百頁，法規、表單的重點都在前面）
+VISION_MAX_PAGES = int(os.getenv("RAG_VISION_MAX_PAGES", "30"))
+
+
 def parse_pdf(path: Path) -> tuple[str, int]:
     pages = []
+    vision_pages = 0
     with fitz.open(path) as pdf:
         for page in pdf:
             text = _pdf_page_markdown(page)
-            if _page_needs_vision(page, text, path.name):
+            if _page_needs_vision(page, text, path.name) and vision_pages < VISION_MAX_PAGES:
+                vision_pages += 1
                 print(f"[PDF] {path.name} 第 {page.number + 1} 頁是海報/圖片或文字層亂碼，改用圖片輔助轉錄")
                 try:
                     text = _vision_transcribe(page, page.get_text("text", sort=True))
@@ -394,12 +404,15 @@ def convert_to_docx(path: Path, file_hash: str) -> Optional[Path]:
         source = Path(work_dir) / f"input{path.suffix.lower()}"
         shutil.copyfile(path, source)
         try:
+            # 每個行程用自己的設定檔資料夾：平行解析時好幾個 LibreOffice 同時開，共用設定檔會轉檔失敗
+            profile = (Path(tempfile.gettempdir()) / f"ncuxplore_libreoffice_{os.getpid()}").as_uri()
             result = subprocess.run(
-                [soffice, "--headless", "--convert-to", "docx", "--outdir", work_dir, str(source)],
-                capture_output=True, text=True, timeout=120,
+                [soffice, f"-env:UserInstallation={profile}", "--headless", "--convert-to", "docx",
+                 "--outdir", work_dir, str(source)],
+                capture_output=True, text=True, timeout=180,
             )
         except subprocess.TimeoutExpired:
-            print(f"[{path.name}] LibreOffice 轉檔超過 120 秒，略過這個檔案。")
+            print(f"[{path.name}] LibreOffice 轉檔超過 180 秒，略過這個檔案。")
             return None
         converted = Path(work_dir) / "input.docx"
         if result.returncode != 0 or not converted.exists():
@@ -589,6 +602,60 @@ class CatalogDocument:
     duplicates: list[str] = field(default_factory=list)
     # 同一份文件有更新的年度版本時，填最新版的 doc_id（例如 112～115 學年度的專題確認表）。
     superseded_by: str = ""
+    # 卡片的向量（長度 1），初篩用。算不出來（例如沒網路）是 None，初篩就只靠關鍵字
+    embedding: Optional[np.ndarray] = None
+
+    @property
+    def folder(self) -> str:
+        """data/ 底下的第一層資料夾，也就是爬蟲的來源單位（例如「物理學系」）。"""
+        return self.file_name.split("/")[0] if "/" in self.file_name else ""
+
+
+def card_text(doc: CatalogDocument) -> str:
+    """拿來算向量的卡片內容：標題、類型、單位、適用範圍與對象、版本、摘要、能回答的問題。"""
+    card = doc.card
+    meta = "｜".join(p for p in (
+        card["doc_type"], doc.folder, card["issuer"], card["scope"], card["applies_to"], card["version"],
+    ) if p)
+    return f"{card['title']}\n{meta}\n{card['summary']}\n" + "\n".join(card["answers"])
+
+
+def embed_texts(texts: list[str]) -> np.ndarray:
+    """OpenAI 的向量，每一列都正規化成長度 1（內積就是 cosine 相似度）。"""
+    vectors = []
+    for start in range(0, len(texts), 128):
+        response = _openai().embeddings.create(
+            model=EMBEDDING_MODEL, input=texts[start:start + 128], dimensions=EMBEDDING_DIMENSIONS,
+        )
+        vectors.extend(item.embedding for item in response.data)
+    matrix = np.asarray(vectors, dtype=np.float32)
+    return matrix / np.clip(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-9, None)
+
+
+def attach_embeddings(catalog: list[CatalogDocument]) -> None:
+    """替每份文件的卡片算向量。快取在一個 .npz（key 是卡片內容的 hash），卡片沒變就不重算。"""
+    cache_path = CACHE_DIR / "embeddings" / f"{EMBEDDING_MODEL}-{EMBEDDING_DIMENSIONS}.npz"
+    keys = [hashlib.sha256(card_text(doc).encode("utf-8")).hexdigest() for doc in catalog]
+    cache: dict[str, np.ndarray] = {}
+    try:
+        with np.load(cache_path) as stored:
+            cache = dict(zip(stored["keys"].tolist(), stored["vectors"]))
+    except (OSError, ValueError, KeyError):
+        pass
+    missing = [i for i, key in enumerate(keys) if key not in cache]
+    if missing:
+        try:
+            for i, vector in zip(missing, embed_texts([card_text(catalog[i]) for i in missing])):
+                cache[keys[i]] = vector
+            current = {key: cache[key] for key in dict.fromkeys(keys)}
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = cache_path.with_name(cache_path.stem + ".tmp.npz")
+            np.savez(tmp, keys=np.array(list(current)), vectors=np.stack(list(current.values())))
+            tmp.replace(cache_path)
+        except Exception as e:
+            print(f"[文件向量] 有 {len(missing)} 份文件的卡片向量算不出來，初篩先只用關鍵字：{e}")
+    for doc, key in zip(catalog, keys):
+        doc.embedding = cache.get(key)
 
 
 def _series_key(title: str) -> str:
@@ -607,11 +674,14 @@ def _version_year(doc: "CatalogDocument") -> int:
 
 def mark_superseded_versions(catalog: list["CatalogDocument"]) -> None:
     """同系列文件裡年度最新的那份以外，都標上 superseded_by。年度一樣或看不出年度就不標，
-    交給挑文件的模型自己看內容判斷。
+    交給挑文件的模型自己看內容判斷。適用範圍不同的不算同一系列：各系的「碩士班修業規定」
+    標題常常一模一樣，不能把物理系的舊版指到化學系的新版（範圍沒寫就用資料夾，也就是來源單位）。
+    同一份全校性的辦法放在不同單位網站上、一新一舊時，還是要標得出來。
     """
-    series: dict[str, list[CatalogDocument]] = {}
+    series: dict[tuple[str, str], list[CatalogDocument]] = {}
     for doc in catalog:
-        series.setdefault(_series_key(doc.card["title"]), []).append(doc)
+        scope = re.sub(r"\s", "", doc.card["scope"]) or doc.folder
+        series.setdefault((scope, _series_key(doc.card["title"])), []).append(doc)
     for docs in series.values():
         if len(docs) < 2:
             continue
@@ -624,9 +694,20 @@ def mark_superseded_versions(catalog: list["CatalogDocument"]) -> None:
                 doc.superseded_by = latest.doc_id
 
 
-def load_catalog(max_workers: int = 8) -> list[CatalogDocument]:
+def parse_files(paths: list[Path], processes: int = 0) -> list[ParsedDocument]:
+    """processes > 0 時用多個行程平行解析（PyMuPDF 不支援多執行緒，所以用行程）。第一次建立上千份文件的
+    快取時，圖片轉錄跟 LibreOffice 轉檔一份一份做要好幾個小時。伺服器裡平常只會補幾份新文件，不用開。"""
+    if processes <= 0 or len(paths) < 2:
+        return [doc for doc in map(parse_file, paths) if doc is not None]
+    from concurrent.futures import ProcessPoolExecutor
+
+    with ProcessPoolExecutor(max_workers=processes) as pool:
+        return [doc for doc in pool.map(parse_file, paths, chunksize=1) if doc is not None]
+
+
+def load_catalog(max_workers: int = 8, processes: int = 0) -> list[CatalogDocument]:
     """解析 data/ 全部文件（有快取）、合併內容完全相同的檔案、補齊文件卡片。"""
-    parsed = [doc for doc in (parse_file(p) for p in list_data_files()) if doc is not None]
+    parsed = parse_files(list_data_files(), processes)
 
     unique: dict[str, ParsedDocument] = {}
     duplicates: dict[str, list[str]] = {}
@@ -657,12 +738,13 @@ def load_catalog(max_workers: int = 8) -> list[CatalogDocument]:
             duplicates=duplicates.get(doc.content_key, []),
         ))
     mark_superseded_versions(catalog)
+    attach_embeddings(catalog)
     return catalog
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
-    for entry in load_catalog():
+    for entry in load_catalog(max_workers=12, processes=6):
         card = entry.card
         old = f"｜舊版→{entry.superseded_by}" if entry.superseded_by else ""
         print(f"{entry.doc_id} {card['title']}｜{card['doc_type']}｜{card['scope']}｜{card['version']}｜{entry.file_name}{old}")

@@ -224,6 +224,21 @@ def test_page_markdown_keeps_tables_lists_and_drops_menus():
     assert "選單一" not in markdown and "最新消息" not in markdown and "版權所有" not in markdown
 
 
+def test_page_markdown_drops_view_counters():
+    # 瀏覽人次每次抓都不一樣，留著的話每次重抓都會被當成改版
+    html = """<html><body><main>
+    <div class="view_count pull-right"><i class="fa fa-eye">瀏覽人次:</i><span class="view-count">36080</span></div>
+    <div><span class="inline-flex"><svg data-icon="eye"><path d="M0"></path></svg><span>26134</span></span>
+      <span class="inline-flex"><svg data-icon="clock"></svg><span>2024-09-16</span></span></div>
+    <div class="overview-countries"><h2>大學部修業規定</h2><p>畢業學分 128 學分。</p></div>
+    <p>瀏覽次數：120</p>
+    </main></body></html>"""
+    markdown, _ = page_markdown(BeautifulSoup(html, "lxml"), Page("https://www.chem.ncu.edu.tw/zh_tw/course/UD1", "大學部"),
+                                "https://www.chem.ncu.edu.tw/zh_tw/course/UD1")
+    assert "36080" not in markdown and "26134" not in markdown and "瀏覽" not in markdown
+    assert "2024-09-16" in markdown and "畢業學分 128 學分" in markdown
+
+
 # ------------------------------------------------------------
 # 整個流程（假的網站）
 # ------------------------------------------------------------
@@ -382,3 +397,154 @@ def test_dry_run_writes_nothing(data_dir):
     report = Crawler(FakeFetcher(site), Manifest(data_dir / ".crawler_manifest.json"), dry_run=True).crawl(SOURCE)
     assert report.added == ["註冊組/1-15 轉系.pdf"]
     assert not data_dir.exists() or not any(data_dir.rglob("*.pdf"))
+
+
+# ------------------------------------------------------------
+# 2026-10 擴充到全校各系所之後
+# ------------------------------------------------------------
+def test_new_site_boilerplate_is_stripped():
+    cases = {
+        "📄 碩士班修業辦法": "碩士班修業辦法",  # 化材系的檔案圖示
+        "在新視窗開啟 文學院學士班應修科目表": "文學院學士班應修科目表",  # Orbit
+        "[word 表格]資訊電機學院申請升等個人資料表": "資訊電機學院申請升等個人資料表",
+        "PDF 114國立中央大學環境工程研究所博士班修業辦法.pdf 更新日期：2025-09-08": "114國立中央大學環境工程研究所博士班修業辦法",
+        "SA-1 永續與綠能科技研究學院研究生修業辦法 PDF 更新日期 115.04.23": "SA-1 永續與綠能科技研究學院研究生修業辦法",
+        "碩士班（115學年度入學學生修業辦法） (PDF, 102KB)": "碩士班（115學年度入學學生修業辦法）",
+        "05) 光電系免修學分申請表": "光電系免修學分申請表",
+        "(國立中央大學生命科學系助學工讀辦法.pdf)(pdf檔下載": "國立中央大學生命科學系助學工讀辦法",
+        "資格考（口試）委員書面報告表（審定結果）ODT": "資格考（口試）委員書面報告表（審定結果）",
+        "大學生五年取得學碩士學位申請及相關修業辦法： (下載)": "大學生五年取得學碩士學位申請及相關修業辦法",
+        "Regulations for the Master Program.pdf (Open a new window)": "Regulations for the Master Program",
+    }
+    for text, expected in cases.items():
+        assert clean_name(text) == expected, text
+    for junk in ("(opens in a new tab)", "Image", "https://pdc.adm.ncu.edu.tw/Register"):
+        assert clean_name(junk) == "", junk
+
+
+def test_bare_document_type_or_year_link_text_borrows_the_context():
+    # 通識中心：連結文字只有「辦法」，真正的名稱在網址
+    assert choose_name([(5, "辦法"), (2, "創意學分學程選修辦法"), (1, "學分學程")]) == "創意學分學程選修辦法"
+    # 物理系：「大學部課程地圖：108學年度｜109學年度」
+    assert choose_name([(5, "108學年度"), (4, "物理系大學部課程地圖")]) == "物理系大學部課程地圖（108學年度）"
+    assert choose_name([(5, "申請表"), (4, "王立文女士獎學金辦法")]) == "王立文女士獎學金辦法（申請表）"
+
+
+def test_english_version_in_the_same_table_cell_is_marked():
+    # 學務處下載中心：同一格先放中文標題跟圖示，換行再放英文標題跟英文版的圖示
+    html = """<table><tr><th>種類</th><th>類別</th><th>標題</th></tr><tr><td>表格</td><td>性別平等</td><td>
+      國立中央大學性侵害、性騷擾或性霸凌事件調查申請書 <a href="thumbs/downloads/1.doc"><img src="images/icon-DOC.png"/></a><br/>
+      Investigation Application Form--National Central University Sexual Assault, Sexual Harassment, and Sexual Bullying
+      <a href="thumbs/downloads/2.doc"><img src="images/icon-DOC.png"/></a><br/></td></tr></table>"""
+    chinese, english = names_on(html, "https://osa.ncu.edu.tw/downloads.php")
+    assert chinese == "國立中央大學性侵害、性騷擾或性霸凌事件調查申請書"
+    assert english.endswith("（英文版）")
+
+
+def test_files_listed_as_json_in_vue_component_attributes():
+    # 數學系：<college-card files="[...]">、<master-card files="{&quot;deductions&quot;: [...]}">
+    html = """<college-card id="0" files='[{"name":"115 數學系數學科學組應修科目表","file":"drive/files/115_1_required.pdf","year":115}]'></college-card>
+    <master-card id="1" files='{"deductions":[{"name":"碩士班學分抵免辦法","file":"drive/files/99_master_deduction.pdf","year":99}]}'></master-card>"""
+    soup = BeautifulSoup(html, "lxml")
+    found = {url: choose_name(names) for url, names in find_document_links(soup, "https://w2.math.ncu.edu.tw/course/rule")}
+    assert found == {
+        "https://w2.math.ncu.edu.tw/drive/files/115_1_required.pdf": "115 數學系數學科學組應修科目表",
+        "https://w2.math.ncu.edu.tw/drive/files/99_master_deduction.pdf": "碩士班學分抵免辦法（99）",  # 年度接在後面才分得出版本
+    }
+
+
+def test_link_kinds_of_the_new_sites():
+    from crawler import link_kind
+
+    assert link_kind("https://nculs.in.ncu.edu.tw/index.php/ch/readfile/index.html?p=laws&n=6239761195770.pdf") == "doc"
+    assert link_kind("https://assets.ppnet.tw/ncuec/files/規章表單/36-1150610.pdf") == "doc"  # 工學院委外廠商
+    assert link_kind("https://ipla.ncu.edu.tw/xhr/archive/download?file=6603c70d1d41c8155a725a2c") == "doc"
+    assert link_kind("https://www.phy.ncu.edu.tw/系所規章/") == "page"
+
+
+def test_orbit_pdf_viewer_page_points_to_the_real_file():
+    from crawler import _viewer_file_url
+
+    viewer = '<!DOCTYPE html><!-- Copyright 2012 Mozilla Foundation --><script>var u = "/uploads/archive_file_multiple/file/66/附件4.pdf";</script>'
+    assert _viewer_file_url(viewer, "https://ipla.ncu.edu.tw/xhr/archive/download?file=66") == \
+        "https://ipla.ncu.edu.tw/uploads/archive_file_multiple/file/66/%E9%99%84%E4%BB%B64.pdf"
+    assert _viewer_file_url("<html><a href='/uploads/x.pdf'>x</a></html>", "https://ipla.ncu.edu.tw/") is None
+
+
+def test_utf8_pages_with_a_few_broken_bytes_are_not_decoded_as_big5():
+    from crawler import decode_html
+
+    body = "<meta charset='UTF-8'>土木工程學系 徵才公告".encode() + b"\xe7\xa7" + "…其餘內容".encode() * 200
+    assert "土木工程學系" in decode_html(body, "text/html")
+
+
+def test_global_rules_skip_staff_documents_and_old_cohorts():
+    from crawler import global_skip_reason
+
+    source = Source(name="某系")
+    staff = ["國立中央大學文學院院務會議設置辦法(109.4.28通過", "地球科學學系教師升等標準細則(111.11.08)", "114年度國外日支數額表報帳說明",
+             "115學年度法文系特殊選才初試榜單", "隱私權政策聲明", "Image"]
+    for name in staff:
+        assert global_skip_reason(source, name) == "不是學生用的文件", name
+    keep = [
+        "中華呂祖謙學術研究協會獎學金設置辦法",  # 獎學金的設置辦法是學生要看的
+        "英美語文學系碩士班研究生修業辦法(113學年第2次系務會議修正通過_114.1.7教務會議核備)",  # 「系務會議」是通過的會議
+        "研究生學分抵免辦法(100學年修訂)",  # 100 學年是修法的時間，不是入學年度
+        "105學年度(含)以後入學適用修業規定", "碩士學位資格檢定辦法(105學年度入學生起適用)",
+        "113 CSIE thesis advisor confirmation form（for foreign students)",  # 外籍生用的英文表單
+    ]
+    for name in keep:
+        assert global_skip_reason(source, name) == "", name
+    assert global_skip_reason(source, "103學年度入學碩士班必修基本科目") == "入學年度太舊"
+    assert global_skip_reason(Source(name="教務處", include=(r"校曆",)), "115 學年度校曆") == ""
+    assert global_skip_reason(source, "114學年度校曆") == "不是學生用的文件"  # 各系轉貼的校曆常常是舊的
+
+
+def test_only_the_latest_term_of_a_term_notice_is_kept():
+    from crawler_sources import TERM_LATEST_ONLY
+
+    names = ["113學年度第2學期頒發學位證書相關注意事項", "114學年度第1學期頒發學位證書相關注意事項", "114-2頒發學位證書相關注意事項",
+             "碩士班修業辦法"]
+    keep, drop = keep_latest(names, lambda n: n, TERM_LATEST_ONLY)
+    assert keep == ["114學年度第1學期頒發學位證書相關注意事項", "114-2頒發學位證書相關注意事項", "碩士班修業辦法"]
+
+
+def test_api_provider_lists_ee_documents(data_dir):
+    import json
+
+    api = "https://data.ee.ncu.edu.tw"
+    rows = {"current": 1, "rowCount": 20, "total": 1, "rows": [{"approach_table_id": 25, "approach_table_title": "電機系五年取得學、碩士學位推薦鼓勵辦法"}]}
+    empty = {"current": 1, "rowCount": 20, "total": 0, "rows": []}
+    site = {
+        f"{api}/ApproachTable?approach_table_type=1&current=1&rowCount=20&searchPhrase=": json.dumps(rows).encode(),
+        f"{api}/ApproachTable?approach_table_type=2&current=1&rowCount=20&searchPhrase=": json.dumps(empty).encode(),
+        f"{api}/ApproachTableAllFile?id=25": json.dumps([{"att_id": 29, "att_file_name": "五年學碩(961129系務).pdf"}]).encode(),
+        f"{api}/ApproachTableFile?id=29": _pdf("ee"),
+    }
+    report = Crawler(FakeFetcher(site), Manifest(data_dir / ".crawler_manifest.json")).crawl(Source(name="電機系", api="ee"))
+    assert report.added == ["電機系/電機系五年取得學、碩士學位推薦鼓勵辦法.pdf"]
+
+
+def test_same_document_in_two_formats_without_extensions_in_the_url(data_dir):
+    # Orbit 的 /xhr/archive/download?file=… 看不出格式，下載之後才知道一份 .doc、一份 .pdf
+    page = "https://www.chinese.ncu.edu.tw/zh_tw/forms"
+    site = {
+        page: ('<html><body><ul><li><a href="/xhr/archive/download?file=1">博士班資格考試申請表</a></li>'
+               '<li><a href="/xhr/archive/download?file=2">博士班資格考試申請表</a></li></ul></body></html>').encode(),
+        "https://www.chinese.ncu.edu.tw/xhr/archive/download?file=1": _pdf("form"),
+        "https://www.chinese.ncu.edu.tw/xhr/archive/download?file=2": b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + "WordDocument".encode("utf-16-le"),
+    }
+    report = Crawler(FakeFetcher(site), Manifest(data_dir / ".crawler_manifest.json")).crawl(Source(name="中文系", seeds=(page,)))
+    assert report.added == ["中文系/博士班資格考試申請表.pdf"]
+    assert any(".doc（同一份文件已經有 .pdf 版）" in s for s in report.skipped)
+
+
+def test_broken_pdf_link_falls_back_to_the_other_format(data_dir):
+    page = f"{SITE}/p/rules.php"
+    site = {
+        page: forms_page('<li>學分抵免辦法 》<a href="/static/file/9/9.pdf">PDF</a> <a href="/static/file/9/9.odt">ODT</a></li>'),
+        f"{SITE}/static/file/9/9.odt": _zip({"mimetype": "application/vnd.oasis.opendocument.text"}),  # PDF 那個連結 404
+    }
+    report = Crawler(FakeFetcher(site), Manifest(data_dir / ".crawler_manifest.json")).crawl(Source(name="某系", seeds=(page,)))
+    assert report.added == ["某系/學分抵免辦法.odt"]
+    assert any("改抓 .odt 版" in s for s in report.skipped)

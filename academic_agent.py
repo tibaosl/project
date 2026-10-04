@@ -1,7 +1,10 @@
 """校園法規 RAG 的查詢流程（文件的解析與目錄卡片在 rag_documents.py）。
 
 每個問題通常只有兩次 LLM 呼叫：
-1. 挑文件：把使用者的問題、對話歷史、全部文件的「目錄卡片」一起交給模型，
+0. 初篩（不呼叫 LLM）：文件有上千份，目錄沒辦法整份交給模型，先用卡片向量跟關鍵字各排一次名、
+   合併之後取前 ROUTER_CANDIDATES 份（見 retrieve_candidates），問題本身跟加上對話紀錄各算一次；
+   提到系所時，那個系所跟學院資料夾裡的文件再另外排一次。
+1. 挑文件：把使用者的問題、對話歷史、初篩出來的「目錄卡片」一起交給模型，
    請它把問題改寫成完整的一句話，判斷要回答、反問還是查無資料，並挑出最多
    MAX_DOCUMENTS 份相關文件。判斷成查無資料、但關鍵字比對找得到候選文件時，
    會帶著候選再確認一次（見 choose_documents）。
@@ -12,10 +15,9 @@
 表頭或適用對象切掉，模型拿到的是缺了前提的數字。改成看目錄挑文件、讀整份文件之後，
 這兩個問題都不存在了，也少了 query 改寫、多組檢索、rerank 這幾輪呼叫。
 
-文件量（2026-10，crawler.py 從各單位網站抓完之後）：321 份、約 87 萬字，目錄約 17 萬
-token。目錄放在固定的 system 開頭，OpenAI 會快取，挑文件一次約 3～9 秒（75 份時約 3 秒）。
-文件再多下去、或想讓挑文件更快，在第 1 步前面加一層關鍵字或向量初篩、只把候選文件的
-卡片交給模型就好，第 2 步不用改。
+文件量：2026-10 第一次用 crawler.py 抓了 7 個單位、321 份，整份目錄約 17 萬 token，還能直接交給
+模型（挑文件一次 3～9 秒）。之後擴充到全校各系所、行政單位，文件多了好幾倍，整份目錄放不進去，
+才加上第 0 步的初篩。初篩漏掉的文件模型就看不到，改初篩之後要看評估裡「挑對文件」的比例。
 
 改這裡之前先跑 `python rag_eval/run_eval.py` 記下分數，改完再跑一次比較。
 """
@@ -25,10 +27,12 @@ import math
 import os
 import re
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator, Optional
 
+import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 
@@ -39,14 +43,21 @@ print = make_print_logger(__name__)
 
 load_dotenv()
 
-ROUTER_MODEL = os.getenv("RAG_ROUTER_MODEL", "gpt-5.4-mini")
-# low 偶爾會把「文件裡有、但卡片寫得不夠明顯」的問題判成查無資料（每次錯的題目還不一樣），
-# medium 在評估題目上穩定很多，只多約 0.6 秒。
-ROUTER_REASONING = os.getenv("RAG_ROUTER_REASONING", "medium")
+# 挑文件用 gpt-5.4、不推理：2026-10 文件擴充到全校之後，gpt-5.4-mini（medium）常挑到別的系的同類文件
+# （問資工系的資格考，卻挑了通訊系的資格考公告），挑對的比例開發題 96～99%、保留題 96～98%；
+# gpt-5.4 不推理兩邊都 100%，單次也比較快（約 2 秒對 4.5 秒），只是 token 單價比較高。
+# 以前以為 mini 推理太少會亂判查無資料，其實是模型把編號連標題一起寫、解析不到（見 plan_query）。
+ROUTER_MODEL = os.getenv("RAG_ROUTER_MODEL", "gpt-5.4")
+ROUTER_REASONING = os.getenv("RAG_ROUTER_REASONING", "none")
 ANSWER_MODEL = os.getenv("RAG_ANSWER_MODEL", "gpt-5.4")
 ANSWER_REASONING = os.getenv("RAG_ANSWER_REASONING", "low")
 
 MAX_DOCUMENTS = 4
+# 初篩留給挑文件模型看的卡片數。文件有上千份，整份目錄交給模型太慢也太貴，先用卡片向量跟
+# 關鍵字各排一次名、用 RRF 合併，取前面這麼多份（見 retrieve_candidates）。
+ROUTER_CANDIDATES = int(os.getenv("RAG_ROUTER_CANDIDATES", "60"))
+RRF_K = 60
+UNIT_BOOST = os.getenv("RAG_UNIT_BOOST", "1") != "0"
 # 關鍵字二次確認的門檻：用評估題目看過，真的相關的文件分數大多在 10 以上，只因為
 # 「申請」「學生」這類常見字而比對到的在 8 以下（例如問宿舍、停車證）。
 MIN_KEYWORD_SCORE = 8.0
@@ -126,7 +137,8 @@ def format_catalog(catalog: list[rag_documents.CatalogDocument]) -> str:
 # ============================================================
 # 第 1 步：挑文件
 # ============================================================
-ROUTER_INSTRUCTIONS = """你是中央大學校園法規問答系統的「文件挑選」步驟。系統收錄的文件都列在下面的目錄裡，
+ROUTER_INSTRUCTIONS = """你是中央大學校園法規問答系統的「文件挑選」步驟。系統收錄了全校各單位的文件，
+使用者訊息裡的「文件目錄」是先用關鍵字跟語意比對、從全部文件篩出來可能相關的那些（大致依相關程度排序）。
 你要根據使用者的問題挑出回答需要的文件（之後會把整份文件交給另一個模型回答）。
 
 步驟：
@@ -140,6 +152,8 @@ ROUTER_INSTRUCTIONS = """你是中央大學校園法規問答系統的「文件�
    - 注意「適用對象」：教師的規定不能拿來回答學生的問題，學生的也不能拿來回答教師的。
    - 同一種文件有多個年度或版本時，挑最新的（目錄裡標了「舊版」的不要挑，改挑它指向的最新版）；
      使用者指定了年度就挑那個年度；新舊版本依入學年度等條件都可能適用時，兩份都挑。
+   - 同一個單位有好幾份文件都講到這件事（例如辦法跟它的申請表、說明），版本日期又不一樣時，
+     都挑，回答時會以日期較新的為準。
 3. 決定 decision：
    - answer：目錄裡有能回答、或能部分回答的文件。
    - not_found：目錄裡沒有任何跟問題相關的文件（例如問宿舍，但目錄裡沒有宿舍的規定）。
@@ -153,10 +167,7 @@ ROUTER_INSTRUCTIONS = """你是中央大學校園法規問答系統的「文件�
 4. question 跟 clarify_question 用使用者的語言寫，中文一律用繁體中文。
 
 系所與學院對照：
-{departments}
-
-文件目錄：
-{catalog}"""
+{departments}"""
 
 ROUTER_SCHEMA = {
     "type": "object",
@@ -176,26 +187,147 @@ def _bigrams(text: str) -> set[str]:
     return {text[i:i + 2] for i in range(len(text) - 1)}
 
 
+@dataclass
+class SearchIndex:
+    """初篩用的索引，目錄載入後建一次：字元二元組 → 出現在哪幾份文件（反向索引），跟卡片向量疊成的矩陣。
+    反向索引比每份文件各存一個二元組集合省記憶體（1,800 份文件約 24 MB 對 143 MB），比對也快幾十倍。"""
+    postings: dict[str, np.ndarray]  # 值是 catalog 的索引
+    size: int
+    vectors: Optional[np.ndarray]  # 沒有任何向量時是 None；個別算不出來的文件是零向量
+
+
+_index_cache: dict = {"catalog": None, "index": None}
+_index_lock = threading.Lock()
+
+
+def search_index(catalog: list[rag_documents.CatalogDocument]) -> SearchIndex:
+    with _index_lock:
+        if _index_cache["catalog"] is not catalog:
+            # 卡片的「可回答問題」也要算進去：每張卡片都寫滿「要怎麼」「可以嗎」這類問句用字，
+            # 這些字的 IDF 會因此變得很低，不會讓全篇都是問句的常見問答被過度加權。
+            postings: dict[str, list[int]] = {}
+            for i, doc in enumerate(catalog):
+                for gram in _bigrams(rag_documents.normalize_text(
+                    f"{doc.card['title']} {doc.card['summary']} {' '.join(doc.card['answers'])} {doc.file_name} {doc.text}"
+                )):
+                    postings.setdefault(gram, []).append(i)
+            vectors = None
+            dimensions = next((len(doc.embedding) for doc in catalog if doc.embedding is not None), 0)
+            if dimensions:
+                vectors = np.zeros((len(catalog), dimensions), dtype=np.float32)
+                for i, doc in enumerate(catalog):
+                    if doc.embedding is not None:
+                        vectors[i] = doc.embedding
+            arrays = {gram: np.array(ids, dtype=np.int32) for gram, ids in postings.items()}
+            _index_cache.update(catalog=catalog, index=SearchIndex(arrays, len(catalog), vectors))
+        return _index_cache["index"]
+
+
+def keyword_scores(text: str, index: SearchIndex) -> np.ndarray:
+    """用字元二元組比對問題跟每份文件的標題、卡片與全文，依詞的稀有程度（IDF）加權。"""
+    scores = np.zeros(index.size)
+    for gram in _bigrams(rag_documents.normalize_text(text)):
+        hits = index.postings.get(gram)
+        if hits is not None:
+            scores[hits] += math.log((index.size + 1) / (len(hits) + 1))
+    return scores
+
+
 def keyword_candidates(
     question: str, catalog: list[rag_documents.CatalogDocument], limit: int = 6, min_score: float = MIN_KEYWORD_SCORE,
 ) -> list:
-    """用字元二元組比對問題跟每份文件的標題、卡片與全文，依詞的稀有程度（IDF）加權，
-    找出可能相關的文件。只拿來在挑文件步驟判斷「查無資料」時二次確認，不參與一般排序。
+    """關鍵字分數夠高的文件。挑文件步驟判斷「查無資料」時，拿來帶著候選再確認一次。"""
+    scores = keyword_scores(question, search_index(catalog))
+    order = [i for i in np.argsort(-scores, kind="stable") if scores[i] >= min_score]
+    return [catalog[i] for i in order[:limit]]
 
-    卡片的「可回答問題」也要算進去：每張卡片都寫滿「要怎麼」「可以嗎」這類問句用字，
-    這些字的 IDF 會因此變得很低，不會讓全篇都是問句的常見問答被過度加權。
+
+_unit_cache: dict = {"mtime": None, "aliases": []}
+
+
+def unit_aliases() -> list[tuple[str, str, str]]:
+    """系所對照表的（別名, 正式名稱, 學院），長的排前面（「化學工程與材料工程學系」要比「化學」先比對）。
+    兩個字的別名（物理、中文、機械）太容易誤判（「中文版」「物理治療」），不拿來比對。"""
+    try:
+        mtime = ACADEMIC_MAPPING_FILE.stat().st_mtime
+    except OSError:
+        return []
+    if _unit_cache["mtime"] != mtime:
+        data = json.loads(ACADEMIC_MAPPING_FILE.read_text(encoding="utf-8"))
+        pairs = []
+        for name, entry in data.get("departments", {}).items():
+            for alias in {name, *entry.get("aliases", [])}:
+                if len(alias) >= 3:
+                    pairs.append((alias, name, entry.get("college", "")))
+        _unit_cache.update(mtime=mtime, aliases=sorted(pairs, key=lambda pair: -len(pair[0])))
+    return _unit_cache["aliases"]
+
+
+def unit_folders(text: str, catalog: list[rag_documents.CatalogDocument]) -> set[str]:
+    """問題、對話紀錄提到的系所（跟它的學院）對應到 data/ 的哪些資料夾。"""
+    units: dict[str, set[str]] = {}  # 正式名稱或學院 → 可以用來比對資料夾的名字
+    for alias, name, college in unit_aliases():
+        if alias in text:
+            text = text.replace(alias, " ")
+            units.setdefault(name, set()).add(alias)
+            if college:
+                units.setdefault(college, set()).add(college)
+    if not units:
+        return set()
+    for alias, name, _ in unit_aliases():
+        if name in units:
+            units[name].add(alias)
+    folders = {doc.folder for doc in catalog if doc.folder}
+    return {folder for folder in folders for name, names in units.items() if folder in names or name in folder}
+
+
+def retrieve_candidates(
+    query_str: str, history_str: str, catalog: list[rag_documents.CatalogDocument], limit: int = ROUTER_CANDIDATES,
+) -> list:
+    """初篩：問題本身、問題加上對話紀錄，各用卡片向量跟關鍵字排一次名，用 RRF 合併取前 limit 份。
+
+    對話紀錄要一起算：「那物理系呢？」「我是化學系的，那抵免呢？」只看這一句找不到該找的文件。
+    向量抓得到換句話說（書卷獎 → 學業優良獎學金），關鍵字抓得到向量容易漏的專有名詞跟系所名稱。
+    挑到舊版時會把最新版也放進來，挑文件的模型才能照規則改挑最新版。
     """
-    grams = {doc.doc_id: _bigrams(rag_documents.normalize_text(
-        f"{doc.card['title']} {doc.card['summary']} {' '.join(doc.card['answers'])} {doc.text}"
-    )) for doc in catalog}
-    wanted = _bigrams(rag_documents.normalize_text(question))
-    doc_freq = {g: sum(1 for doc_grams in grams.values() if g in doc_grams) for g in wanted}
-    idf = {g: math.log((len(catalog) + 1) / (df + 1)) for g, df in doc_freq.items() if df}
+    if len(catalog) <= limit:
+        return list(catalog)
+    index = search_index(catalog)
+    texts = [query_str]
+    if history_str and history_str.strip() != f"[使用者]: {query_str}".strip():
+        texts.append(history_str[-800:])
 
-    scored = [(sum(idf.get(g, 0) for g in wanted & grams[doc.doc_id]), doc) for doc in catalog]
-    scored = [(score, doc) for score, doc in scored if score >= min_score]
-    scored.sort(key=lambda item: item[0], reverse=True)
-    return [doc for _, doc in scored[:limit]]
+    rankings: list[np.ndarray] = []
+    similarity = None
+    if index.vectors is not None:
+        try:
+            similarity = index.vectors @ rag_documents.embed_texts(texts).T
+            rankings.extend(np.argsort(-similarity[:, j], kind="stable") for j in range(similarity.shape[1]))
+        except Exception as e:  # 向量服務連不上就只用關鍵字，不要整個查詢失敗
+            print(f"[Academic Agent] 問題的向量算不出來，初篩只用關鍵字：{e}")
+    keyword = [keyword_scores(text, index) for text in texts]
+    for scores in keyword:
+        order = np.argsort(-scores, kind="stable")
+        rankings.append(order[scores[order] > 0])
+    # 問題提到系所時，那個系所（跟學院）資料夾裡的文件另外排一次名：各系都有「碩士班修業辦法」，
+    # 只靠相似度常常被別系的同名文件擠出候選
+    folders = unit_folders(" ".join(texts), catalog) if UNIT_BOOST else set()
+    members = np.array([i for i, doc in enumerate(catalog) if doc.folder in folders], dtype=int)
+    if len(members):
+        relevance = similarity[:, 0] if similarity is not None else keyword[0]
+        rankings.append(members[np.argsort(-relevance[members], kind="stable")])
+
+    fused = np.zeros(len(catalog))
+    for order in rankings:
+        top = order[: limit * 2]
+        fused[top] += 1.0 / (RRF_K + np.arange(len(top)))
+    chosen = [catalog[i] for i in np.argsort(-fused, kind="stable")[:limit] if fused[i] > 0]
+    by_id = {doc.doc_id: doc for doc in catalog}
+    for doc in list(chosen):
+        latest = by_id.get(doc.superseded_by)
+        if latest is not None and latest not in chosen:
+            chosen.append(latest)
+    return chosen
 
 
 def today_context(now: Optional[datetime] = None) -> str:
@@ -213,12 +345,20 @@ def today_context(now: Optional[datetime] = None) -> str:
     return f"今天是 {now.year} 年 {now.month} 月 {now.day} 日（{academic_year} 學年度第 {term} 學期）"
 
 
-def plan_query(query_str: str, history_str: str, catalog: list[rag_documents.CatalogDocument], hints: list = ()) -> dict:
-    instructions = ROUTER_INSTRUCTIONS.format(
-        max_documents=MAX_DOCUMENTS, departments=department_directory(), catalog=format_catalog(catalog),
-    )
-    # 日期放在 user 訊息，不放 system：system 開頭的目錄每天都一樣，OpenAI 才能一直快取
+def plan_query(
+    query_str: str, history_str: str, catalog: list[rag_documents.CatalogDocument],
+    candidates: list[rag_documents.CatalogDocument], hints: list = (),
+) -> dict:
+    """candidates 是初篩後要給模型看的卡片。挑回來的編號用整份 catalog 對，模型照「舊版」
+    標記改挑的最新版就算不在 candidates 裡也找得到。
+
+    卡片照初篩的相關程度排序：2026-10 試過改成依來源單位排列（像以前整份目錄那樣），
+    開發題挑對文件的比例從九成一掉到八成一。
+    """
+    instructions = ROUTER_INSTRUCTIONS.format(max_documents=MAX_DOCUMENTS, departments=department_directory())
+    # 每次都一樣的規則放 system（OpenAI 會快取），每題不同的目錄、日期、問題放 user，問題放最後
     request = (
+        f"文件目錄：\n{format_catalog(candidates)}\n"
         f"{today_context()}\n"
         f"對話紀錄（使用者說過的話，以及系統反問或請使用者補充的話，最後一句是這一次的問題）：{history_str or '無'}\n"
         f"這一次的問題：{query_str}"
@@ -232,7 +372,6 @@ def plan_query(query_str: str, history_str: str, catalog: list[rag_documents.Cat
     response = _openai().chat.completions.create(
         model=ROUTER_MODEL,
         reasoning_effort=ROUTER_REASONING,
-        # 目錄放在固定不變的 system 開頭，OpenAI 會自動快取這段前綴，之後的問題就不用重算。
         messages=[{"role": "system", "content": instructions}, {"role": "user", "content": request}],
         response_format={"type": "json_schema", "json_schema": {"name": "document_plan", "schema": ROUTER_SCHEMA, "strict": True}},
     )
@@ -241,13 +380,32 @@ def plan_query(query_str: str, history_str: str, catalog: list[rag_documents.Cat
     by_id = {doc.doc_id: doc for doc in catalog}
     selected = []
     for doc_id in plan["documents"]:
-        doc = by_id.get(doc_id.strip().strip("[]"))
+        # 模型有時候會把標題一起寫進來（「[D506] 國立中央大學學生請假規則」），只取編號
+        match = re.search(r"D\d+", doc_id)
+        doc = by_id.get(match.group(0)) if match else None
         if doc is not None and doc not in selected:
             selected.append(doc)
-    plan["documents"] = selected[:MAX_DOCUMENTS]
+    plan["documents"] = with_page_images(selected[:MAX_DOCUMENTS], catalog)
     if plan["decision"] == "answer" and not plan["documents"]:
         plan["decision"] = "not_found"
     return plan
+
+
+# crawler.py 把網頁裡的海報圖片另存成 PDF，並在網頁快照最後註明（見 Crawler._write_snapshot）
+_PAGE_IMAGES_NOTE = re.compile(r"（這個頁面的圖片內容另外存在「(.+?)」。）")
+
+
+def with_page_images(documents: list, catalog: list[rag_documents.CatalogDocument]) -> list:
+    """挑到網頁快照時，把它另存的圖片 PDF 一起帶上：兩份本來就是同一個網頁，語言中心的英文畢業門檻
+    頁面只寫了送件方式，各學院的分數都在海報上，只讀網頁答不出來。圖片 PDF 不佔 MAX_DOCUMENTS 的名額。"""
+    by_name = {doc.file_name: doc for doc in catalog}
+    result = list(documents)
+    for doc in documents:
+        match = _PAGE_IMAGES_NOTE.search(doc.text) if doc.file_name.endswith(".md") else None
+        companion = by_name.get(f"{doc.folder}/{match.group(1)}") if match and doc.folder else None
+        if companion is not None and companion not in result:
+            result.append(companion)
+    return result
 
 
 def choose_documents(query_str: str, history_str: str, catalog: list[rag_documents.CatalogDocument]) -> dict:
@@ -255,14 +413,15 @@ def choose_documents(query_str: str, history_str: str, catalog: list[rag_documen
     「明明有卻說沒有」是最傷使用者的錯誤，而且模型偶爾會發生（同一題跑幾次才錯一次），
     真的沒有相關文件的問題多花一次呼叫的時間是值得的。
     """
-    plan = plan_query(query_str, history_str, catalog)
+    candidates = retrieve_candidates(query_str, history_str, catalog)
+    plan = plan_query(query_str, history_str, catalog, candidates)
     if plan["decision"] != "not_found":
         return plan
     hints = keyword_candidates(f"{plan['question']} {query_str}", catalog)
     if not hints:
         return plan
     print(f"[Academic Agent] 判斷為查無資料，帶關鍵字候選再確認：{[doc.doc_id for doc in hints]}")
-    return plan_query(query_str, history_str, catalog, hints=hints)
+    return plan_query(query_str, history_str, catalog, candidates + [d for d in hints if d not in candidates], hints=hints)
 
 
 # ============================================================

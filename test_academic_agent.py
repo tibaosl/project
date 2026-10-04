@@ -52,22 +52,49 @@ def _plan(decision="answer", documents=(), question="完整問題", clarify=""):
 
 def test_plan_query_ignores_unknown_and_duplicate_document_ids(monkeypatch):
     _use_fakes(monkeypatch, _plan(documents=["[D02]", "D99", "D02", "D01"]))
-    plan = agent.plan_query("學生證不見了", "", CATALOG)
+    plan = agent.plan_query("學生證不見了", "", CATALOG, CATALOG)
+    assert [d.doc_id for d in plan["documents"]] == ["D02", "D01"]
+
+
+def test_plan_query_accepts_ids_written_with_their_titles(monkeypatch):
+    # 模型有時候會照目錄的樣子連標題一起寫，不能因此變成查無資料
+    _use_fakes(monkeypatch, _plan(documents=["[D02] 學生證遺失補發申請作業", "D01：學雜費收費標準"]))
+    plan = agent.plan_query("學生證不見了", "", CATALOG, CATALOG)
+    assert plan["decision"] == "answer"
     assert [d.doc_id for d in plan["documents"]] == ["D02", "D01"]
 
 
 def test_plan_query_without_valid_documents_becomes_not_found(monkeypatch):
     _use_fakes(monkeypatch, _plan(documents=["D99"]))
-    assert agent.plan_query("宿舍", "", CATALOG)["decision"] == "not_found"
+    assert agent.plan_query("宿舍", "", CATALOG, CATALOG)["decision"] == "not_found"
 
 
-def test_router_prompt_lists_catalog_and_marks_old_versions(monkeypatch):
+def test_router_prompt_lists_candidates_and_marks_old_versions(monkeypatch):
     fake = _use_fakes(monkeypatch, _plan(decision="not_found"))
-    agent.plan_query("問題", "[使用者]: 問題", CATALOG)
-    system = fake.calls[0]["messages"][0]["content"]
-    assert "[D01] 學雜費收費標準" in system
-    assert "[D03] 舊版表單（舊版，最新版是 [D02]）" in system
+    agent.plan_query("問題", "[使用者]: 問題", CATALOG, [CATALOG[0], CATALOG[2]])
+    system, request = (m["content"] for m in fake.calls[0]["messages"])
+    assert "[D01] 學雜費收費標準" in request
+    assert "[D03] 舊版表單（舊版，最新版是 [D02]）" in request
+    assert "D02" not in request.replace("最新版是 [D02]", "")  # 沒通過初篩的卡片不會給模型看
+    assert request.rstrip().endswith("這一次的問題：問題")
     assert "資訊電機學院" in system  # 系所對照表有放進去
+
+
+def test_router_can_pick_the_latest_version_outside_the_candidates(monkeypatch):
+    _use_fakes(monkeypatch, _plan(documents=["D02"]))
+    plan = agent.plan_query("問題", "", CATALOG, [CATALOG[2]])
+    assert [d.doc_id for d in plan["documents"]] == ["D02"]
+
+
+def test_picking_a_page_snapshot_brings_its_poster_images(monkeypatch):
+    page = _doc("D10", "大學部英外文畢業門檻", "送件方式…\n\n（這個頁面的圖片內容另外存在「大學部英外文畢業門檻（圖片）.pdf」。）\n")
+    page.file_name = "語言中心/大學部英外文畢業門檻.md"
+    poster = _doc("D11", "大學部英文畢業門檻", "管理學院 多益 700 分")
+    poster.file_name = "語言中心/大學部英外文畢業門檻（圖片）.pdf"
+    catalog = CATALOG + [page, poster]
+    _use_fakes(monkeypatch, _plan(documents=["D10", "D01", "D02"]))
+    plan = agent.plan_query("企管系多益要幾分", "", catalog, catalog)
+    assert [d.doc_id for d in plan["documents"]] == ["D10", "D01", "D02", "D11"]
 
 
 def test_stream_answers_with_full_documents_and_cited_sources(monkeypatch):
@@ -162,3 +189,89 @@ def test_today_context_names_the_academic_year_and_term():
     assert agent.today_context(datetime(2027, 1, 20)).endswith("（115 學年度第 1 學期）")
     assert agent.today_context(datetime(2027, 3, 1)).endswith("（115 學年度第 2 學期）")
     assert agent.today_context(datetime(2027, 8, 1)).endswith("（116 學年度第 1 學期）")
+
+
+def _vector(*weights):
+    import numpy as np
+
+    v = np.array(weights + (0.0,) * (4 - len(weights)), dtype=np.float32)
+    return v / np.linalg.norm(v)
+
+
+def _retrieval_catalog():
+    docs = [
+        _doc("D01", "學業優良獎學金實施要點", "每學期各班成績前三名發給獎學金。"),
+        _doc("D02", "學生宿舍管理辦法", "住宿生應遵守宿舍規定。"),
+        _doc("D03", "物理學系碩士班修業規定", "物理學系碩士班畢業學分為二十四學分。"),
+        _doc("D04", "教室借用要點", "借用教室請事先登記。"),
+        _doc("D05", "113學年度課程地圖", "必修科目一覽。"),
+        _doc("D06", "114學年度課程地圖", "必修科目一覽。"),
+    ]
+    docs[4].superseded_by = "D06"
+    for doc, vector in zip(docs, [_vector(1), _vector(0, 1), _vector(0, 0, 1), _vector(0, 0, 0, 1),
+                                  _vector(0, 1, 1), _vector(0, 0, 0, 1)]):
+        doc.embedding = vector
+    return docs
+
+
+def _fake_embeddings(monkeypatch, by_keyword):
+    """問題裡有哪個關鍵字就回傳哪個向量，記錄送去算向量的文字。"""
+    import numpy as np
+
+    sent = []
+
+    def embed(texts):
+        sent.extend(texts)
+        return np.stack([next((v for k, v in by_keyword.items() if k in t), _vector(1, 1, 1, 1)) for t in texts])
+
+    monkeypatch.setattr(rd, "embed_texts", embed)
+    return sent
+
+
+def test_retrieval_uses_vectors_for_paraphrases_and_keywords_from_history(monkeypatch):
+    catalog = _retrieval_catalog()
+    # 「書卷獎」跟「學業優良獎學金」沒有共同的字，只能靠向量
+    sent = _fake_embeddings(monkeypatch, {"物理": _vector(0, 0, 1), "書卷獎": _vector(1)})
+    history = "[使用者]: 我是物理學系的 -> [使用者]: 書卷獎可以拿多少？"
+
+    found = agent.retrieve_candidates("書卷獎可以拿多少？", history, catalog, limit=2)
+    assert {d.doc_id for d in found} == {"D01", "D03"}
+    assert sent == ["書卷獎可以拿多少？", history]  # 問題本身、加上對話紀錄各算一次
+
+
+def test_retrieval_adds_the_latest_version_of_old_candidates(monkeypatch):
+    catalog = _retrieval_catalog()
+    _fake_embeddings(monkeypatch, {"課程地圖": _vector(0, 1, 1)})
+    found = agent.retrieve_candidates("113學年度課程地圖", "", catalog, limit=1)
+    assert [d.doc_id for d in found] == ["D05", "D06"]
+
+
+def test_retrieval_falls_back_to_keywords_when_embeddings_fail(monkeypatch):
+    catalog = _retrieval_catalog()
+
+    def broken(texts):
+        raise RuntimeError("沒有網路")
+
+    monkeypatch.setattr(rd, "embed_texts", broken)
+    assert [d.doc_id for d in agent.retrieve_candidates("宿舍管理辦法", "", catalog, limit=1)] == ["D02"]
+
+
+def test_small_catalogs_skip_retrieval(monkeypatch):
+    sent = _fake_embeddings(monkeypatch, {})
+    assert agent.retrieve_candidates("問題", "", CATALOG) == CATALOG
+    assert sent == []
+
+
+def test_department_mentions_pull_that_departments_documents_into_the_candidates(monkeypatch):
+    # 兩個系都有「碩士班修業辦法」，向量分不出來；問題提到物理系，物理系資料夾的就要進候選
+    docs = []
+    for i, folder in enumerate(["化學學系", "物理學系", "教務處", "教務處註冊組"], 1):
+        doc = _doc(f"D0{i}", "碩士班修業辦法" if "系" in folder else f"其他文件{i}")
+        doc.file_name = f"{folder}/{doc.card['title']}.pdf"
+        doc.embedding = _vector(1) if folder == "化學學系" else _vector(0, 1)
+        docs.append(doc)
+    _fake_embeddings(monkeypatch, {"": _vector(1)})
+    found = agent.retrieve_candidates("物理系碩士班要修幾學分", "", docs, limit=1)
+    assert "物理學系/碩士班修業辦法.pdf" in [d.file_name for d in found]
+    assert agent.unit_folders("我是物理系的", docs) == {"物理學系"}
+    assert agent.unit_folders("中文版成績單", docs) == set()  # 兩個字的「中文」不算系所
