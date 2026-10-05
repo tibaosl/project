@@ -80,6 +80,18 @@ def test_router_prompt_lists_candidates_and_marks_old_versions(monkeypatch):
     assert "資訊電機學院" in system  # 系所對照表有放進去
 
 
+def test_router_cards_list_only_the_first_few_answerable_questions(monkeypatch):
+    # 「可回答問題」佔了挑文件 prompt 大部分的 token，每張卡片只列前幾題
+    doc = _doc("D20", "學生請假規則")
+    doc.card["answers"] = [f"請假問題{i}？" for i in range(1, 7)]
+    fake = _use_fakes(monkeypatch, _plan(decision="not_found"))
+    monkeypatch.setattr(agent, "ROUTER_ANSWERS_PER_CARD", 4)
+    agent.plan_query("怎麼請假", "", CATALOG + [doc], [doc])
+    request = fake.calls[0]["messages"][1]["content"]
+    assert "可回答：請假問題1？／請假問題2？／請假問題3？／請假問題4？（另有 2 題）" in request
+    assert "請假問題5" not in request
+
+
 def test_router_can_pick_the_latest_version_outside_the_candidates(monkeypatch):
     _use_fakes(monkeypatch, _plan(documents=["D02"]))
     plan = agent.plan_query("問題", "", CATALOG, [CATALOG[2]])

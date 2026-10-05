@@ -129,6 +129,34 @@ python crawler.py             # 抓到 data/<來源>/，例如 data/教務處註
   加 `--move-duplicate-legacy` 會把內容一模一樣的移到 `storage/crawler/legacy_backup/`。
   之前跟組員拿的舊 `data/`（根目錄那 77 個檔案）都已經有爬蟲抓的新版，可以直接移走再爬一次。
 
+### 法規文件每週自動更新
+
+`python update_documents.py` 會依序重抓學校網站、幫新增或改版的文件補卡片跟向量，紀錄存在
+`storage/update_logs/`（只留最近 12 份）。卡片先建好，網站開著的話下一次查詢載入新目錄只要幾秒。
+平常一週只有幾份到幾十份文件要產生卡片，費用很低。某個網站剛好掛掉的話，連續兩次連不上之後這一輪就先跳過它
+（原本抓到的檔案照舊保留），不會讓整個更新卡住。
+
+跑網站的這台電腦用 Windows 工作排程器每週日 03:00 執行一次（工作名稱 `NCUXplore-update-documents`），
+電腦那時關機或睡眠的話，下次開機登入後會補跑。要改時間或停用，開「工作排程器」找這個名稱，
+或用 PowerShell：
+
+```powershell
+Get-ScheduledTask NCUXplore-update-documents | Get-ScheduledTaskInfo   # 上次、下次執行時間
+Start-ScheduledTask NCUXplore-update-documents                         # 立刻跑一次
+Unregister-ScheduledTask NCUXplore-update-documents                    # 移除
+```
+
+換一台電腦跑網站時，在專案資料夾用 PowerShell 重新註冊：
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "$PWD\venv\Scripts\pythonw.exe" -Argument update_documents.py -WorkingDirectory $PWD
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 03:00
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 3) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName NCUXplore-update-documents -Action $action -Trigger $trigger -Settings $settings
+```
+
+### 查詢流程
+
 每個問題的流程：
 
 0. **初篩**：文件有一千八百份左右，目錄沒辦法整份交給模型。先用卡片的向量（`text-embedding-3-large`）
@@ -161,13 +189,14 @@ python rag_eval/check_retrieval.py                 # 只看初篩有沒有把標
 
 使用的模型可以用環境變數換：`RAG_ROUTER_MODEL`（挑文件，預設 gpt-5.4、不推理，`RAG_ROUTER_REASONING=none`）、
 `RAG_ANSWER_MODEL`（回答，預設 gpt-5.4）、`RAG_CARD_MODEL`（產生卡片，預設 gpt-5.4）、
-`RAG_EMBEDDING_MODEL`（初篩的向量，預設 text-embedding-3-large），初篩留幾份是 `RAG_ROUTER_CANDIDATES`（預設 60）。
+`RAG_EMBEDDING_MODEL`（初篩的向量，預設 text-embedding-3-large），初篩留幾份是 `RAG_ROUTER_CANDIDATES`（預設 60），
+每張卡片列幾題「能回答的問題」是 `RAG_ROUTER_ANSWERS`（預設 4，0 是全部列出，挑文件的 token 會多七成）。
 
 ## 測試
 
 ```powershell
 # 後端（pytest）
-python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py
+python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py test_update_documents.py
 
 # 前端（Vitest）
 cd frontend

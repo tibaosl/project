@@ -56,6 +56,10 @@ MAX_DOCUMENTS = 4
 # 初篩留給挑文件模型看的卡片數。文件有上千份，整份目錄交給模型太慢也太貴，先用卡片向量跟
 # 關鍵字各排一次名、用 RRF 合併，取前面這麼多份（見 retrieve_candidates）。
 ROUTER_CANDIDATES = int(os.getenv("RAG_ROUTER_CANDIDATES", "60"))
+# 卡片的「可回答問題」每張約 12 題，佔了挑文件 prompt 六成的 token，每張只列前面這麼多題（0 是全部列出）。
+# 2026-10 比過：全部、前 6／4／3 題，開發題跟保留題都全對（挑跟問題最相關的幾題也沒有比較好），
+# 完全不列的話保留題錯 2 題。列 4 題時每次挑文件約 2.2 萬 token，全部列出約 3.8 萬。
+ROUTER_ANSWERS_PER_CARD = int(os.getenv("RAG_ROUTER_ANSWERS", "4"))
 RRF_K = 60
 UNIT_BOOST = os.getenv("RAG_UNIT_BOOST", "1") != "0"
 # 關鍵字二次確認的門檻：用評估題目看過，真的相關的文件分數大多在 10 以上，只因為
@@ -113,7 +117,8 @@ def department_directory() -> str:
     return "\n".join(f"- {college}：{'、'.join(items)}" for college, items in by_college.items())
 
 
-def format_catalog(catalog: list[rag_documents.CatalogDocument]) -> str:
+def format_catalog(catalog: list[rag_documents.CatalogDocument], answers_limit: int = 0) -> str:
+    """answers_limit 大於 0 時，每張卡片的「可回答問題」只列前面這麼多題，並註明省略了幾題。"""
     lines = []
     for doc in catalog:
         card = doc.card
@@ -128,8 +133,11 @@ def format_catalog(catalog: list[rag_documents.CatalogDocument]) -> str:
         )
         old = f"（舊版，最新版是 [{doc.superseded_by}]）" if doc.superseded_by else ""
         lines.append(f"[{doc.doc_id}] {card['title']}{old}\n{meta}\n摘要：{card['summary']}")
-        if card["answers"]:
-            lines.append("可回答：" + "／".join(card["answers"]))
+        answers = card["answers"]
+        if answers_limit and len(answers) > answers_limit:
+            lines.append("可回答：" + "／".join(answers[:answers_limit]) + f"（另有 {len(answers) - answers_limit} 題）")
+        elif answers:
+            lines.append("可回答：" + "／".join(answers))
         lines.append("")
     return "\n".join(lines)
 
@@ -358,7 +366,7 @@ def plan_query(
     instructions = ROUTER_INSTRUCTIONS.format(max_documents=MAX_DOCUMENTS, departments=department_directory())
     # 每次都一樣的規則放 system（OpenAI 會快取），每題不同的目錄、日期、問題放 user，問題放最後
     request = (
-        f"文件目錄：\n{format_catalog(candidates)}\n"
+        f"文件目錄：\n{format_catalog(candidates, ROUTER_ANSWERS_PER_CARD)}\n"
         f"{today_context()}\n"
         f"對話紀錄（使用者說過的話，以及系統反問或請使用者補充的話，最後一句是這一次的問題）：{history_str or '無'}\n"
         f"這一次的問題：{query_str}"

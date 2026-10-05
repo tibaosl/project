@@ -72,6 +72,9 @@ USER_AGENT = (
 REQUEST_DELAY = 0.5  # 同一個網站兩次請求之間至少隔幾秒
 TIMEOUT = (10, 60)
 MAX_FILE_BYTES = 40 * 1024 * 1024
+# 同一個網站連續這麼多個請求都連不上（每個請求已經重試過 3 次），這一輪就不再連它。網站掛掉時一個請求
+# 要等 30 秒以上才放棄，有幾十個檔案的來源會讓每週的自動更新卡好幾個小時（2026-10 生輔組網站就這樣）
+HOST_GIVE_UP_AFTER = 2
 
 # RAG 讀得懂的格式。同一份文件有好幾種格式時，留排前面的
 PREFERRED_TYPES = (".pdf", ".docx", ".odt", ".doc")
@@ -913,6 +916,7 @@ class Fetcher:
         self._last_request: dict[str, float] = {}
         self._insecure_hosts: set[str] = set()
         self._robots: dict[str, Optional[RobotFileParser]] = {}
+        self._failures: dict[str, int] = {}  # 每個網站連續連不上的請求數
 
     def _lock(self, host: str) -> threading.Lock:
         with self._locks_guard:
@@ -966,17 +970,24 @@ class Fetcher:
     def get(self, url: str, headers: Optional[dict] = None) -> requests.Response:
         host = urlparse(url).hostname or ""
         with self._lock(host):
+            if self._failures.get(host, 0) >= HOST_GIVE_UP_AFTER:
+                raise FetchError(f"{host} 連續 {HOST_GIVE_UP_AFTER} 次連不上，這一輪先跳過這個網站")
             if not self._robots_allows(url):
                 raise RobotsDisallowed("網站的 robots.txt 不允許程式下載")
             wait = self.delay - (time.monotonic() - self._last_request.get(host, 0.0))
             if wait > 0:
                 time.sleep(wait)
             try:
-                return self._request(url, headers or {})
+                response = self._request(url, headers or {})
+            except (requests.ConnectionError, requests.Timeout) as e:
+                self._failures[host] = self._failures.get(host, 0) + 1
+                raise FetchError(str(e)[:200]) from e
             except requests.RequestException as e:
                 raise FetchError(str(e)[:200]) from e
             finally:
                 self._last_request[host] = time.monotonic()
+            self._failures[host] = 0
+            return response
 
     @staticmethod
     def read(response: requests.Response) -> bytes:

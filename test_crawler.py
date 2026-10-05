@@ -7,6 +7,7 @@ import zipfile
 
 import fitz
 import pytest
+import requests
 from bs4 import BeautifulSoup
 
 import crawler
@@ -352,6 +353,45 @@ def test_crawl_keeps_files_when_the_site_is_down(data_dir):
     report = Crawler(FakeFetcher({}), manifest).crawl(SOURCE)  # 整個網站連不上
     assert not report.pages_ok and not report.removed
     assert (data_dir / "註冊組" / "1-15 轉系.pdf").exists()
+
+
+def _flaky_fetcher(monkeypatch, down: set[str]):
+    """_request 對 down 裡的網站一律連不上，其他網站回 200，並記下真的發出去的請求。"""
+    fetcher, sent = Fetcher(delay=0), []
+
+    def fake_request(url, headers, stream=True):
+        sent.append(url)
+        if any(host in url for host in down):
+            raise requests.ConnectionError("timed out")
+        return FakeResponse(url, b"ok")
+
+    monkeypatch.setattr(fetcher, "_request", fake_request)
+    monkeypatch.setattr(fetcher, "_robots_allows", lambda url: True)
+    return fetcher, sent
+
+
+def test_fetcher_skips_a_site_that_keeps_failing(monkeypatch):
+    # 網站掛掉時每個請求都要等逾時，連續失敗幾次之後這一輪就不再連它，別的網站照常
+    fetcher, sent = _flaky_fetcher(monkeypatch, {"military.ncu.edu.tw"})
+    for i in range(crawler.HOST_GIVE_UP_AFTER):
+        with pytest.raises(crawler.FetchError, match="timed out"):
+            fetcher.get(f"https://military.ncu.edu.tw/{i}.pdf")
+    with pytest.raises(crawler.FetchError, match="這一輪先跳過"):
+        fetcher.get("https://military.ncu.edu.tw/forms.php")
+    assert len(sent) == crawler.HOST_GIVE_UP_AFTER  # 放棄之後不會再真的連
+    assert fetcher.get("https://pdc.adm.ncu.edu.tw/a.pdf").status_code == 200
+
+
+def test_one_success_resets_the_failure_count(monkeypatch):
+    down = {"military.ncu.edu.tw"}
+    fetcher, sent = _flaky_fetcher(monkeypatch, down)
+    for _ in range(3):
+        with pytest.raises(crawler.FetchError):
+            fetcher.get("https://military.ncu.edu.tw/a.pdf")  # 失敗一次
+        down.clear()
+        fetcher.get("https://military.ncu.edu.tw/b.pdf")  # 接著成功，重新計算
+        down.add("military.ncu.edu.tw")
+    assert len(sent) == 6
 
 
 def test_crawl_never_overwrites_a_manual_file_with_the_same_name(data_dir):

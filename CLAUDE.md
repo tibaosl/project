@@ -26,7 +26,7 @@
 * 專案根目錄的 `.env`（不受 git 追蹤）要有 `OPENAI_API_KEY`、`NCU_OAUTH_CLIENT_ID`/`NCU_OAUTH_CLIENT_SECRET`/`NCU_OAUTH_REDIRECT_URI` 才能用到 RAG 問答跟 OAuth 登入相關功能；沒有這些值專案仍能啟動，只是這些功能會不能用。
 * 執行整個專案：`python run.py`（同時啟動 FastAPI 後端 `:8000` 跟 Vite 前端 `:5173`）。
 * 測試：
-  * 後端：`python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py`
+  * 後端：`python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py test_update_documents.py`
   * 前端：`cd frontend && npm test`
   * 上面兩組在 GitHub Actions 也會跑（`.github/workflows/tests.yml`，PR 跟推到 `main` 時），新增不需要 API key 的測試檔要一起加進 workflow 跟這裡的指令。
   * `test_agent_tools_schema.py`、`test_hours_activity.py` 需要 `.env` 裡有真的 `OPENAI_API_KEY`（甚至帳密）才能跑，一般改動不一定用得到。
@@ -38,6 +38,7 @@
 * RAG 在 2026-09-28 於 `RAG重構` branch 重寫：舊版的問題主要出在文件解析（有表格的頁面整頁文字被丟掉、Big5 亂碼、相容字/康熙部首、Word 合併儲存格重複）跟切 chunk 後分不出是哪個學院/年度的文件。新版用 PyMuPDF 重新解析，改成「看文件目錄卡片挑文件 → 讀整份文件回答」，評估題庫在 `rag_eval/`。`data/` 的文件不在 git 裡，2026-10-03 起用 `python crawler.py` 從學校網站抓（舊的 `crawler_tools.py` 已移除：資工系網站改版後網址 404、會跳過 .odt、檔名常常變成「下載 PDF」或「」」，抓不到也分不出版本）。
 * 2026-10-04 第一次用新爬蟲抓：7 個來源（教務處章則與校曆、註冊組、課務組、資工系、語言中心、學務處生活輔導組、住宿服務組）共 322 份，放在 `data/<來源>/`。原本 `data/` 根目錄的 77 個舊檔都有對應的新檔，已移到 `storage/crawler/legacy_backup/`（對照表在裡面的 mapping.json），評估題庫的標準文件也改成新檔名。文件變成 321 份後，挑文件的目錄約 17 萬 token，挑文件一次約 3～9 秒（之前約 3 秒）。
 * 2026-10-04 同一天把爬蟲擴充到全校：從官網「教學」「行政」頁列出約 80 個單位網站，逐一看過之後設定了 76 個來源（各學院、系所、學程，學務處各組、國際處、圖書館、計中、通識、體育室、研發處、師培中心等），`data/` 變成 1,824 個檔案（內容不重複的 1,789 份）。整份目錄放不進挑文件的模型，所以在挑文件前加了初篩（卡片向量 + 關鍵字，取前 60 份，見 `academic_agent.retrieve_candidates`）。挑文件改用 gpt-5.4 不推理（gpt-5.4-mini 在全校文件下常挑到別系的同類文件），評估題庫也跟著補了各學院自己的辦法當標準文件，擴充後挑對文件的比例開發題、保留題都是 100%，完整評估開發題 64.5/72、保留題 23.5/27（同一設定重跑會差到 2～3 分）。抓不到的單位（網站連不上、檔案放在 Google 雲端被 robots.txt 擋、總務處還沒看過）列在 `crawler_sources.py` 開頭。
+* 2026-10-05 加上 GitHub Actions（`.github/workflows/tests.yml`）跟 `requirements.txt`。挑文件時每張卡片只列前 4 題「可回答問題」（`RAG_ROUTER_ANSWERS`），每次挑文件從約 3.8 萬 token 降到 2.2 萬，評估沒有變差。這台電腦用 Windows 工作排程器每週日 03:00 跑 `update_documents.py`（工作名稱 `NCUXplore-update-documents`，重抓學校網站再補卡片，紀錄在 `storage/update_logs/`）。
 * 專題企劃書（NCUXplore 智慧校園代理系統）裡規劃但還沒做的功能主要是「學業分析」跟「課表規劃」。「學業分析」正在 `學業分析` branch 開發（`academic_tools.py`，資料來自 iNCU 成績查詢 + 畢業資格審查表）；「課表規劃」尚未開始。
 * Portal 登入常跳 reCAPTCHA，Playwright 內建瀏覽器連真人都過不了，所以改開真正的 Chrome 讓使用者自己登入再用 CDP 接管。網頁的主要登入是 `/api/login/chrome`：同一個 Chrome 登入 Portal 後接著跑官方 OAuth 拿身分（帳號以官方 API 為準），一次完成身分驗證跟啟用功能；舊的「OAuth 整頁導向 + 另外補密碼」流程已移除。這只適用本機，將來架伺服器要改走官方資料 API 或瀏覽器擴充功能，屆時只需要換登入/抓資料這層，解析跟分析（`academic_tools.py` 等）不用動。登入狀態可以存在 `%LOCALAPPDATA%\NCUXplore` 重複用，但只有 `NCUSession(reuse_saved_state=True)` 才會用，`/api/login` 這種驗證身分的入口不能開（會變成拿錯密碼也能登入）。
 * 選課系統（`cis.ncu.edu.tw/Course`）跟 Portal 分開登入、只收帳號密碼，Chrome 登入的 session 沒有密碼所以登不進去；非選課階段選課頁也沒有「依關鍵字」。目前 `search_courses` 遇到這些情況會丟 `RegistrationUnavailableError`（不會清掉 Portal session），課程搜尋也先從推薦問題拿掉。選課系統有不用登入的公開查詢頁（`/Course/main/query/byKeywords` 等），之後課程搜尋可以改用它——這是選課組員的範圍，要改先跟使用者確認。
