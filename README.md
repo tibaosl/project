@@ -6,7 +6,11 @@
 
 ## 目前有的功能
 
-* **校園法規問答**：RAG 檢索中央大學的法規/辦法文件，回答附上來源出處（`academic_agent.py`）。
+* **校園法規問答**：先看文件目錄挑出相關文件、再讀整份文件回答，回答附上來源出處
+  （`rag_documents.py` 處理文件、`academic_agent.py` 查詢，細節見下面「校園法規問答（RAG）」）。
+* **學校網站文件爬蟲**：`python crawler.py` 把全校各行政單位（教務處、學務處各組、國際處、圖書館、
+  計中、通識、體育室…）跟各學院、系所網站上的法規、修業規定、表單、說明網頁抓到 `data/`，給法規問答用
+  （`crawler.py`，要抓哪些網站設定在 `crawler_sources.py`）。
 * **登入**：兩種方式擇一，登入後給一個一次性通行證（token），不會每次對話都重傳密碼。
   * 用 Portal 帳號登入（推薦）：程式在這台電腦開一個 Chrome 視窗，你在 Portal 官方頁面
     自己登入（有人機驗證就自己勾），我們的網站完全不經手密碼；身分由 Portal 官方 OAuth
@@ -25,8 +29,9 @@
   報名時間已經截止的場次（`activity_tools.py`）。
 * **查詢自己的活動報名紀錄**、**活動報名/取消報名**：報名/取消一定要使用者在對話裡明確回覆
   「確定」才會真的送出，不會被機器人自己誤觸發。
-* **建議問題**：一進對話頁會隨機推薦幾個可以直接點的問題（沒登入只推薦不需登入的功能）；
-  每輪回答完會用 LLM 產生 3 個「你可能還想問」的追問（`suggestions.py`）。
+* **建議問題**：一進對話頁會隨機推薦幾個可以直接點的問題（沒登入只推薦不需登入的功能）。
+  每輪回答完會在下面放可以直接點的選項（`suggestions.py`）：系統在反問使用者時，選項是那個反問的
+  回答（例如學院名稱，是非題就只有「要／不用了」，數量看問題決定），其他時候是 3 個「你可能還想問」。
 
 ## 開發注意事項
 
@@ -70,8 +75,8 @@ git push origin 選課
 
 前置需求：
 
-* Python 虛擬環境（`venv/`）已經裝好需要的套件（沒有 `requirements.txt`，套件是直接裝在
-  共用的 `venv` 裡，不確定裝了什麼可以直接 `pip list` 看）。
+* Python 3.14 的虛擬環境（`venv/`），需要的套件列在 `requirements.txt`：
+  `pip install -r requirements.txt`（共用的 `venv` 裡已經都裝好了）。
 * 專案根目錄要有一個 `.env` 檔（不會被 git 追蹤，跟別人要或自己另外設定），至少要有：
   * `OPENAI_API_KEY`：法規問答（RAG）用。
   * `NCU_OAUTH_CLIENT_ID` / `NCU_OAUTH_CLIENT_SECRET` / `NCU_OAUTH_REDIRECT_URI`：
@@ -79,7 +84,6 @@ git push origin 選課
   * 沒有這些值也能啟動，只是登入相關功能會不能用。
 * [Node.js](https://nodejs.org)（選 LTS 版本）：前端是用 React + Vite，第一次執行會自動
   幫你 `npm install`，但要先裝好 Node.js 本身。
-* `playwright-stealth`：`pip install playwright-stealth`（降低 Portal 登入時跳人機驗證的機率）。
 * Google Chrome：Portal 登入跳出人機驗證時，程式會開一個真正的 Chrome 視窗讓你自己登入
   （Playwright 內建的瀏覽器常常連真人都過不了驗證），沒裝 Chrome 才退回內建瀏覽器。
 
@@ -104,16 +108,108 @@ python run.py
 會同時啟動後端（FastAPI，`http://127.0.0.1:8000`）跟前端（Vite dev server，
 `http://localhost:5173`），並自動開瀏覽器。關掉的話在終端機按 `Ctrl+C` 即可。
 
+## 校園法規問答（RAG）
+
+法規文件放在 `data/`（PDF、Word、OpenDocument，`.doc`、`.odt` 需要裝
+[LibreOffice](https://www.libreoffice.org/download/download/) 自動轉檔）。這些檔案不在 git 裡，
+用爬蟲從學校網站抓：
+
+```powershell
+python crawler.py --dry-run   # 先看會抓哪些檔案、檔名對不對
+python crawler.py             # 抓到 data/<來源>/，例如 data/教務處註冊組/
+```
+
+* 要抓哪些網站設定在 `crawler_sources.py`（約 80 個單位，每個網站的狀況都寫在裡面）。重抓時沒變的檔案不會再下載，
+  網站上更新的檔案會覆蓋，網站上已經拿掉的檔案會移到 `storage/crawler/removed/`。
+* 有些資訊不是附檔而是網頁本身（獎學金一覽、宿舍 Q&A），會存成 `.md`，海報圖片（英文畢業門檻）
+  另存成 PDF，讓 RAG 用圖片轉錄讀（挑到網頁時會一起帶上）。網頁裡的瀏覽人次、今天日期這類每次都不一樣的
+  內容會拿掉，不然每次重抓都會被當成改版、重做卡片。
+* 每個檔案的來源網址記在 `data/.crawler_manifest.json`。不在裡面的檔案（自己手動放進 `data/` 的）
+  爬蟲不會動。`python crawler.py --legacy` 可以檢查這些手動檔跟爬到的檔案有沒有重複，
+  加 `--move-duplicate-legacy` 會把內容一模一樣的移到 `storage/crawler/legacy_backup/`。
+  之前跟組員拿的舊 `data/`（根目錄那 77 個檔案）都已經有爬蟲抓的新版，可以直接移走再爬一次。
+
+### 法規文件每週自動更新
+
+`python update_documents.py` 會依序重抓學校網站、幫新增或改版的文件補卡片跟向量，紀錄存在
+`storage/update_logs/`（只留最近 12 份）。卡片先建好，網站開著的話下一次查詢載入新目錄只要幾秒。
+平常一週只有幾份到幾十份文件要產生卡片，費用很低。某個網站剛好掛掉的話，連續兩次連不上之後這一輪就先跳過它
+（原本抓到的檔案照舊保留），不會讓整個更新卡住。
+
+跑網站的這台電腦用 Windows 工作排程器每週日 03:00 執行一次（工作名稱 `NCUXplore-update-documents`），
+電腦那時關機或睡眠的話，下次開機登入後會補跑。要改時間或停用，開「工作排程器」找這個名稱，
+或用 PowerShell：
+
+```powershell
+Get-ScheduledTask NCUXplore-update-documents | Get-ScheduledTaskInfo   # 上次、下次執行時間
+Start-ScheduledTask NCUXplore-update-documents                         # 立刻跑一次
+Unregister-ScheduledTask NCUXplore-update-documents                    # 移除
+```
+
+換一台電腦跑網站時，在專案資料夾用 PowerShell 重新註冊：
+
+```powershell
+$action = New-ScheduledTaskAction -Execute "$PWD\venv\Scripts\pythonw.exe" -Argument update_documents.py -WorkingDirectory $PWD
+$trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 03:00
+$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 3) -MultipleInstances IgnoreNew
+Register-ScheduledTask -TaskName NCUXplore-update-documents -Action $action -Trigger $trigger -Settings $settings
+```
+
+### 查詢流程
+
+每個問題的流程：
+
+0. **初篩**：文件有一千八百份左右，目錄沒辦法整份交給模型。先用卡片的向量（`text-embedding-3-large`）
+   跟關鍵字各排一次名，合併之後取前 60 份。問題或對話裡提到系所時，那個系所的文件會優先放進來。
+1. **挑文件**：把問題、對話歷史跟初篩出來的「目錄卡片」（標題、類型、適用範圍、版本、摘要、
+   能回答的問題）交給模型，挑出最多 4 份文件，或判斷要反問使用者、資料庫裡沒有。
+   判斷成「沒有」時會用關鍵字比對找候選文件，再確認一次。
+2. **回答**：把挑中文件的全文交給模型回答，標注引用 [1]、[2]。
+
+文件解析結果、目錄卡片跟卡片向量都快取在 `storage/rag/`（以內容的 hash 當 key，檔案沒變就不會
+重做）。`data/` 新增或修改檔案後，下一次查詢會自動補做，也可以先手動建好：
+
+```powershell
+python rag_documents.py   # 解析全部文件、補齊卡片，並印出目錄（用 6 個行程平行解析）
+```
+
+第一次建好全部一千八百份左右的文件要一兩個小時：掃描版的 PDF 每頁要用圖片轉錄（每份最多 30 頁，
+`RAG_VISION_MAX_PAGES`），`.doc`、`.odt` 要用 LibreOffice 轉檔，每份文件還要呼叫模型產生卡片，
+都會花 OpenAI 的費用。之後只會補新增或改過的檔案。
+
+**改 RAG 之前跟之後都要跑評估**，分數沒變差才算改好（之前改了很多版一直修不好，就是因為
+沒有固定的測試題，修好一題又弄壞另一題也不會發現）：
+
+```powershell
+python rag_eval/run_eval.py                        # 開發用題目（rag_eval/questions.json）
+python rag_eval/run_eval.py --file holdout.json    # 保留測試題，不要照著它調 prompt
+python rag_eval/run_eval.py --router-only          # 只測挑文件那一步，快又便宜
+python rag_eval/check_retrieval.py                 # 只看初篩有沒有把標準文件排進前 60 份，不呼叫 LLM
+```
+
+使用的模型可以用環境變數換：`RAG_ROUTER_MODEL`（挑文件，預設 gpt-5.4、不推理，`RAG_ROUTER_REASONING=none`）、
+`RAG_ANSWER_MODEL`（回答，預設 gpt-5.4）、`RAG_CARD_MODEL`（產生卡片，預設 gpt-5.4）、
+`RAG_EMBEDDING_MODEL`（初篩的向量，預設 text-embedding-3-large），初篩留幾份是 `RAG_ROUTER_CANDIDATES`（預設 60），
+每張卡片列幾題「能回答的問題」是 `RAG_ROUTER_ANSWERS`（預設 4，0 是全部列出，挑文件的 token 會多七成）。
+
 ## 測試
 
 ```powershell
 # 後端（pytest）
-python -m pytest test_schedule_helpers.py test_oauth_portal.py
+python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py test_update_documents.py
 
 # 前端（Vitest）
 cd frontend
 npm test
 ```
+
+這兩組測試在 GitHub 上也會自動跑：每個 PR、還有併進 `main` 之後（`.github/workflows/tests.yml`），
+結果顯示在 PR 下方的檢查。CI 裡只有 `requirements.txt` 列的套件，加了新套件要記得寫進去，
+不然 CI 會失敗。
+
+改了 agent 的系統提示、工具說明（`agent_tools.py` 的 docstring）或 supervisor 用的模型之後，
+跑 `python agent_eval/run_routing.py` 檢查 agent 會不會選對工具（只看選了哪個工具，不會真的
+執行，不用登入，但需要 `OPENAI_API_KEY`）。
 
 `test_agent_tools_schema.py`、`test_hours_activity.py` 這兩個需要 `.env` 裡有真的
 `OPENAI_API_KEY`（甚至 `NCU_USERNAME`/`NCU_PASSWORD`）才能跑，一般開發改動前端/一般工具

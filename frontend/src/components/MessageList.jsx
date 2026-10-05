@@ -25,7 +25,9 @@ export default function MessageList({ messages, onAsk, busy = false }) {
           {msg.role === "user" && <UserAvatar />}
         </div>
       ))}
-      {showFollowUps && <FollowUpSuggestions questions={last.suggestions} onAsk={onAsk} />}
+      {showFollowUps && (
+        <FollowUpSuggestions questions={last.suggestions} kind={last.suggestionKind} onAsk={onAsk} />
+      )}
     </div>
   );
 }

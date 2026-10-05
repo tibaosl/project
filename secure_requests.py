@@ -6,7 +6,7 @@ portal.ncu.edu.tw...）憑證都正常，可以正常驗證；但 cis.ncu.edu.tw
 （SSLCertVerificationError: Missing Subject Key Identifier），不是暫時性
 問題，是對方網站的設定本身有缺陷。
 
-與其整個專案打中大網域一律關掉憑證驗證（原本 crawler_tools.py /
+與其整個專案打中大網域一律關掉憑證驗證（原本舊版爬蟲 /
 activity_tools.py 的做法），這裡改成「先驗證，驗證失敗才退回不驗證」：
 - 正常網域（例如爬蟲會爬到的大部分頁面）維持正常的憑證驗證。
 - 只有 cis.ncu.edu.tw 這種已知有憑證缺陷的網域才會真的用不驗證的方式重試，

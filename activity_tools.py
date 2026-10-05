@@ -4,7 +4,7 @@
 
 這一層只處理「公開、不需登入」就能看到的活動查詢與活動詳情，
 使用 requests + BeautifulSoup 直接打服務端渲染的 HTML（活動查詢是單純的
-GET + query string，不是 AJAX API），跟 crawler_tools.py 的作法一致。
+GET + query string，不是 AJAX API）。
 
 需要登入才能做的事（例如實際送出報名、查看個人時數 dashboard），
 請見 action_tools.py 裡 NCUSession 的 iNCU 相關方法。

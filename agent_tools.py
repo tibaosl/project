@@ -314,7 +314,8 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         不要呼叫這個工具，直接用文字請他提供想找的課程名稱或關鍵字。
 
         Args:
-            keyword: 課程名稱或關鍵字。
+            keyword: 課程名稱關鍵字，只放課名本身，不要加「課」「這門課」這類字
+                （例如「幫我找日文課」傳「日文」）——選課系統是用課名包含關鍵字來比對的。
         """
         try:
             session = await _ensure_session()
@@ -510,6 +511,8 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             }
         return result
 
+    # tag_name 說明裡的類別清單要跟 activity_tools.STUDY_PASSPORT_TAG_FILTER_MAP 一致：
+    # 傳完整名稱才能用伺服器端篩選，傳簡稱會退回逐一掃描全部活動，慢很多。
     @tool
     async def find_activities_by_hour_category(tag_name: str) -> dict:
         """依「學習護照時數標籤/類別」名稱直接查詢有提供該類時數的活動。
@@ -523,7 +526,9 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         例如「有沒有自我探索與生涯規劃時數的活動」「哪些活動有校外服務時數」。
 
         Args:
-            tag_name: 時數類別/標籤名稱。
+            tag_name: 時數類別的完整名稱，是下面其中一個：自我探索與生涯規劃、其他生活知能、
+                服務學習課程、校外服務、人文藝術、國際視野、大一週會、院週會、大一CPR。
+                使用者講簡稱時換成完整名稱（例如「生涯規劃」→「自我探索與生涯規劃」）。
         """
         try:
             matches, next_indices, exhausted_by_tag = find_activities_by_hour_tag(
@@ -615,30 +620,29 @@ def build_tools(username: str, password: str, history_str: str = "無"):
 
     @tool
     async def search_campus_regulations(query: str) -> dict:
-        """查詢中央大學的校園法規、辦法、申請規定、費用、期限等「制度規則本身」
+        """查詢中央大學的校園法規、辦法、申請流程、表單、費用、期限、門檻等「規定本身」
         （不是查使用者自己的個人資料）。
 
-        適用：畢業門檻規定、獎學金申請辦法、場地借用費用、選課相關規定等問法規/
-        規定內容的問題。不適用於查詢使用者自己的課表/時數進度/報名紀錄，那些請用
-        對應的其他工具。
+        適用：學生證遺失、在學證明、成績單申請、教室借用、外文畢業門檻、學雜費、
+        選課與停修規則、轉系、獎助學金、宿舍、學生請假、校曆日期（加退選、畢業典禮）、
+        各種申請表要交給誰等問題。不適用於查詢使用者自己的課表/時數進度/報名紀錄，
+        那些請用對應的其他工具。
 
-        若問題極度空泛、完全沒有指定任何系所或學制（例如只講「畢業門檻」「必修」），
-        不要呼叫這個工具，先直接用文字請使用者補充是哪個系所/學制；但只要對話歷史
-        或這句話裡已經出現系所或學制，就算條件足夠，直接呼叫這個工具即可。
+        沒指定系所或學制也可以直接呼叫，這個工具會依文件內容判斷要不要請使用者補充。
 
         Args:
-            query: 使用者的法規問題，可以直接沿用使用者原話。
+            query: 使用者的問題原話，保留使用者提到的身分、系所、學制、年度等條件，不要刪減。
         """
         try:
-            result_dict = query_academic_knowledge(query, history_str)
+            # query_academic_knowledge 是同步呼叫（要等 OpenAI 回應），丟到背景
+            # thread 跑，不然這段時間整個 FastAPI event loop 都會被卡住。
+            result_dict = await asyncio.to_thread(query_academic_knowledge, query, history_str)
         except Exception as e:
             return {"content": f"查詢法規時發生錯誤：{e}"}
 
-        answer_text = result_dict.get("answer", "")
-        sources = result_dict.get("sources", [])
         return {
-            "content": f"**Academic Agent 回報**：\n{answer_text}",
-            "sources": sources,
+            "content": result_dict.get("answer", ""),
+            "sources": result_dict.get("sources", []),
         }
 
     return [

@@ -1,6 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, it, expect } from "vitest";
-import MessageContent from "../MessageContent";
+import MessageContent, { ensureBlankLineBeforeTables } from "../MessageContent";
 
 // 回歸測試：後端有些工具（例如活動報名紀錄）把多筆資料組成一長串純文字
 // 用 "\n" 分行再丟給 <ReactMarkdown> 顯示。react-markdown 沒有加
@@ -42,6 +42,47 @@ describe("MessageContent", () => {
   it("純文字內容（不是清單）仍然正常顯示成 Markdown 段落", () => {
     render(<MessageContent content="一般法規回答文字" />);
     expect(screen.getByText("一般法規回答文字")).toBeInTheDocument();
+  });
+
+  // 回歸測試：法規回答的門檻/費用對照是 Markdown 表格，沒加 remark-gfm 時整張表
+  // 會變成一段夾著 | 的文字（使用者實際回報過）。
+  it("Markdown 表格會渲染成真正的表格", () => {
+    const content = [
+      "資電學院英文門檻如下：",
+      "",
+      "| 英檢考試 | 資電學院門檻 |",
+      "|---|---|",
+      "| 多益（聽讀測驗） | 600（114年前適用） |",
+      "| 雅思 | 5.5 |",
+    ].join("\n");
+
+    render(<MessageContent content={content} />);
+
+    const table = screen.getByRole("table");
+    expect(within(table).getAllByRole("columnheader").map((th) => th.textContent)).toEqual(["英檢考試", "資電學院門檻"]);
+    expect(within(table).getAllByRole("row")).toHaveLength(3);
+    expect(within(table).getByRole("cell", { name: "5.5" })).toBeInTheDocument();
+  });
+
+  it("表格緊接在清單項目後面、沒有空行時也會渲染成表格", () => {
+    const content = ["- 資電學院英文門檻如下：[1]", "| 英檢考試 | 門檻 |", "|---|---|", "| 雅思 | 5.5 |"].join("\n");
+
+    render(<MessageContent content={content} />);
+
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.getByRole("listitem")).toHaveTextContent("資電學院英文門檻如下：[1]");
+    expect(screen.getByRole("listitem")).not.toHaveTextContent("雅思");
+  });
+});
+
+describe("ensureBlankLineBeforeTables", () => {
+  it("只在表格前面缺空行時補一行，不動表格本身跟其他內容", () => {
+    const table = ["| a | b |", "|---|---|", "| 1 | 2 |"];
+    expect(ensureBlankLineBeforeTables(["如下：", ...table].join("\n"))).toBe(["如下：", "", ...table].join("\n"));
+    expect(ensureBlankLineBeforeTables(["如下：", "", ...table].join("\n"))).toBe(["如下：", "", ...table].join("\n"));
+    expect(ensureBlankLineBeforeTables(table.join("\n"))).toBe(table.join("\n"));
+    // 開頭是 | 但下一行不是分隔列，就不是表格
+    expect(ensureBlankLineBeforeTables("說明\n| 只是一行字")).toBe("說明\n| 只是一行字");
   });
 });
 

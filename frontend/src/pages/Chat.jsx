@@ -89,7 +89,7 @@ export default function Chat() {
             updateMessage(assistantId, (m) => ({ ...m, status: null, isStreaming: false }));
             finishRequest();
           } else if (event.type === "suggestions") {
-            updateMessage(assistantId, (m) => ({ ...m, suggestions: event.questions }));
+            updateMessage(assistantId, (m) => ({ ...m, suggestions: event.questions, suggestionKind: event.kind }));
           } else if (event.type === "session_expired") {
             // 後端明確告訴我們 token 已經失效了（跟單純訪客模式不一樣，見
             // main.py _resolve_credentials 的說明）——清掉這個過期的本地

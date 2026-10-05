@@ -67,6 +67,13 @@ def _free_local_port() -> int:
 
 LOGIN_CHROME_PROFILE = SESSION_STATE_DIR / "chrome_profile"
 
+# 有些網路連不到 Google 字型（fonts.googleapis.com / fonts.gstatic.com），例如開發用的這台
+# 電腦，連線要等 21 秒才逾時。Portal 每一頁都會透過 CSS 載入它，瀏覽器要等它失敗頁面才算
+# 載入完成，等於每開一頁 Portal 就卡 21 秒（登入流程會開好幾頁，中間卡了快一分鐘）。
+# 字型只影響外觀，讓瀏覽器把這兩個網域當成不存在，請求會立刻失敗，不用白等。
+# 用啟動參數而不是 context.route()：開了 route 攔截會停用 HTTP 快取，登入用的 Chrome 也不用被攔截。
+SKIP_GOOGLE_FONTS_ARG = "--host-resolver-rules=MAP fonts.googleapis.com ~NOTFOUND, MAP fonts.gstatic.com ~NOTFOUND"
+
 
 async def _launch_login_chrome(pw: Playwright, chrome: str) -> Browser:
     port = _free_local_port()
@@ -77,6 +84,7 @@ async def _launch_login_chrome(pw: Playwright, chrome: str) -> Browser:
         f"--user-data-dir={LOGIN_CHROME_PROFILE}",
         "--no-first-run",
         "--no-default-browser-check",
+        SKIP_GOOGLE_FONTS_ARG,
     ])
     for _ in range(30):
         try:
@@ -365,7 +373,7 @@ class NCUSession:
         try:
             # 背景爬蟲用的 browser，拿登入好的 storage_state 繼續跑，維持 headless。
             self.browser = await self.playwright.chromium.launch(
-                headless=True
+                headless=True, args=[SKIP_GOOGLE_FONTS_ARG]
             )
 
             saved = self._read_saved_state() if self.reuse_saved_state else None
@@ -473,7 +481,7 @@ class NCUSession:
                 login_state = await context.storage_state()
                 user_agent = await page.evaluate("navigator.userAgent")
 
-            self.browser = await self.playwright.chromium.launch(headless=True)
+            self.browser = await self.playwright.chromium.launch(headless=True, args=[SKIP_GOOGLE_FONTS_ARG])
             if not await self._open_background_portal(login_state, user_agent):
                 raise RuntimeError("Cookie 傳遞失敗，背景瀏覽器被踢回 Portal 登入頁面！")
 
@@ -719,7 +727,7 @@ class NCUSession:
         直接回傳 None，由呼叫端改開可見視窗；`wait_for_manual_challenge=True`
         則停下來等使用者自己勾選並按登入。
         """
-        browser_ui = await self.playwright.chromium.launch(headless=headless)
+        browser_ui = await self.playwright.chromium.launch(headless=headless, args=[SKIP_GOOGLE_FONTS_ARG])
 
         try:
             context_ui = await browser_ui.new_context(locale="zh-TW")

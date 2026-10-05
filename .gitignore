@@ -12,3 +12,5 @@ venv/
 frontend/node_modules/
 frontend/dist/
 probe_output/
+rag_eval/results/
+data/

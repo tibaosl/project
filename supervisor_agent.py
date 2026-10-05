@@ -8,7 +8,7 @@ from activity_tools import (
     find_activities_by_hour_tag,
 )
 import academic_agent
-from suggestions import generate_follow_up_questions
+from suggestions import extract_question_to_user, generate_suggestions
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -19,7 +19,12 @@ from logging_config import make_print_logger
 print = make_print_logger(__name__)
 
 load_dotenv()
-llm_smart = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+# 選工具用 gpt-5.4-mini 開低推理強度：工具選擇測試從 44/48（gpt-4o-mini）進步到全對，
+# 換了說法的保留題也是 18/21 → 21/21（例如「我會不會被二一」「那韓文呢」），選工具這一步
+# 中位數大約多 0.3 秒。不開推理的話換成更大的模型也只有 45、46 題。
+# Chat Completions 在帶工具時不能開推理，所以走 Responses API；這樣回覆的 content 會是
+# 內容區塊的 list，取文字要用 .text。
+llm_smart = ChatOpenAI(model="gpt-5.4-mini", use_responses_api=True, reasoning={"effort": "low"})
 memory = MemorySaver()
 
 # 對話歷史要往回看幾輪，餵給 agent 當上下文。
@@ -49,16 +54,21 @@ AGENT_SYSTEM_PROMPT = """\
 
 【原則】：
 1. 只有在確定使用者要問「自己的」個人資料/操作（課表、學分與成績、時數進度、選課、
-   活動報名）時才呼叫對應工具；問的是「規則/門檻/費用本身」這種制度規則，才呼叫
-   search_campus_regulations。
+   活動報名）時才呼叫對應工具；問的是中央大學的規定、辦法、申請流程、表單、費用、
+   期限、門檻（例如學生證遺失、在學證明、成績單、教室借用、外文畢業門檻、學雜費、
+   選課規則），一律呼叫 search_campus_regulations 查文件，不要用你自己的知識回答——
+   學校的規定你不一定知道，也可能已經改過。
 2. 每輪對話通常只需要呼叫一個工具，不要沒必要地一次呼叫多個工具。
-3. 如果問題範圍太大、缺乏關鍵資訊（例如法規問題沒講系所/學制、選課沒講要選什麼課），
-   不要亂猜著呼叫工具，直接用親切的語氣回覆文字，請使用者補充細節。
+3. 如果問題範圍太大、缺乏關鍵資訊（例如選課沒講要選什麼課），不要亂猜著呼叫工具，
+   直接用親切的語氣回覆文字，請使用者補充細節。法規問題例外：就算沒講系所或學制，
+   也直接呼叫 search_campus_regulations，它會依文件內容判斷需不需要請使用者補充。
 4. 如果問題明顯跟中央大學校園服務無關（純閒聊、打招呼、無意義字詞），不要呼叫任何
    工具，直接回覆：「我是 NCUXplore 校園助手，目前提供「校園法規查詢」、「Portal
    自動化登入／課表／選課」、「學業分析（學分／成績／畢業學分缺口）」、「個人時數進度
    查詢」與「活動查詢／推薦／報名」服務喔！
    其他問題我暫時還聽不懂～」
+   但使用者如果只是在說明自己的身分或背景（例如「我是物理系的」「我大二」），那是在
+   提供之後提問的條件，簡短確認並問他想查什麼就好，不要回覆上面那段制式訊息。
 5. 報名/取消報名一律只能呼叫 preview_ 開頭的工具做預覽，你沒有辦法、也不應該嘗試
    真的送出；使用者確認後系統會自動處理送出，不需要你再呼叫任何工具完成送出。
 """
@@ -294,9 +304,10 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         ai_msg = await llm_with_tools.ainvoke(messages)
 
         if not ai_msg.tool_calls:
-            if ai_msg.content:
-                agent_results.append(ai_msg.content)
-                yield {"type": "token", "text": ai_msg.content}
+            reply = ai_msg.text
+            if reply:
+                agent_results.append(reply)
+                yield {"type": "token", "text": reply}
             break
 
         messages.append(ai_msg)
@@ -338,7 +349,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
                     print(f"[Agent] search_campus_regulations 串流失敗：{e}")
                     answer_parts.append(f"查詢法規時發生錯誤：{e}")
 
-                content = f"**Academic Agent 回報**：\n{''.join(answer_parts)}"
+                content = "".join(answer_parts)
                 agent_results.append(content)
                 sources = result_sources
                 stop = True
@@ -384,6 +395,26 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
     }
 
 
+def _system_history_entry(agent_results: list, called_tools: list) -> list[str]:
+    """把系統這一輪「在等使用者回答」的話記進對話歷史。
+
+    歷史原本只記使用者說的話，但系統反問或請使用者補充之後，使用者常常只回「要」
+    「理學院」「微積分」（前端還會把回答做成選項讓使用者直接點），沒有前一句就看不懂。
+    - 回覆結尾有問句：記那句反問。
+    - 沒呼叫任何工具、直接回文字：多半是在請使用者補充（例如「請告訴我你想找哪一門課」，
+      不一定有問號），記回覆的開頭。
+    """
+    reply = agent_results[-1] if agent_results else None
+    if not isinstance(reply, str):
+        return []
+    question = extract_question_to_user(reply)
+    if question:
+        return [f"[系統反問]: {question}"]
+    if not called_tools:
+        return [f"[系統]: {' '.join(reply.split())[:150]}"]
+    return []
+
+
 async def agent_node(state: AgentState):
     user_input = state["user_input"]
     username = state.get("username", "")
@@ -399,6 +430,8 @@ async def agent_node(state: AgentState):
                 "sources": event["sources"],
                 "pending_action": event["pending_action"],
                 "called_tools": event["called_tools"],
+                # 使用者這句話已經由 run_ncuxplore_agent 的 initial_state 併進去了，這裡只補系統的話
+                "past_queries": _system_history_entry(event["agent_results"], event["called_tools"]),
             }
 
     # _agent_turn_events 保證一定會 yield 一個 "final" 事件才結束；
@@ -444,8 +477,9 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
 
     依序 yield 跟 `_agent_turn_events()` 一樣的事件，額外保證一定會有一個
     `{"type": "done"}` 代表回答結束。`done` 之後可能還會有一個
-    `{"type": "suggestions", "questions": [...]}`（你可能還想問）——刻意放在
-    `done` 後面，前端收到 `done` 就能先解鎖輸入框，不用等追問產生完。
+    `{"type": "suggestions", "questions": [...], "kind": ...}`——kind 是 "answers"
+    時代表這輪在等使用者回答、questions 是回答選項，"follow_ups" 是「你可能還想問」。
+    刻意放在 `done` 後面，前端收到 `done` 就能先解鎖輸入框，不用等選項產生完。
     """
     config = {"configurable": {"thread_id": thread_id}}
     final_event = None
@@ -485,7 +519,8 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
                         "username": username,
                         "password": password,
                         "agent_results": event["agent_results"],
-                        "past_queries": [f"[使用者]: {user_message}"],
+                        "past_queries": [f"[使用者]: {user_message}"]
+                        + _system_history_entry(event["agent_results"], event["called_tools"]),
                         "sources": event["sources"],
                         "pending_action": event["pending_action"],
                         "called_tools": event["called_tools"],
@@ -505,11 +540,11 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
 
     # 等使用者回覆「確定」送出報名/取消時不給追問，避免把確認流程岔開
     if final_event and final_event["agent_results"] and not final_event["pending_action"]:
-        questions = await generate_follow_up_questions(
+        kind, questions = await generate_suggestions(
             user_message,
             final_event["agent_results"][-1],
             final_event["called_tools"],
             logged_in=bool(username),
         )
         if questions:
-            yield {"type": "suggestions", "questions": questions}
+            yield {"type": "suggestions", "questions": questions, "kind": kind}

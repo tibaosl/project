@@ -53,6 +53,25 @@ describe("MessageList", () => {
     expect(onAsk).toHaveBeenCalledWith("我的累計排名是多少？");
   });
 
+  it("系統反問時顯示的是回答選項，數量照後端給的，點了會送出那個回答", async () => {
+    const onAsk = vi.fn();
+    const messages = [
+      { id: "1", role: "user", content: "英文門檻是多少？" },
+      {
+        id: "2", role: "assistant", content: "要我把各學院的英文畢業門檻都列出來嗎？",
+        suggestions: ["要", "不用了"], suggestionKind: "answers",
+      },
+    ];
+    render(<MessageList messages={messages} onAsk={onAsk} />);
+
+    expect(screen.getByText("直接點選回答")).toBeInTheDocument();
+    expect(screen.queryByText("你可能還想問")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button")).toHaveLength(2);
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "要" }));
+    expect(onAsk).toHaveBeenCalledWith("要");
+  });
+
   it("還在處理新問題時不顯示追問", () => {
     const messages = [{ id: "1", role: "assistant", content: "回答", suggestions: ["追問"] }];
     render(<MessageList messages={messages} onAsk={vi.fn()} busy />);
