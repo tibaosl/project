@@ -1,0 +1,33 @@
+# 後端需要的 Python 套件，版本照 2026-10 共用 venv 裡裝的（Python 3.14）：
+#     pip install -r requirements.txt
+# 另外要裝的不是 pip 套件：
+#   * 讀 .doc、.odt 要裝 LibreOffice（rag_documents.py 會找 soffice）
+#   * test_registration_login.py 會開 Playwright 的 Chromium：python -m playwright install chromium
+
+# 網站後端
+fastapi==0.139.2
+uvicorn==0.51.0
+pydantic==2.13.4
+python-dotenv==1.2.2
+
+# Agent 跟法規問答
+openai==2.47.0
+langchain-core==1.5.2
+langchain-openai==1.4.1
+langgraph==1.2.10
+numpy==2.5.1
+
+# 文件解析（PDF、Word）
+pymupdf==1.28.0
+python-docx==1.2.0
+
+# 爬蟲、Portal 跟選課系統
+requests==2.34.2
+urllib3==2.7.0
+beautifulsoup4==4.15.0
+lxml==6.1.1
+playwright==1.61.0
+playwright-stealth==2.0.3  # 降低 Portal 登入時跳人機驗證的機率
+
+# 測試
+pytest==9.1.1

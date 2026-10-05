@@ -75,8 +75,8 @@ git push origin 選課
 
 前置需求：
 
-* Python 虛擬環境（`venv/`）已經裝好需要的套件（沒有 `requirements.txt`，套件是直接裝在
-  共用的 `venv` 裡，不確定裝了什麼可以直接 `pip list` 看）。
+* Python 3.14 的虛擬環境（`venv/`），需要的套件列在 `requirements.txt`：
+  `pip install -r requirements.txt`（共用的 `venv` 裡已經都裝好了）。
 * 專案根目錄要有一個 `.env` 檔（不會被 git 追蹤，跟別人要或自己另外設定），至少要有：
   * `OPENAI_API_KEY`：法規問答（RAG）用。
   * `NCU_OAUTH_CLIENT_ID` / `NCU_OAUTH_CLIENT_SECRET` / `NCU_OAUTH_REDIRECT_URI`：
@@ -84,7 +84,6 @@ git push origin 選課
   * 沒有這些值也能啟動，只是登入相關功能會不能用。
 * [Node.js](https://nodejs.org)（選 LTS 版本）：前端是用 React + Vite，第一次執行會自動
   幫你 `npm install`，但要先裝好 Node.js 本身。
-* `playwright-stealth`：`pip install playwright-stealth`（降低 Portal 登入時跳人機驗證的機率）。
 * Google Chrome：Portal 登入跳出人機驗證時，程式會開一個真正的 Chrome 視窗讓你自己登入
   （Playwright 內建的瀏覽器常常連真人都過不了驗證），沒裝 Chrome 才退回內建瀏覽器。
 
@@ -168,12 +167,16 @@ python rag_eval/check_retrieval.py                 # 只看初篩有沒有把標
 
 ```powershell
 # 後端（pytest）
-python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py
+python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py
 
 # 前端（Vitest）
 cd frontend
 npm test
 ```
+
+這兩組測試在 GitHub 上也會自動跑：每個 PR、還有併進 `main` 之後（`.github/workflows/tests.yml`），
+結果顯示在 PR 下方的檢查。CI 裡只有 `requirements.txt` 列的套件，加了新套件要記得寫進去，
+不然 CI 會失敗。
 
 改了 agent 的系統提示、工具說明（`agent_tools.py` 的 docstring）或 supervisor 用的模型之後，
 跑 `python agent_eval/run_routing.py` 檢查 agent 會不會選對工具（只看選了哪個工具，不會真的

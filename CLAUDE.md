@@ -22,12 +22,13 @@
 
 ## 開發環境重點
 
-* Python 虛擬環境在 `venv/`，套件是直接裝在共用 venv 裡，沒有 `requirements.txt`。
+* Python 虛擬環境在 `venv/`（Python 3.14），需要的套件列在 `requirements.txt`（版本照共用 venv 裡裝的）。新增 import 第三方套件時要加進去，CI 只裝這份清單。
 * 專案根目錄的 `.env`（不受 git 追蹤）要有 `OPENAI_API_KEY`、`NCU_OAUTH_CLIENT_ID`/`NCU_OAUTH_CLIENT_SECRET`/`NCU_OAUTH_REDIRECT_URI` 才能用到 RAG 問答跟 OAuth 登入相關功能；沒有這些值專案仍能啟動，只是這些功能會不能用。
 * 執行整個專案：`python run.py`（同時啟動 FastAPI 後端 `:8000` 跟 Vite 前端 `:5173`）。
 * 測試：
-  * 後端：`python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py`
+  * 後端：`python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py`
   * 前端：`cd frontend && npm test`
+  * 上面兩組在 GitHub Actions 也會跑（`.github/workflows/tests.yml`，PR 跟推到 `main` 時），新增不需要 API key 的測試檔要一起加進 workflow 跟這裡的指令。
   * `test_agent_tools_schema.py`、`test_hours_activity.py` 需要 `.env` 裡有真的 `OPENAI_API_KEY`（甚至帳密）才能跑，一般改動不一定用得到。
 
 ## 現況（2026-09-22）
