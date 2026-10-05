@@ -39,39 +39,13 @@
   需不需要登入、幾個範例問題；不適合拿來推薦就讓範例留空），開場推薦跟追問才會涵蓋
   新功能。`test_agent_tools_schema.py` 會檢查有沒有漏登記。
 
-目前 GitHub 有三個主要 branch：
+目前 GitHub 上的 branch：
 
-* `main`：整合後的主線，這次 (2026-09-21) 剛把之前累積的前端重寫、OAuth 登入、活動功能等
-  work 併回來，之後新功能開發完、測試過還是要走 PR/merge 的流程進來，**不要直接在這裡改**
+* `main`：整合後的主線，**不要直接在這裡改**。新功能或修改從最新的 `main` 開一個新 branch，
+  開發完、測試過再開 PR 併回 `main`。
 * `選課`：選課功能開發，之後要改選課相關程式請在這個 branch 修改
-* `RAG`：RAG 相關功能
 
-## 如果要做選課功能
-
-第一次使用：
-
-```powershell
-git fetch origin
-git switch 選課
-```
-
-之後每次開始開發前：
-
-```powershell
-git switch 選課
-git pull origin 選課
-```
-
-修改完、測試沒問題後：
-
-```powershell
-git status
-git add .
-git commit -m "描述這次修改"
-git push origin 選課
-```
-
-## 如果只是要執行專案
+## 執行專案
 
 前置需求：
 
@@ -214,22 +188,3 @@ npm test
 `test_agent_tools_schema.py`、`test_hours_activity.py` 這兩個需要 `.env` 裡有真的
 `OPENAI_API_KEY`（甚至 `NCU_USERNAME`/`NCU_PASSWORD`）才能跑，一般開發改動前端/一般工具
 邏輯不一定用得到，看檔案開頭的說明。
-
-## 簡單記
-
-```text
-不要直接改 main ❌
-
-要做選課 → 切到「選課」branch
-要做 RAG  → 切到「RAG」branch
-
-選課開發：
-git switch 選課
-git pull --ff-only origin 選課
-    ↓
-修改 / 測試
-    ↓
-git add .
-git commit -m "描述修改"
-git push origin 選課
-```
