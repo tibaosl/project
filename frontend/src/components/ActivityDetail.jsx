@@ -1,4 +1,5 @@
 import { ActivitySessionCard } from "./ActivityCard";
+import Icon from "./Icon";
 
 /** 對應 kind === "activity_detail" / "activity_confirmation"。 */
 export default function ActivityDetail({ data }) {
@@ -31,9 +32,12 @@ export default function ActivityDetail({ data }) {
       ))}
 
       {confirmationLabel && (
-        <div className="ncux-confirm-box">
-          ⚠️ 確定要{confirmationLabel}這個活動嗎？這個動作會真的改變你在學校系統上的報名紀錄，
-          請回覆「確定{confirmationLabel}」來送出。
+        <div className="ncux-confirm-box ncux-with-icon">
+          <Icon name="alert" size={17} />
+          <span>
+            確定要{confirmationLabel}{data.session_name ? `「${data.session_name}」這個場次` : "這個活動"}嗎？
+            這個動作會真的改變你在學校系統上的報名紀錄，請回覆「確定{confirmationLabel}」來送出。
+          </span>
         </div>
       )}
     </div>

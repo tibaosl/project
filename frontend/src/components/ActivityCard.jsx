@@ -1,6 +1,8 @@
+import Icon, { MetaLine } from "./Icon";
+
 const MODE_LABEL = {
   online: ["線上報名", "ncux-badge-ok"],
-  onsite: ["⚠️ 現場報名", "ncux-badge-warn"],
+  onsite: ["現場報名", "ncux-badge-warn"],
 };
 
 /** 單一場次的資訊卡片，活動詳情、報名確認都共用這個。 */
@@ -15,18 +17,26 @@ export function ActivitySessionCard({ session }) {
   return (
     <div className="ncux-card">
       <div className="ncux-card-title">
-        {session.session_name || "（未命名場次）"} <span className={`ncux-badge ${modeClass}`}>{modeText}</span>
+        {session.session_name || "（未命名場次）"}{" "}
+        <span className={`ncux-badge ${modeClass}`}>
+          {session.registration_mode === "onsite" && (
+            <>
+              <Icon name="alert" />{" "}
+            </>
+          )}
+          {modeText}
+        </span>
       </div>
-      {session.instructor && <div className="ncux-card-meta">👤 {session.instructor}</div>}
-      {session.location && <div className="ncux-card-meta">📍 地點：{session.location}</div>}
-      {session.event_period && <div className="ncux-card-meta">🕒 活動時間：{session.event_period}</div>}
-      {session.signup_period && <div className="ncux-card-meta">📝 報名時間：{session.signup_period}</div>}
+      {session.instructor && <MetaLine icon="user">{session.instructor}</MetaLine>}
+      {session.location && <MetaLine icon="pin">地點：{session.location}</MetaLine>}
+      {session.event_period && <MetaLine icon="clock">活動時間：{session.event_period}</MetaLine>}
+      {session.signup_period && <MetaLine icon="form">報名時間：{session.signup_period}</MetaLine>}
       {hourTags.map(([label, tag]) => (
-        <div className="ncux-card-meta" key={label}>
-          🎖️ {label}：{tag}
-        </div>
+        <MetaLine icon="medal" key={label}>
+          {label}：{tag}
+        </MetaLine>
       ))}
-      {session.signup_status_text && <div className="ncux-card-meta">{session.signup_status_text}</div>}
+      {session.signup_status_text && <MetaLine icon="users">{session.signup_status_text}</MetaLine>}
     </div>
   );
 }
@@ -40,11 +50,15 @@ export function ActivityMatchCard({ item }) {
     <div className="ncux-card">
       <div className="ncux-card-title">{item.activity_title}</div>
       <div className="ncux-card-meta">場次：{item.session_name}</div>
-      {item.event_period && <div className="ncux-card-meta">🕒 活動時間：{item.event_period}</div>}
-      {item.signup_period && <div className="ncux-card-meta">📝 報名時間：{item.signup_period}</div>}
-      {item.tag && <div className="ncux-card-meta">🎖️ 時數標籤：{item.tag}</div>}
-      {headcount && <div className="ncux-card-meta">👥 {headcount}</div>}
-      {item.reason && <div className="ncux-reason">💡 {item.reason}</div>}
+      {item.event_period && <MetaLine icon="clock">活動時間：{item.event_period}</MetaLine>}
+      {item.signup_period && <MetaLine icon="form">報名時間：{item.signup_period}</MetaLine>}
+      {item.tag && <MetaLine icon="medal">時數標籤：{item.tag}</MetaLine>}
+      {headcount && <MetaLine icon="users">{headcount}</MetaLine>}
+      {item.reason && (
+        <MetaLine icon="bulb" className="ncux-reason">
+          {item.reason}
+        </MetaLine>
+      )}
     </div>
   );
 }

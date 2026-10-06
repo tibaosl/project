@@ -37,6 +37,11 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "我有沒有需要重修的課？",
         "幫我整體分析一下學業狀況",
     )),
+    "recommend_scholarships_for_me": FeatureSuggestions("獎學金推薦", True, (
+        "我可以申請哪些獎學金？",
+        "有什麼獎學金適合我？",
+        "我的成績可以拿什麼獎學金？",
+    )),
     "get_my_schedule": FeatureSuggestions("課表", True, (
         "我這學期的課表",
         "我這學期修了哪些課？",
@@ -68,9 +73,10 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "哪些活動有人文藝術時數？",
         "有提供自我探索與生涯規劃時數的活動嗎？",
     )),
-    # 法規查詢只能回答 data/ 裡有的文件，範例要挑文件裡查得到的（獎學金、停修目前都沒有文件）
+    # 法規查詢只能回答 data/ 裡有的文件，範例要挑文件裡查得到的（停車證這類總務處的文件目前沒有），
+    # 而且要是全校學生都可能問的，不要只適用某個系（原本的「資工系的英文畢業門檻」換掉了）
     "search_campus_regulations": FeatureSuggestions("校園法規", False, (
-        "資工系的英文畢業門檻是什麼？",
+        "導師密碼是什麼？",
         "學生證不見了要怎麼補辦？",
         "在學證明要怎麼申請？",
         "選課是先搶先贏嗎？",
@@ -86,6 +92,7 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
 
 STARTER_COUNT = 6
 FOLLOW_UP_COUNT = 3
+FOLLOW_UP_CANDIDATES = 6  # 請模型多想幾題，扣掉回覆裡已經有答案的，還夠挑 3 題
 MAX_QUESTION_LENGTH = 40
 
 
@@ -155,18 +162,46 @@ def _get_suggestion_llm():
     return _suggestion_llm
 
 
+# 卡片上已經有哪些內容。只給模型卡片的類型時，它常常推薦卡片上就有答案的問題
+# （2026-10 實測：看完課表推薦「我這學期修了哪些課」，看完學業分析推薦「我還差幾學分畢業？」）。
+_CARD_CONTENTS: dict[str, Any] = {
+    "academic_analysis": {
+        "credits": "已修跟畢業要求的學分、各畢業類別還缺什麼、還沒通過的必修",
+        "grades": "各學期平均跟班排名、系排名、累計平均跟累計排名、被當或停修的課",
+        "overview": "已修跟畢業要求的學分、各畢業類別還缺什麼、被當或停修的課、各學期平均跟班系排名、累計排名",
+    },
+    "hours_dashboard": "學習護照每個類別、細項的時數跟畢業門檻，還差幾小時、有沒有達標",
+    "scholarship_recommendations": "依成績、系所、年級找出的符合資格跟還要確認條件的獎學金，各自的金額、截止日、申請方式",
+    "activity_recommendations": "依時數缺口推薦、還能報名的活動場次（時間、時數、名額）",
+    "activity_tag_search": "提供這類時數、還能報名的活動場次（時間、時數、名額）",
+    "activity_detail": "活動內容跟每個場次的時間、地點、時數、名額",
+}
+
+
+# 文字回覆整段給模型看，它才知道哪些已經回答過、不要再推薦。以前只給開頭跟結尾各 400 字，
+# 中間寫到的（例如停修的申請期限、學生證復卡）又被推薦成追問（使用者反映）。
+# 法規回答大多不到 1,500 字，選項在回答顯示完之後才產生，多看一點字不影響回答速度。
+MAX_ANSWER_CHARS = 4000
+
+
 def describe_answer(content: Any) -> str:
-    """把這輪回覆轉成給 LLM 看的描述（卡片類的結構化內容只描述類型）。
-    長的回覆留開頭跟結尾，反問通常放在最後。
+    """把這輪回覆轉成給 LLM 看的描述（卡片類的結構化內容描述類型跟卡片上已經有的內容）。
+    特別長的回覆留開頭跟結尾，反問通常放在最後。
     """
     if isinstance(content, str):
         text = content.strip()
-        return text if len(text) <= 800 else f"{text[:400]}\n……\n{text[-400:]}"
+        if len(text) <= MAX_ANSWER_CHARS:
+            return text
+        half = MAX_ANSWER_CHARS // 2
+        return f"{text[:half]}\n……\n{text[-half:]}"
     if isinstance(content, dict) and content.get("kind"):
-        extra = f"，顯示重點：{content['focus']}" if content.get("focus") else ""
+        shown = _CARD_CONTENTS.get(content["kind"], "")
+        if isinstance(shown, dict):
+            shown = shown.get(content.get("focus"), "")
+        extra = f"，卡片上已經有：{shown}" if shown else ""
         return f"（以卡片顯示結構化資料，類型：{content['kind']}{extra}）"
     if isinstance(content, list):
-        return "（以表格顯示，例如課表）"
+        return "（以表格顯示這學期的課表，卡片上已經有每門課的課號、課名、上課時間、地點）"
     return ""
 
 
@@ -228,12 +263,23 @@ def _build_suggestion_prompt(
 - 只有在問「哪個學院」時才用這些學院名稱：{COLLEGES}。
 - 問使用者想查什麼時，給具體、系統做得到的事（例如「英文畢業門檻」「最近的講座」）。
 
-二、已經回答完了 → kind 填 "follow_ups"，options 給 {FOLLOW_UP_COUNT} 個使用者接下來最可能想問的問題：
-- 要跟剛才的問答相關、是自然的下一步，不要重複剛剛問過的問題。
+二、已經回答完了 → kind 填 "follow_ups"，candidates 列 {FOLLOW_UP_CANDIDATES} 個使用者接下來可能想問、
+  而且系統的回覆裡沒有寫到答案的問題：
+- 回覆裡寫到的事（例如期限、要帶的文件、費用、流程、找哪個單位）都不要問。
+- 文字回答（例如法規）：想使用者看完之後會遇到的下一步，例如辦完之後會怎樣、沒趕上或做不到
+  怎麼辦、相關的其他規定（例如問完停修的限制，問「停修會影響獎學金嗎」「停修可以取消嗎」）。
+- 卡片：想使用者看完卡片之後想做的下一件事，通常是相關的其他功能（例如看完時數缺口，問
+  「有什麼活動可以幫我補時數？」）。
+- 不要重複剛剛問過的問題，也不要換個說法再問一次（例如看完獎學金清單又問「我還能申請哪些獎學金」）。
+- 寫完每一題都要回頭檢查系統的回覆有沒有回答到：有的話把回覆裡回答它的那一句原文抄在
+  answered_by，沒有就填空字串。系統的回覆是卡片時，卡片上已經有的內容也算回答到了
+  （answered_by 填「卡片」）。
 - 每題 25 字以內，只能是上面功能做得到的問題。
 
 選項都用使用者的口吻、繁體中文，不要編號。
-只輸出 JSON，例如 {{"kind": "answers", "options": ["要", "不用了"]}}。"""
+只輸出 JSON，例如 {{"kind": "answers", "options": ["要", "不用了"]}}，或
+{{"kind": "follow_ups", "candidates": [{{"q": "停修會影響獎學金嗎", "answered_by": ""}},
+{{"q": "停修期限到什麼時候", "answered_by": "115 學年度第 1 學期的停修申請期間是 115/10/19 到 115/11/27"}}]}}。"""
 
 
 def parse_question_list(text: str) -> list[str]:
@@ -251,7 +297,13 @@ def parse_question_list(text: str) -> list[str]:
 
 
 def parse_suggestion(text: str) -> Optional[tuple[str, list[str]]]:
-    """從 LLM 回覆裡抓出 {"kind": ..., "options": [...]}；格式不對回傳 None。"""
+    """從 LLM 回覆裡抓出 (種類, 選項)，格式不對回傳 None。
+
+    回答選項是 {"kind": "answers", "options": [...]}。追問是 {"kind": "follow_ups", "candidates":
+    [{"q": ..., "answered_by": ...}]}，回覆裡已經有答案（answered_by 抄了原文）的候選不採用。
+    只叫模型「不要問回答過的事」擋不住（2026-10 實測：它自己列出回答過「查詢路徑」，還是推薦
+    「我要怎麼查有沒有完成」），逐題抄出回答的原文它才會真的去對。
+    """
     match = re.search(r"\{.*\}", text, re.S)
     if not match:
         return None
@@ -261,19 +313,45 @@ def parse_suggestion(text: str) -> Optional[tuple[str, list[str]]]:
         return None
     if not isinstance(data, dict) or data.get("kind") not in ("answers", "follow_ups"):
         return None
-    options = data.get("options")
+    candidates = data.get("candidates")
+    if data["kind"] == "follow_ups" and isinstance(candidates, list):
+        options = [
+            c.get("q") for c in candidates
+            if isinstance(c, dict) and not str(c.get("answered_by") or "").strip()
+        ]
+    else:
+        options = data.get("options")
     if not isinstance(options, list):
         return None
     return data["kind"], [o.strip() for o in options if isinstance(o, str) and o.strip()]
 
 
+def _compact(text: str) -> str:
+    """比對問題用：拿掉空白跟標點（「我的時數夠了嗎」跟「我的時數夠了嗎？」算同一題）。"""
+    return re.sub(r"[\W_]+", "", text)
+
+
 def _clean_questions(questions: list[str], user_message: str, max_length: int = MAX_QUESTION_LENGTH) -> list[str]:
-    asked = user_message.strip()
+    asked = _compact(user_message)
     cleaned: list[str] = []
     for q in questions:
-        if q != asked and q not in cleaned and len(q) <= max_length:
+        if _compact(q) != asked and q not in cleaned and len(q) <= max_length:
             cleaned.append(q)
     return cleaned
+
+
+def _answered_examples(answer: Any, called_tools: list[str]) -> set[str]:
+    """卡片已經完整回答的功能，它的範例問題（比對用的形式）。
+
+    2026-10 實測：看完獎學金卡片又推薦「有什麼獎學金適合我？」、看完時數又推薦「我的服務學習時數夠了嗎？」，
+    跟模型說卡片上有什麼也擋不乾淨，所以直接濾掉。學業分析只有 overview 是全部都顯示，
+    只問學分（credits）或成績（grades）時另一半還沒回答，不濾。
+    """
+    if isinstance(answer, str):
+        return set()
+    if isinstance(answer, dict) and answer.get("kind") == "academic_analysis" and answer.get("focus") != "overview":
+        return set()
+    return {_compact(q) for t in called_tools if t in TOOL_SUGGESTIONS for q in TOOL_SUGGESTIONS[t].examples}
 
 
 def _fallback_follow_ups(
@@ -333,9 +411,12 @@ async def generate_suggestions(
     if kind == "answers":
         return kind, _clean_questions(options, user_message, MAX_OPTION_LENGTH)[:MAX_REPLY_OPTIONS]
 
-    questions = _clean_questions(options, user_message)
-    if len(questions) < FOLLOW_UP_COUNT:
+    answered = _answered_examples(answer, called_tools)
+    questions = [q for q in _clean_questions(options, user_message) if _compact(q) not in answered]
+    if not questions:
+        # 模型失敗、或想得到的都已經回答過了，才拿範例問題來補。模型有給一兩題就只放那幾題：
+        # 補上跟這輪無關的範例（例如問完停修卻推薦「學生證不見了怎麼補辦」）反而奇怪。
         for q in _fallback_follow_ups(user_message, called_tools, logged_in, rng):
-            if q not in questions:
+            if q not in questions and _compact(q) not in answered:
                 questions.append(q)
     return kind, questions[:FOLLOW_UP_COUNT]

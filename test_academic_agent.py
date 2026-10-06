@@ -114,7 +114,7 @@ def test_stream_answers_with_full_documents_and_cited_sources(monkeypatch):
     events = list(agent.query_academic_knowledge_stream("資工系學費多少", "[使用者]: 資工系學費多少"))
 
     tokens = "".join(e["text"] for e in events if e["type"] == "token")
-    assert tokens == "學費 17,490 元[1]"
+    assert tokens == "學費 17,490 元"  # 引用編號不顯示，但照樣用來決定參考資料
     assert events[-1] == {"type": "sources", "sources": ["學雜費收費標準.pdf"]}
     answer_request = fake.calls[1]["messages"][1]["content"]
     assert "學士班資電學院學費 17,490 元" in answer_request  # 回答步驟拿到的是文件全文
@@ -287,3 +287,40 @@ def test_department_mentions_pull_that_departments_documents_into_the_candidates
     assert "物理學系/碩士班修業辦法.pdf" in [d.file_name for d in found]
     assert agent.unit_folders("我是物理系的", docs) == {"物理學系"}
     assert agent.unit_folders("中文版成績單", docs) == set()  # 兩個字的「中文」不算系所
+
+
+def _clean(chunks):
+    cleaner = agent.AnswerCleaner()
+    return "".join(cleaner.feed(chunk) for chunk in chunks) + cleaner.flush()
+
+
+def test_answer_cleaner_drops_citation_markers_even_when_split_across_chunks():
+    # 引用編號只拿來決定要列哪些參考資料，畫面上不顯示（使用者覺得句子後面一串 [1][2] 很雜）
+    assert _clean(["學費 17,490 元", "[", "1", "]。雜費另計 [2、", "3]。"]) == "學費 17,490 元。雜費另計。"
+    assert _clean(["- 學士班：700 分[1]\n- 碩士班：750 分[2]"]) == "- 學士班：700 分\n- 碩士班：750 分"
+    # 不是引用編號的方括號照留
+    assert _clean(["[注意]請", "看[辦法](https://example.com)第[", "三條]"]) == "[注意]請看[辦法](https://example.com)第[三條]"
+
+
+def test_answer_cleaner_replaces_semicolons_even_when_split_across_chunks():
+    assert _clean(["要先填申請表；", "再交到註冊組"]) == "要先填申請表，再交到註冊組"
+    assert _clean(["- 學士班 700 分；", "\n- 碩士班 750 分；"]) == "- 學士班 700 分。\n- 碩士班 750 分。"
+    assert _clean(["逾期不受理；[1]", "\n下一段"]) == "逾期不受理。\n下一段"
+
+
+def test_streamed_answer_hides_citations_but_sources_still_follow_them(monkeypatch):
+    docs = [CATALOG[0], CATALOG[1]]
+    plan = {"question": "學費多少？", "decision": "answer", "documents": docs, "clarify_question": ""}
+    monkeypatch.setattr(agent, "get_catalog", lambda: CATALOG)
+    monkeypatch.setattr(agent, "choose_documents", lambda *args: plan)
+    fake = FakeOpenAI({}, answer_chunks=["學費 17,490 元", "[1", "]。"])  # 挑文件換成上面的 plan，只用到回答的串流
+    monkeypatch.setattr(agent, "_openai", lambda: fake)
+
+    result = agent.query_academic_knowledge("學費多少？")
+    assert result["answer"] == "學費 17,490 元。"
+    assert result["sources"] == [docs[0].file_name]  # 只標了 [1]，只列第一份
+
+
+def test_replace_semicolons_uses_commas_inside_a_line_and_full_stops_at_the_end():
+    assert agent.replace_semicolons("先填表；再送件；") == "先填表，再送件。"
+    assert agent.replace_semicolons("- 學士班；\n- 碩士班") == "- 學士班。\n- 碩士班"

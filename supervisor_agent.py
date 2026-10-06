@@ -6,6 +6,7 @@ from agent_tools import build_tools, get_or_create_session, reset_session
 from activity_tools import (
     recommend_activities_for_categories,
     find_activities_by_hour_tag,
+    is_confirmation,
 )
 import academic_agent
 from suggestions import extract_question_to_user, generate_suggestions
@@ -37,35 +38,38 @@ HISTORY_WINDOW = 12
 # 工具的情境一個安全網，避免無限迴圈）。
 MAX_TOOL_ROUNDS = 4
 
-# 「確認/繼續」這類回覆用簡單關鍵字判斷，不靠 LLM（見 agent_node 開頭的
-# 說明）。這組關鍵字要在呼叫 LLM 之前就攔截，才能確保「會真的改動學校
-# 系統資料」的動作只在使用者明確表態時才會發生，行為要可預期，不交給
-# 模型自己判斷要不要送出。
-CONFIRM_KEYWORDS = ["確定"]
+# 「確認/繼續」這類回覆用簡單規則判斷，不靠 LLM（見 agent_node 開頭的
+# 說明）。要在呼叫 LLM 之前就攔截，才能確保「會真的改動學校系統資料」的
+# 動作只在使用者明確表態時才會發生，行為要可預期，不交給模型自己判斷要不要
+# 送出。確認的規則見 activity_tools.is_confirmation（「我還不確定」不算）。
+CONFIRMABLE_ACTIONS = ("ACTIVITY_REGISTER", "ACTIVITY_CANCEL")
 CONTINUE_ALL_KEYWORDS = ["全部列出", "列出全部", "都列出", "全部顯示", "都給我"]
 CONTINUE_MORE_KEYWORDS = ["繼續", "更多", "還有", "再多", "再幾個", "再找"]
 
 AGENT_SYSTEM_PROMPT = """\
 你是中央大學 NCUXplore 系統的校園助手，服務全校師生。你可以呼叫提供給你的工具來
-查課表、選課、分析學業（學分／成績／畢業學分缺口）、查詢時數進度、查詢/推薦/報名
-活動，或查詢校園法規。
+查課表、選課、分析學業（學分／成績／畢業學分缺口）、找出使用者能申請的獎學金、查詢
+時數進度、查詢/推薦/報名活動，或查詢校園法規。
 
 【對話歷史】：{history_str}
 
 【原則】：
-1. 只有在確定使用者要問「自己的」個人資料/操作（課表、學分與成績、時數進度、選課、
-   活動報名）時才呼叫對應工具；問的是中央大學的規定、辦法、申請流程、表單、費用、
+1. 只有在確定使用者要問「自己的」個人資料/操作（課表、學分與成績、自己能申請的獎學金、
+   時數進度、選課、活動報名）時才呼叫對應工具；問的是中央大學的規定、辦法、申請流程、表單、費用、
    期限、門檻（例如學生證遺失、在學證明、成績單、教室借用、外文畢業門檻、學雜費、
    選課規則），一律呼叫 search_campus_regulations 查文件，不要用你自己的知識回答——
    學校的規定你不一定知道，也可能已經改過。
+   問某個密碼、帳號、代碼「是什麼」「要去哪裡拿」「忘記怎麼辦」（例如「導師密碼是什麼」
+   「課程密碼要跟誰拿」），是在問學校的制度，一樣呼叫 search_campus_regulations。
+   你本來就拿不到任何人的密碼，不需要拒絕。
 2. 每輪對話通常只需要呼叫一個工具，不要沒必要地一次呼叫多個工具。
 3. 如果問題範圍太大、缺乏關鍵資訊（例如選課沒講要選什麼課），不要亂猜著呼叫工具，
    直接用親切的語氣回覆文字，請使用者補充細節。法規問題例外：就算沒講系所或學制，
    也直接呼叫 search_campus_regulations，它會依文件內容判斷需不需要請使用者補充。
 4. 如果問題明顯跟中央大學校園服務無關（純閒聊、打招呼、無意義字詞），不要呼叫任何
    工具，直接回覆：「我是 NCUXplore 校園助手，目前提供「校園法規查詢」、「Portal
-   自動化登入／課表／選課」、「學業分析（學分／成績／畢業學分缺口）」、「個人時數進度
-   查詢」與「活動查詢／推薦／報名」服務喔！
+   自動化登入／課表／選課」、「學業分析（學分／成績／畢業學分缺口）」、「獎學金推薦」、
+   「個人時數進度查詢」與「活動查詢／推薦／報名」服務喔！
    其他問題我暫時還聽不懂～」
    但使用者如果只是在說明自己的身分或背景（例如「我是物理系的」「我大二」），那是在
    提供之後提問的條件，簡短確認並問他想查什麼就好，不要回覆上面那段制式訊息。
@@ -146,15 +150,15 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
     print(f"[Agent] 參考對話歷史：「{history_str}」")
 
     # ------------------------------------------------------------------
-    # 確認送出：如果上一輪有等待確認的報名/取消報名動作，而這一輪的輸入
-    # 裡有「確定」兩個字，就直接執行，不經過 LLM。
+    # 確認送出：如果上一輪有等待確認的報名/取消報名動作，而這一輪使用者
+    # 明確說了「確定」（「我還不確定」「確定嗎？」不算），就直接執行，不經過 LLM。
     #
     # 這是刻意寫死、不讓 LLM 判斷的安全機制：會改變學校系統資料的動作，
     # 只在使用者明確表態時才會發生，行為要可預期。改成 tool use 之後這點
     # 完全不變——LLM 唯一能呼叫到的報名/取消工具永遠只會 dry-run 預覽，
     # 真正送出只會經過這段程式碼。
     # ------------------------------------------------------------------
-    if pending_action and any(kw in user_input for kw in CONFIRM_KEYWORDS):
+    if pending_action.get("type") in CONFIRMABLE_ACTIONS and is_confirmation(user_input):
         print("[Agent] 偵測到針對 pending_action 的確認回覆，直接送出。")
 
         if not username:
@@ -231,14 +235,17 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         next_limit = None if wants_all else 5
 
         try:
+            # 同步的 requests 逐一查活動，丟到背景 thread，不然查詢期間整個後端都會卡住
             if pending_action["type"] == "ACTIVITY_RECOMMEND":
-                more_matches, next_indices, exhausted_by_tag = recommend_activities_for_categories(
-                    deficiencies, limit_per_tag=next_limit, start_indices=resume_indices
+                more_matches, next_indices, exhausted_by_tag = await asyncio.to_thread(
+                    recommend_activities_for_categories,
+                    deficiencies, limit_per_tag=next_limit, start_indices=resume_indices,
                 )
                 envelope_kind = "activity_recommendations"
             else:
-                more_matches, next_indices, exhausted_by_tag = find_activities_by_hour_tag(
-                    tag_names, limit_per_tag=next_limit, start_indices=resume_indices
+                more_matches, next_indices, exhausted_by_tag = await asyncio.to_thread(
+                    find_activities_by_hour_tag,
+                    tag_names, limit_per_tag=next_limit, start_indices=resume_indices,
                 )
                 envelope_kind = "activity_tag_search"
 
@@ -304,7 +311,9 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         ai_msg = await llm_with_tools.ainvoke(messages)
 
         if not ai_msg.tool_calls:
-            reply = ai_msg.text
+            # 使用者不喜歡分號。不在 prompt 裡要求：法規回答的 prompt 加了「不要用分號」之後，
+            # 模型整個文風變了、漏掉細節，評估分數掉了 7 分，所以一律在送出前替換
+            reply = academic_agent.replace_semicolons(ai_msg.text)
             if reply:
                 agent_results.append(reply)
                 yield {"type": "token", "text": reply}

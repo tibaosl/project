@@ -14,13 +14,17 @@ const PERIODS = [
   ["第Ｃ節", "20:00-20:50"],
 ];
 const DAYS = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+const ALL_DAYS = [...DAYS, "星期日"];
 const ALWAYS_SHOW = new Set(["第一節", "第二節", "第三節", "第四節", "第五節", "第六節", "第七節", "第八節"]);
 
 function normalizePeriod(period) {
-  return (period || "")
-    .replace("第A節", "第Ａ節")
-    .replace("第B節", "第Ｂ節")
-    .replace("第C節", "第Ｃ節");
+  // 課表上的英文字母節次是全形的（第Ａ節），半形的轉成全形才對得上
+  return (period || "").trim().replace(/[A-Za-z]/g, (ch) => String.fromCharCode(ch.toUpperCase().charCodeAt(0) + 0xfee0));
+}
+
+function startMinutes(time) {
+  const match = /(\d{1,2}):(\d{2})/.exec(time || "");
+  return match ? Number(match[1]) * 60 + Number(match[2]) : Infinity;
 }
 
 function chunkDetails(details) {
@@ -34,6 +38,9 @@ function chunkDetails(details) {
 /** courses：get_my_schedule 工具直接回傳的原始陣列（day/period/time/details）。 */
 export default function ScheduleTable({ courses }) {
   const grid = new Map();
+  // 不在上面清單裡的節次（例如中午那節實際上叫什麼還沒看過）跟星期日，有課就照樣顯示，不能讓課消失
+  const extraPeriods = new Map();
+  const extraDays = new Set();
   for (const item of courses) {
     const p = normalizePeriod(item.period);
     const d = (item.day || "").trim();
@@ -41,11 +48,15 @@ export default function ScheduleTable({ courses }) {
     const key = `${p}|${d}`;
     const existing = grid.get(key) || [];
     grid.set(key, existing.concat(item.details || []));
+    if (!PERIODS.some(([name]) => name === p) && !extraPeriods.has(p)) extraPeriods.set(p, (item.time || "").replace(" ", "-"));
+    if (!DAYS.includes(d)) extraDays.add(d);
   }
 
-  const visiblePeriods = PERIODS.filter(
-    ([name]) => ALWAYS_SHOW.has(name) || DAYS.some((d) => grid.has(`${name}|${d}`))
-  );
+  const days = [...DAYS, ...ALL_DAYS.filter((d) => extraDays.has(d)), ...[...extraDays].filter((d) => !ALL_DAYS.includes(d))];
+  const visiblePeriods = [
+    ...PERIODS.filter(([name]) => ALWAYS_SHOW.has(name) || days.some((d) => grid.has(`${name}|${d}`))),
+    ...extraPeriods.entries(),
+  ].sort(([, a], [, b]) => startMinutes(a) - startMinutes(b));
 
   return (
     <div className="timetable-wrap">
@@ -53,7 +64,7 @@ export default function ScheduleTable({ courses }) {
         <thead>
           <tr>
             <th>節次 / 時間</th>
-            {DAYS.map((d) => (
+            {days.map((d) => (
               <th key={d}>{d}</th>
             ))}
           </tr>
@@ -66,7 +77,7 @@ export default function ScheduleTable({ courses }) {
                 <br />
                 <span style={{ fontSize: 10, fontWeight: 400, color: "var(--ncux-text-muted)" }}>{time}</span>
               </td>
-              {DAYS.map((d) => {
+              {days.map((d) => {
                 const details = grid.get(`${name}|${d}`);
                 return (
                   <td className={details ? "has-course" : undefined} key={d}>

@@ -182,6 +182,14 @@ def test_analysis_credits_and_gpa_trend():
     ]
 
 
+def test_cumulative_rank_of_a_term_without_grades_is_dropped():
+    # iNCU 的累計排名表會多一列還沒有成績的這學期，數字跟上學期一樣（2026-10 用真實帳號看到的）
+    transcript = parse_transcript_html(TRANSCRIPT_HTML)
+    transcript["ranks"]["cumulative"]["1142"] = {"average": 78.5, "class_rank": "12/50", "dept_rank": "25/100"}
+    a = analyze_academic_progress(transcript, None)
+    assert [r["label"] for r in a["gpa"]["cumulative_ranks"]] == ["114-1"]
+
+
 def test_analysis_focus_defaults_to_overview_and_rejects_unknown_values():
     transcript = parse_transcript_html(TRANSCRIPT_HTML)
 
