@@ -37,6 +37,11 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "我有沒有需要重修的課？",
         "幫我整體分析一下學業狀況",
     )),
+    "recommend_scholarships_for_me": FeatureSuggestions("獎學金推薦", True, (
+        "我可以申請哪些獎學金？",
+        "有什麼獎學金適合我？",
+        "我的成績可以拿什麼獎學金？",
+    )),
     "get_my_schedule": FeatureSuggestions("課表", True, (
         "我這學期的課表",
         "我這學期修了哪些課？",
@@ -68,7 +73,7 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "哪些活動有人文藝術時數？",
         "有提供自我探索與生涯規劃時數的活動嗎？",
     )),
-    # 法規查詢只能回答 data/ 裡有的文件，範例要挑文件裡查得到的（獎學金、停修目前都沒有文件）
+    # 法規查詢只能回答 data/ 裡有的文件，範例要挑文件裡查得到的（停車證這類總務處的文件目前沒有）
     "search_campus_regulations": FeatureSuggestions("校園法規", False, (
         "資工系的英文畢業門檻是什麼？",
         "學生證不見了要怎麼補辦？",

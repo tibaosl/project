@@ -259,7 +259,7 @@ def _pass_score(program: str) -> float:
     return PASS_SCORE.get(program, DEFAULT_GRADUATE_PASS_SCORE)
 
 
-def _course_failed(course: dict) -> Optional[str]:
+def course_failed(course: dict) -> Optional[str]:
     """回傳未通過原因；通過、或還沒有成績（修課中）回傳 None。"""
     if course["score"] is not None:
         return "不及格" if course["score"] < _pass_score(course["program"]) else None
@@ -334,7 +334,7 @@ def _build_alerts(transcript: dict, graduation: Optional[dict]) -> list[dict]:
     seen = set()
     for sem in transcript["semesters"]:
         for course in sem["courses"]:
-            reason = _course_failed(course)
+            reason = course_failed(course)
             if reason is None:
                 continue
             seen.add((sem["term"], course["course_no"]))

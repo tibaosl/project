@@ -37,6 +37,7 @@ from activity_tools import (
 )
 from academic_agent import query_academic_knowledge
 from academic_tools import analyze_academic_progress, fetch_academic_records
+from scholarship_tools import DeclaredStatus, recommend_scholarships
 
 NO_CREDENTIALS_MSG = (
     "[Action Agent 回報]:\n尚未登入或登入已失效，無法執行。請登出後重新用 Portal 登入！"
@@ -392,6 +393,38 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         return {"content": analyze_academic_progress(transcript, graduation, focus)}
 
     @tool
+    async def recommend_scholarships_for_me(statuses: Optional[list[DeclaredStatus]] = None) -> dict:
+        """依使用者「自己」的學制、年級、系所、學業成績與排名，找出他可能可以申請的獎學金、助學金、
+        獎勵金（需要登入）。
+
+        使用時機：使用者想知道「自己」能申請哪些獎學金，例如「我可以申請哪些獎學金」「有什麼獎學金
+        適合我」「我的成績拿得到獎學金嗎」「我是低收入戶，有什麼助學金可以申請」。
+        不適用於問某個獎學金本身的規定（金額、資格、怎麼申請，例如「書卷獎可以拿多少錢」「羅家倫
+        獎學金要交什麼資料」），那種請用 search_campus_regulations。
+
+        Args:
+            statuses: 使用者在對話裡「自己說過」的身分，用來判斷要這些身分才能申請的獎學金（例如
+                「我是低收入戶」「我家清寒」→ 經濟弱勢，「我是原住民」→ 原住民，「我是僑生」→ 僑生）。
+                使用者沒說的不要猜，留空。
+        """
+        try:
+            session = await _ensure_session()
+            if session is None:
+                return {"content": NO_CREDENTIALS_MSG}
+            transcript, _ = await fetch_academic_records(session, include_graduation=False)
+        except Exception as e:
+            await reset_session(username)
+            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+
+        try:
+            # 要載入法規文件目錄（有新文件時還要呼叫模型整理獎學金資格），丟到背景 thread 跑，
+            # 不然這段時間整個 FastAPI event loop 都會被卡住
+            envelope = await asyncio.to_thread(recommend_scholarships, transcript, statuses or [])
+        except Exception as e:
+            return {"content": f"**Action Agent 回報**：\n整理獎學金資料時發生錯誤：{e}"}
+        return {"content": envelope}
+
+    @tool
     async def get_my_registered_activities() -> dict:
         """查詢使用者自己已經報名過的活動清單（需要登入）。
 
@@ -624,9 +657,10 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         （不是查使用者自己的個人資料）。
 
         適用：學生證遺失、在學證明、成績單申請、教室借用、外文畢業門檻、學雜費、
-        選課與停修規則、轉系、獎助學金、宿舍、學生請假、校曆日期（加退選、畢業典禮）、
-        各種申請表要交給誰等問題。不適用於查詢使用者自己的課表/時數進度/報名紀錄，
-        那些請用對應的其他工具。
+        選課與停修規則、轉系、獎助學金的規定（金額、資格、怎麼申請）、宿舍、學生請假、
+        校曆日期（加退選、畢業典禮）、各種申請表要交給誰等問題。不適用於查詢使用者自己的
+        課表/時數進度/報名紀錄，也不適用於要系統依使用者自己的成績、身分找出他能申請的
+        獎學金（請用 recommend_scholarships_for_me），那些請用對應的其他工具。
 
         沒指定系所或學制也可以直接呼叫，這個工具會依文件內容判斷要不要請使用者補充。
 
@@ -650,6 +684,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         search_course_catalog,
         get_my_hours_dashboard,
         get_my_academic_analysis,
+        recommend_scholarships_for_me,
         search_campus_activities,
         get_activity_details,
         recommend_activities_for_my_deficiencies,

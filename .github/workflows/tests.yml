@@ -37,7 +37,7 @@ jobs:
           python -m pytest
           test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py
           test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py
-          test_update_documents.py
+          test_update_documents.py test_scholarship_tools.py
 
   frontend:
     name: 前端（vitest）

@@ -12,6 +12,9 @@
 不開推理的 gpt-4.1-mini、gpt-5.4-nano、gpt-5.4 都在 45～46 題。
 2026-10-03 加了 6 題「系統反問之後，使用者點選項回答」（歷史裡有 [系統反問]／[系統] 那句），
 gpt-5.4-mini 54/54。
+2026-10-06 加了獎學金推薦（開發題 5 題、保留題 3 題）：58～59/59、24/24，新加的題目都對。原本的題目裡
+「幫我報名職涯講座」本來就有四成機率直接反問活動名稱（加之前跟加之後各跑 10 次都是 6 對 4），
+「我的英文畢業門檻過了嗎？」偶爾會選成法規查詢，所以一次少一兩題不一定是改壞了，可以多跑幾次比較。
 """
 
 import argparse
@@ -46,6 +49,9 @@ CASES = [
     ("我還差幾學分才能畢業？", [], {"get_my_academic_analysis"}), ("我的必修修完了嗎？", [], {"get_my_academic_analysis"}),
     ("我這學期平均幾分？", [], {"get_my_academic_analysis"}), ("我有被當的課嗎？", [], {"get_my_academic_analysis"}),
     ("我的英文畢業門檻過了嗎？", [], {"get_my_academic_analysis"}),
+    ("我可以申請哪些獎學金？", [], {"recommend_scholarships_for_me"}), ("有什麼獎學金適合我？", [], {"recommend_scholarships_for_me"}),
+    ("我是低收入戶，有什麼助學金可以申請？", [], {"recommend_scholarships_for_me"}),
+    ("書卷獎可以拿多少錢？", [], {R}), ("羅家倫獎學金要交什麼資料？", [], {R}),
     ("我的學習護照時數還差多少？", [], {"get_my_hours_dashboard"}), ("我的時數達到畢業門檻了嗎？", [], {"get_my_hours_dashboard"}),
     ("我報名了哪些活動？", [], {"get_my_registered_activities"}),
     ("最近有什麼講座？", [], {"search_campus_activities"}), ("有沒有志工相關的活動？", [], {"search_campus_activities"}),
@@ -83,6 +89,9 @@ HOLDOUT = [
     ("學雜費什麼時候要繳？", [], {R}), ("休學要怎麼辦？", [], {R}), ("在學證明英文版多少錢？", [], {R}),
     ("工五館門禁怎麼申請？", [], {R}), ("學分抵免怎麼申請？", [], {R}), ("體育課要修幾學期？", [], {R}),
     ("我體育修完了嗎？", [], {"get_my_academic_analysis"}), ("hi", [], {NONE}), ("你會做什麼？", [], {NONE}),
+    ("有沒有我拿得到的獎學金", [], {"recommend_scholarships_for_me"}),
+    ("我成績不錯，可以申請什麼獎學金嗎？", [], {"recommend_scholarships_for_me"}),
+    ("清寒獎學金的申請條件是什麼？", [], {R}),
     ("我是大三的資工系學生", [], {NOT_CANNED}), ("講座類的", ["我想查活動"], {"search_campus_activities"}),
     ("那韓文呢？", ["幫我找日文課"], {"search_course_catalog"}), ("那理學院呢？", ["工學院英檢成績要交去哪裡？"], {R}),
 ]
