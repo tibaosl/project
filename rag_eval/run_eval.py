@@ -174,7 +174,7 @@ def check_routing(module, item: dict) -> dict:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--module", default="academic_agent", help="要評估的模組名稱或 .py 檔路徑")
+    parser.add_argument("--module", default="backend.rag.academic_agent", help="要評估的模組名稱或 .py 檔路徑")
     parser.add_argument("--only", nargs="*", help="只跑 id 以這些字串開頭的題目")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--label", default="", help="結果檔名的標籤")
