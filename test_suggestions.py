@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import json
 import random
 
 import suggestions
@@ -190,6 +191,40 @@ def test_follow_ups_fall_back_to_related_examples_when_model_fails(monkeypatch):
     assert "我還差幾學分畢業？" not in questions
     # 先從這輪用到的功能挑
     assert all(q in academic for q in questions)
+
+
+def test_follow_ups_skip_questions_the_card_already_answers(monkeypatch):
+    # 時數卡片已經列出每個類別夠不夠，模型（或備案）又推薦同一個功能的範例就濾掉；標點不同也算同一題
+    llm = _FakeLLM('{"kind": "follow_ups", "options": ["我的服務學習時數夠了嗎", "我的時數達到畢業門檻了嗎？", '
+                   '"有什麼活動可以幫我補時數？"]}')
+    kind, questions = _run(
+        monkeypatch, llm, user_message="我的學習護照時數還差多少", answer={"kind": "hours_dashboard"},
+        called_tools=("get_my_hours_dashboard",), logged_in=True,
+    )
+    assert kind == "follow_ups"
+    # 模型還剩一題能用就只放這一題，不拿無關的範例問題補滿三題
+    assert questions == ["有什麼活動可以幫我補時數？"]
+
+
+def test_follow_ups_drop_candidates_the_answer_already_covers(monkeypatch):
+    # 模型逐題抄出回覆裡回答它的原文，抄得出來的就是已經回答過了，不推薦
+    llm = _FakeLLM(json.dumps({"kind": "follow_ups", "candidates": [
+        {"q": "停修申請到什麼時候", "answered_by": "停修申請期間是 115/10/19 到 115/11/27"},
+        {"q": "停修會影響獎學金嗎", "answered_by": ""},
+        {"q": "停修後會退學分費嗎", "answered_by": "不退學分費。"},
+        {"q": "停修可以取消嗎", "answered_by": ""},
+    ]}, ensure_ascii=False))
+    kind, questions = _run(monkeypatch, llm, user_message="停修有什麼限制？", answer="一學期只能停修 1 科……")
+    assert (kind, questions) == ("follow_ups", ["停修會影響獎學金嗎", "停修可以取消嗎"])
+
+
+def test_follow_ups_fall_back_to_examples_when_every_candidate_is_already_answered(monkeypatch):
+    llm = _FakeLLM(json.dumps({"kind": "follow_ups", "candidates": [
+        {"q": "停修申請到什麼時候", "answered_by": "停修申請期間是 115/10/19 到 115/11/27"},
+    ]}, ensure_ascii=False))
+    kind, questions = _run(monkeypatch, llm, user_message="停修有什麼限制？", answer="一學期只能停修 1 科……")
+    assert kind == "follow_ups" and len(questions) == 3
+    assert "停修申請到什麼時候" not in questions
 
 
 def test_guest_follow_up_fallback_never_suggests_login_features(monkeypatch):

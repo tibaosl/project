@@ -34,7 +34,7 @@ from openai import OpenAI
 
 import academic_agent
 import rag_documents
-from academic_tools import course_failed
+from academic_tools import course_failed, graded_cumulative_ranks
 from logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -476,7 +476,7 @@ class Semester:
     credits: int       # 修習學分，算學年平均的權重
     class_rank: str    # "5/52"，查不到是空字串
     dept_rank: str
-    failed: list[str]  # 不及格、停修的課
+    failed: list[str]  # 不及格的課（停修不算，見 _FAILING_REASONS）
 
 
 @dataclass
@@ -515,6 +515,10 @@ def parse_degree(program: str) -> str:
     return ""
 
 
+# 辦法寫的「無不及格科目」只看有成績的課：停修（棄修）沒有成績，不是不及格
+_FAILING_REASONS = ("不及格", "未通過")
+
+
 def academic_year(today: date) -> int:
     """第 1 學期是 8 月到隔年 1 月（跟 academic_agent.today_context 一樣）。"""
     roc = today.year - 1911
@@ -543,10 +547,10 @@ def build_profile(transcript: dict, today: Optional[date] = None) -> StudentProf
             credits=sem["summary"].get("attempted_credits") or sum(c["credits"] for c in sem["courses"]),
             class_rank=rank.get("class_rank") or "",
             dept_rank=rank.get("dept_rank") or "",
-            failed=[c["name"] for c in sem["courses"] if course_failed(c)],
+            failed=[c["name"] for c in sem["courses"] if course_failed(c) in _FAILING_REASONS],
         ))
-    cumulative = ranks.get("cumulative", {})
-    latest_rank = cumulative[max(cumulative)] if cumulative else {}
+    cumulative_ranks = graded_cumulative_ranks(transcript)
+    latest_rank = cumulative_ranks[-1][1] if cumulative_ranks else {}
     return StudentProfile(
         department=department or transcript.get("department", ""),
         college=college,
@@ -730,7 +734,7 @@ def _check_no_failing(item: dict, profile: StudentProfile) -> Optional[dict]:
     terms = "、".join(s.label for s in semesters) if len(semesters) <= 2 else "歷年"
     failed = [name for s in semesters for name in s.failed]
     if failed:
-        return {"label": f"各科都及格（你：{terms}有不及格或停修：{'、'.join(failed)}）", "ok": False}
+        return {"label": f"各科都及格（你：{terms}有不及格：{'、'.join(failed)}）", "ok": False}
     return {"label": f"各科都及格（你：{terms}都及格）", "ok": True}
 
 
@@ -891,6 +895,18 @@ def _sort_amount(entry: dict) -> int:
     return max([amount_value(entry["amount"])] + [amount_value(t["amount"]) for t in entry.get("tiers", [])])
 
 
+def _without_semicolons(value):
+    """卡片上的文字是模型照辦法整理的，常常照抄辦法用分號隔開一條一條規定（「不含延修生；審查時須具
+    在學身分；……」）。使用者不喜歡分號，每一段本來就是獨立的一句，換成句號。"""
+    if isinstance(value, str):
+        return value.replace("；", "。")
+    if isinstance(value, list):
+        return [_without_semicolons(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _without_semicolons(v) for k, v in value.items()}
+    return value
+
+
 def match_scholarships(
     index: list[dict], profile: StudentProfile, statuses=(), today: Optional[date] = None,
 ) -> dict:
@@ -918,8 +934,8 @@ def match_scholarships(
         "kind": "scholarship_recommendations",
         "profile": _profile_summary(profile),
         "statuses": list(statuses),
-        "eligible": eligible,
-        "maybe": maybe,
+        "eligible": _without_semicolons(eligible),
+        "maybe": _without_semicolons(maybe),
         "excluded_count": excluded,
         "apply_url": APPLY_URL,
     }

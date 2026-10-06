@@ -11,6 +11,7 @@ GET + query string，不是 AJAX API）。
 """
 
 import re
+import unicodedata
 from datetime import datetime
 from typing import Any, Optional
 from urllib.parse import urljoin
@@ -431,6 +432,144 @@ def _signup_deadline_passed(signup_period: str) -> bool:
     return end_dt < datetime.now()
 
 
+_SIGNUP_COUNT_RE = re.compile(r"報名人數\s*[：:]\s*(\d+)\s*/\s*(\d+)")
+_WAITLIST_COUNT_RE = re.compile(r"備取人數\s*[：:]\s*(\d+)\s*/\s*(\d+)")
+
+
+def session_full(signup_status_text: str) -> bool:
+    """正取跟備取都額滿（報不了名）回傳 True。
+
+    signup_status_text 是場次頁上的「報名人數：145 / 145 備取人數：0 / 0」。
+    看不懂格式、或名額上限是 0（沒有設上限）時一律當作還沒滿，寧可多列一筆讓使用者自己看。
+    """
+    signup = _SIGNUP_COUNT_RE.search(signup_status_text or "")
+    if not signup or int(signup.group(2)) == 0 or int(signup.group(1)) < int(signup.group(2)):
+        return False
+    waitlist = _WAITLIST_COUNT_RE.search(signup_status_text)
+    return not waitlist or int(waitlist.group(1)) >= int(waitlist.group(2))
+
+
+# ============================================================
+# 報名、取消報名時找出使用者說的是哪一個場次
+# ============================================================
+
+def compact_name(text: str) -> str:
+    """比對活動、場次名稱用：全形轉半形、英文轉小寫，拿掉空白跟標點。"""
+    text = unicodedata.normalize("NFKC", text or "").lower()
+    return re.sub(r"[\W_]+", "", text)
+
+
+# 「客家學院那場」「AI 論壇的場次」結尾這種指稱用的字
+_KEYWORD_FILLER_RE = re.compile(r"(?:的|那|這|一)*(?:場次|梯次|場)$")
+
+
+def names_match(keyword: str, name: str) -> bool:
+    """其中一個包含另一個就算（使用者常常只講名稱的一部分，或在名稱後面多講幾個字）。"""
+    keyword, name = _KEYWORD_FILLER_RE.sub("", compact_name(keyword)), compact_name(name)
+    return bool(keyword and name and (keyword in name or name in keyword))
+
+
+_HINT_DATE_RE = re.compile(r"(\d{1,2})\s*[/／月.]\s*(\d{1,2})")
+_PERIOD_DATE_RE = re.compile(r"\d{4}-(\d{2})-(\d{2})")
+
+
+def _hint_dates(hint: str) -> set[tuple[int, int]]:
+    """「11/17」「11月17日」→ {(11, 17)}；「2026-11-17」也認得。"""
+    text = unicodedata.normalize("NFKC", hint or "")
+    dates = {(int(m.group(1)), int(m.group(2))) for m in _PERIOD_DATE_RE.finditer(text)}
+    dates |= {(int(m.group(1)), int(m.group(2))) for m in _HINT_DATE_RE.finditer(_PERIOD_DATE_RE.sub("", text))}
+    return dates
+
+
+def session_matches(session_name: str, event_period: str, hint: str) -> bool:
+    """場次名稱對得上使用者說的，或活動那天就是使用者說的日期。沒有提示時每個場次都算。"""
+    if not hint.strip():
+        return True
+    if names_match(hint, session_name):
+        return True
+    start = _PERIOD_DATE_RE.search(event_period or "")
+    return bool(start) and (int(start.group(1)), int(start.group(2))) in _hint_dates(hint)
+
+
+def choose_session(sessions: list[dict[str, Any]], hint: str = "") -> tuple[Optional[dict[str, Any]], list[dict[str, Any]]]:
+    """從活動的場次裡挑出要報名的那一個，回傳 (場次, 候選場次)。
+
+    使用者有說場次名稱或日期就照著挑；沒說的話，只有一個還能報名（還沒截止）的場次才自動選它。
+    挑不出唯一一個時場次是 None，候選場次是要請使用者從裡面選的（都對不上時是全部場次）。
+    """
+    if len(sessions) == 1:
+        # 只有一個場次就是它（確認卡片上會列出場次內容，使用者還要再說「確定」才會送出）
+        return sessions[0], sessions
+    if hint.strip():
+        candidates = [s for s in sessions if session_matches(s.get("session_name", ""), s.get("event_period", ""), hint)]
+    else:
+        candidates = [s for s in sessions if not _signup_deadline_passed(s.get("signup_period", ""))] or sessions
+    if len(candidates) == 1:
+        return candidates[0], candidates
+    return None, candidates or sessions
+
+
+def match_registrations(registrations: list[dict[str, str]], keyword: str, hint: str = "") -> list[dict[str, str]]:
+    """使用者自己的報名紀錄裡，活動名稱或場次名稱對得上 keyword（再用 hint 縮小到某個場次）的那幾筆。
+
+    報名紀錄的欄位見 NCUSession.get_my_activity_registrations()。使用者常常講的是場次名稱
+    （例如「客家學院學生出國說明會」），不是活動名稱（「中央為翼，飛向國際｜115-1 出國講座系列」），
+    兩個都要比。
+    """
+    return [
+        r for r in registrations
+        if (names_match(keyword, r.get("活動名稱", "")) or names_match(keyword, r.get("場次名稱", "")))
+        and session_matches(r.get("場次名稱", ""), r.get("活動場次時間", ""), hint)
+    ]
+
+
+# 報名/取消報名的預覽之後，使用者回覆「確定」才會真的送出（見 supervisor_agent）。
+# 只看有沒有「確定」兩個字不夠：「我還不確定」「確定要報名嗎」「先不要，確定一下時間」都含有「確定」。
+_NOT_CONFIRMED_RE = re.compile(
+    r"不[^，,。.!！\s]{0,2}確定|確定[嗎吗麼么]|[嗎吗呢][\s。.!！~～]*$|[?？]|不要|不用|先不|算了|再想|等等|等一下"
+)
+
+
+def is_confirmation(text: str) -> bool:
+    """使用者這句話是不是同意送出。寧可漏判（使用者再說一次就好），也不要把猶豫當成同意。"""
+    return "確定" in text and not _NOT_CONFIRMED_RE.search(text)
+
+
+_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
+
+
+def sort_registrations(
+    registrations: list[dict[str, str]], now: Optional[datetime] = None
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """分成 (還沒結束的, 已經結束的)：還沒結束的照開始時間由近到遠，已經結束的由新到舊。
+
+    學校頁面是照活動排的，接下來要參加（或還能取消）的場次常常夾在一堆舊紀錄中間。
+    看不懂時間的紀錄放在已經結束那組的最後面。
+    """
+    now = now or datetime.now()
+    upcoming, past, unknown = [], [], []
+    for item in registrations:
+        times = [datetime.strptime(t, "%Y-%m-%d %H:%M") for t in _DATETIME_RE.findall(item.get("活動場次時間", ""))]
+        if not times:
+            unknown.append(item)
+        elif times[-1] >= now:
+            upcoming.append((times[0], item))
+        else:
+            past.append((times[0], item))
+    upcoming.sort(key=lambda pair: pair[0])
+    past.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in upcoming], [item for _, item in past] + unknown
+
+
+def find_activity_id(title: str) -> Optional[str]:
+    """用活動名稱找活動編號，名稱完全一樣的優先，不然取搜尋結果第一筆；找不到回傳 None。"""
+    if not title:
+        return None
+    matches = search_activities(keyword=title)
+    exact = [m for m in matches if compact_name(m["title"]) == compact_name(title)]
+    return (exact or matches or [{}])[0].get("activity_id")
+
+
 def _scan_activities_for_tag(
     tag_name: str,
     max_candidates: Optional[int],
@@ -496,6 +635,9 @@ def _scan_activities_for_tag(
             # 已經超過報名時間（含現場報名場次的活動日期已過）的場次不再
             # 推薦/列出——使用者實際點進去也報不了名，留著只會讓人白高興。
             if _signup_deadline_passed(sess.get("signup_period", "")):
+                continue
+            # 正取跟備取都滿了的也一樣報不了名（2026-10 實測推薦出來的 12 場裡有 4 場是這樣）
+            if session_full(sess.get("signup_status_text", "")):
                 continue
 
             items.append(

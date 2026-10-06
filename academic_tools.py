@@ -140,6 +140,25 @@ def _parse_semester_summary(text: str) -> dict:
     }
 
 
+def graded_cumulative_ranks(transcript: dict) -> list[tuple[str, dict]]:
+    """累計排名，照學期排好：[(term, {"average", "class_rank", "dept_rank"}), ...]。
+
+    iNCU 的累計排名表會多一列還沒有成績的這學期，數字跟上學期一模一樣，看起來像是
+    這學期也算進去了，所以只留到最近一個有成績的學期為止。
+    """
+    cumulative = transcript.get("ranks", {}).get("cumulative", {})
+    semester_ranks = transcript.get("ranks", {}).get("semester", {})
+    graded = [
+        sem["term"] for sem in transcript.get("semesters", [])
+        if sem["summary"].get("average") is not None
+        or semester_ranks.get(sem["term"], {}).get("average") is not None
+    ]
+    return sorted(
+        ((term, rank) for term, rank in cumulative.items() if not graded or term <= max(graded)),
+        key=lambda pair: pair[0],
+    )
+
+
 def _parse_rank_tables(soup: BeautifulSoup) -> dict[str, dict[str, dict]]:
     ranks: dict[str, dict[str, dict]] = {}
     for table in soup.find_all("table"):
@@ -320,7 +339,7 @@ def _clean_memo(memo: str) -> str:
     """拿掉只有類別代碼、對使用者沒意義的片段，例如「※未通過類別:18101,」。"""
     parts = [p.strip(" .,") for p in memo.split("※")]
     keep = [p for p in parts if p and not p.startswith("未通過類別") and not p.startswith("學分數或課程數不足")]
-    return "；".join(keep)
+    return "。".join(keep)  # 不用分號（使用者不喜歡）
 
 
 def _build_alerts(transcript: dict, graduation: Optional[dict]) -> list[dict]:
@@ -413,7 +432,7 @@ def analyze_academic_progress(
 
     cumulative_ranks = [
         {"term": term, "label": f"{term[:-1]}-{term[-1:]}", **rank}
-        for term, rank in sorted(transcript["ranks"].get("cumulative", {}).items())
+        for term, rank in graded_cumulative_ranks(transcript)
     ]
 
     categories = []

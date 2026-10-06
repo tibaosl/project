@@ -8,7 +8,8 @@
    請它把問題改寫成完整的一句話，判斷要回答、反問還是查無資料，並挑出最多
    MAX_DOCUMENTS 份相關文件。判斷成查無資料、但關鍵字比對找得到候選文件時，
    會帶著候選再確認一次（見 choose_documents）。
-2. 回答：把挑中文件的「全文」交給模型，照規則回答並標注引用 [1]、[2]。
+2. 回答：把挑中文件的「全文」交給模型，照規則回答並標注引用 [1]、[2]（只用來決定要列哪些參考資料，
+   送給使用者之前會拿掉，見 AnswerCleaner）。
 
 為什麼不再把文件切成 chunk 做向量 + BM25 檢索：舊版找錯檔案，大多是因為各學院、
 各年度的表單內容長得很像，切成片段之後就分不出是哪個學院、哪一年的，片段也常把
@@ -515,6 +516,50 @@ def build_answer_request(plan: dict, query_str: str, history_str: str) -> str:
     )
 
 
+# 引用編號（[1]、[1、2]）只拿來決定下方要列哪些參考資料（cited_sources），不顯示給使用者：
+# 下方已經列出參考資料，句子後面一串 [1][2] 看起來很雜（使用者反映）。
+_CITATION_RE = re.compile(r"[ \t]*\[\d+(?:\s*[,、，]\s*\d+)*\]")
+# 片段結尾看起來像還沒寫完的引用編號（「[」「[1」「[1、」），等下一段再決定
+_PARTIAL_CITATION_RE = re.compile(r"[ \t]*\[(?:\d+(?:\s*[,、，]\s*\d*)*)?$")
+
+
+class AnswerCleaner:
+    """整理串流出去的答案：拿掉引用編號，分號換成逗號（在行尾就換成句號）。
+
+    使用者不喜歡分號，prompt 已經說了不要用，這裡是保險。引用編號跟分號都可能剛好落在
+    兩個串流片段的交界，所以片段結尾看不出結果的部分先留著，等下一段再送出。
+    """
+
+    def __init__(self):
+        self.pending = ""
+
+    def feed(self, text: str) -> str:
+        text = _CITATION_RE.sub("", self.pending + text)
+        hold = _PARTIAL_CITATION_RE.search(text)
+        cut = hold.start() if hold else len(text)
+        # 結尾的分號要看下一段是不是換行，才知道要換成逗號還是句號
+        trailing_semicolon = re.search(r"；\s*$", text[:cut])
+        if trailing_semicolon:
+            cut = trailing_semicolon.start()
+        self.pending = text[cut:]
+        return self._semicolons(text[:cut], ends_line=False)
+
+    def flush(self) -> str:
+        rest, self.pending = self.pending, ""
+        return replace_semicolons(rest)
+
+    def _semicolons(self, text: str, ends_line: bool) -> str:
+        return replace_semicolons(text, ends_line)
+
+
+def replace_semicolons(text: str, ends_line: bool = True) -> str:
+    """分號換成逗號，在行尾（ends_line 時連整段結尾）的換成句號。使用者不喜歡回答裡有分號。"""
+    text = re.sub(r"；(?=\s*\n)", "。", text)
+    if ends_line:
+        text = re.sub(r"；(\s*)$", r"。\1", text)
+    return text.replace("；", "，")
+
+
 def cited_sources(answer: str, documents: list[rag_documents.CatalogDocument]) -> list[str]:
     """只列出答案裡真的有引用的文件；完全沒標引用就列出全部挑中的文件。"""
     cited = {int(n) for group in re.findall(r"\[(\d+(?:\s*[,、]\s*\d+)*)\]", answer) for n in re.split(r"[,、]", group)}
@@ -544,7 +589,8 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "") -> It
         yield {"type": "plan", "question": plan["question"], "decision": plan["decision"], "documents": file_names}
 
         if plan["decision"] == "clarify":
-            yield {"type": "token", "text": plan["clarify_question"] or "可以再說明一下你想查的是哪個學院、系所或學制的規定嗎？"}
+            clarify = plan["clarify_question"] or "可以再說明一下你想查的是哪個學院、系所或學制的規定嗎？"
+            yield {"type": "token", "text": replace_semicolons(clarify)}
             yield {"type": "sources", "sources": []}
             return
         if plan["decision"] == "not_found":
@@ -563,12 +609,19 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "") -> It
             stream=True,
         )
         answer_parts: list[str] = []
+        cleaner = AnswerCleaner()
         for chunk in stream:
             delta = chunk.choices[0].delta.content if chunk.choices else None
             if delta:
                 answer_parts.append(delta)
-                yield {"type": "token", "text": delta}
+                visible = cleaner.feed(delta)
+                if visible:
+                    yield {"type": "token", "text": visible}
+        rest = cleaner.flush()
+        if rest:
+            yield {"type": "token", "text": rest}
 
+        # 原始答案裡的引用編號決定要列哪些參考資料，顯示給使用者的版本已經拿掉編號
         yield {"type": "sources", "sources": cited_sources("".join(answer_parts), plan["documents"])}
 
     except Exception as e:

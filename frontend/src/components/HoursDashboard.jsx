@@ -1,11 +1,14 @@
+import Icon from "./Icon";
+
 export default function HoursDashboard({ data }) {
   const graduated = data.graduated;
   const categories = data.categories || {};
 
   return (
     <div>
-      <div className={`ncux-banner ${graduated ? "ncux-banner-ok" : "ncux-banner-warn"}`}>
-        {graduated ? "✅ 學習護照時數已達畢業門檻！" : "⚠️ 學習護照時數尚未達畢業門檻"}
+      <div className={`ncux-banner ncux-with-icon ${graduated ? "ncux-banner-ok" : "ncux-banner-warn"}`}>
+        <Icon name={graduated ? "check-circle" : "alert"} size={18} />
+        <span>{graduated ? "學習護照時數已達畢業門檻！" : "學習護照時數尚未達畢業門檻"}</span>
       </div>
 
       {Object.entries(categories).map(([group, cat]) => {
@@ -26,10 +29,13 @@ export default function HoursDashboard({ data }) {
               const ratio = required ? Math.min(1, confirmed / required) : 1;
               return (
                 <div key={subName} style={{ marginBottom: 8 }}>
-                  <div style={{ fontSize: 13, marginBottom: 4 }}>
-                    {sub.passed ? "✅" : "⚠️"} {subName}：{confirmed}/{required} 小時
-                    {!sub.passed && `（還差 ${sub.remaining} 小時）`}
-                    {sub.pending_hours ? `，另有 ${sub.pending_hours} 小時待核發` : ""}
+                  <div className="ncux-with-icon" style={{ fontSize: 13, marginBottom: 4, gap: 6 }}>
+                    <Icon name={sub.passed ? "check-circle" : "alert"} tone={sub.passed ? "ok" : "warn"} />
+                    <span>
+                      {subName}：{confirmed}/{required} 小時
+                      {!sub.passed && `（還差 ${sub.remaining} 小時）`}
+                      {sub.pending_hours ? `，另有 ${sub.pending_hours} 小時待核發` : ""}
+                    </span>
                   </div>
                   <div
                     style={{

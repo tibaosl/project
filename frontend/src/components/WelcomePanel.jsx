@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { fetchStarterQuestions } from "../api/suggestions";
+import Icon from "./Icon";
 import Logo from "./Logo";
 
 const SKELETON_COUNT = 6;
@@ -51,7 +52,7 @@ export default function WelcomePanel({ chineseName, isGuest, token, onAsk }) {
                   <span className="suggestion-card-label">{q.label}</span>
                   <span className="suggestion-card-text">{q.question}</span>
                   <span className="suggestion-card-arrow" aria-hidden="true">
-                    →
+                    <Icon name="arrow-right" size={16} />
                   </span>
                 </button>
               ))}
@@ -65,7 +66,7 @@ export default function WelcomePanel({ chineseName, isGuest, token, onAsk }) {
           onClick={() => load(questions.map((q) => q.question))}
           disabled={status === "loading"}
         >
-          ↻ 換一批
+          <Icon name="refresh" /> 換一批
         </button>
         {isGuest && <span>登入後還能查詢自己的課表、學分、時數等個人資料</span>}
       </div>

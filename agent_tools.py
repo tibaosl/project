@@ -34,6 +34,13 @@ from activity_tools import (
     get_activity_detail,
     recommend_activities_for_categories,
     find_activities_by_hour_tag,
+    choose_session,
+    compact_name,
+    find_activity_id,
+    is_confirmation,
+    match_registrations,
+    session_matches,
+    sort_registrations,
 )
 from academic_agent import query_academic_knowledge
 from academic_tools import analyze_academic_progress, fetch_academic_records
@@ -192,12 +199,16 @@ def has_active_tokens(username: str) -> bool:
     return bool(_username_tokens.get(username))
 
 
-def _find_activity_id_by_keyword(keyword: str) -> Optional[str]:
-    """依關鍵字搜尋活動，回傳最符合的第一筆活動的 activity_id（找不到回傳 None）。"""
-    if not keyword:
-        return None
-    matches = search_activities(keyword=keyword)
-    return matches[0]["activity_id"] if matches else None
+class ActivityLookupError(Exception):
+    """查公開的活動資料失敗（例如學校網站一時連不上），跟登入狀態無關，不用清掉 session。"""
+
+
+async def _lookup_activity(func, *args):
+    """在背景 thread 跑 activity_tools 的同步查詢，失敗時包成 ActivityLookupError。"""
+    try:
+        return await asyncio.to_thread(func, *args)
+    except Exception as e:
+        raise ActivityLookupError(e) from e
 
 
 def _format_my_registration(item: dict[str, str]) -> str:
@@ -446,10 +457,16 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         if not registrations:
             return {"content": "**Action Agent 回報**：\n目前沒有查到任何活動報名紀錄。"}
 
+        upcoming, past = sort_registrations(registrations)
         lines = [f"**你的活動報名紀錄（共 {len(registrations)} 筆）：**"]
-        for item in registrations:
-            lines.append("")
-            lines.append(_format_my_registration(item))
+        for heading, items in ((f"接下來的活動（{len(upcoming)} 筆）", upcoming), (f"已經結束的活動（{len(past)} 筆）", past)):
+            if not items:
+                continue
+            if upcoming and past:
+                lines += ["", f"## {heading}"]
+            for item in items:
+                lines.append("")
+                lines.append(_format_my_registration(item))
         return {"content": "\n".join(lines)}
 
     @tool
@@ -471,7 +488,9 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             keyword: 活動名稱關鍵字或一般類別。
         """
         try:
-            results = search_activities(keyword=keyword)
+            # activity_tools 用同步的 requests 打學校網站，一律丟到背景 thread 跑，
+            # 不然查詢的這段時間整個後端（包括其他人的請求、前端的連線檢查）都會卡住
+            results = await asyncio.to_thread(search_activities, keyword=keyword)
         except Exception as e:
             return {"content": f"**Action Agent 回報**：\n查詢活動時發生錯誤：{e}"}
 
@@ -491,12 +510,11 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             keyword: 活動名稱關鍵字（使用者通常只會講活動名稱的一部分，不需要活動編號，
                 系統會自動搜尋比對最接近的活動）。
         """
-        activity_id = _find_activity_id_by_keyword(keyword)
-        if not activity_id:
-            return {"content": f"**Action Agent 回報**：\n找不到符合「{keyword}」的活動，麻煩提供更明確的活動名稱。"}
-
         try:
-            detail = get_activity_detail(activity_id)
+            activity_id = await asyncio.to_thread(find_activity_id, keyword)
+            if not activity_id:
+                return {"content": f"**Action Agent 回報**：\n找不到符合「{keyword}」的活動，麻煩提供更明確的活動名稱。"}
+            detail = await asyncio.to_thread(get_activity_detail, activity_id)
         except Exception as e:
             return {"content": f"**Action Agent 回報**：\n查詢活動詳情時發生錯誤：{e}"}
 
@@ -523,9 +541,12 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         if not deficiencies:
             return {"content": "**Action Agent 回報**：\n你的學習護照時數已經全部達標了，沒有需要補的細項！"}
 
-        recommendations, next_indices, exhausted_by_tag = recommend_activities_for_categories(
-            deficiencies, limit_per_tag=5
-        )
+        try:
+            recommendations, next_indices, exhausted_by_tag = await asyncio.to_thread(
+                recommend_activities_for_categories, deficiencies, limit_per_tag=5
+            )
+        except Exception as e:
+            return {"content": f"**Action Agent 回報**：\n查詢活動時發生錯誤：{e}"}
         has_more = not all(exhausted_by_tag.values())
 
         envelope = {
@@ -564,8 +585,8 @@ def build_tools(username: str, password: str, history_str: str = "無"):
                 使用者講簡稱時換成完整名稱（例如「生涯規劃」→「自我探索與生涯規劃」）。
         """
         try:
-            matches, next_indices, exhausted_by_tag = find_activities_by_hour_tag(
-                [tag_name], limit_per_tag=5
+            matches, next_indices, exhausted_by_tag = await asyncio.to_thread(
+                find_activities_by_hour_tag, [tag_name], limit_per_tag=5
             )
         except Exception as e:
             return {"content": f"**Action Agent 回報**：\n查詢活動時發生錯誤：{e}"}
@@ -586,70 +607,152 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             }
         return result
 
-    async def _preview_activity_action(keyword: str, action_type: str) -> dict:
+    def _report(message: str) -> dict:
+        return {"content": f"**Action Agent 回報**：\n{message}"}
+
+    def _ask_which_session(question: str, options: list[str], note: str = "") -> dict:
+        """選不出是哪一個場次時列出候選請使用者選。不給 pending_action，所以不可能送出任何東西。"""
+        lines = [note, ""] if note else []
+        lines += [f"- {option}" for option in options]
+        lines += ["", f"{question}跟我說場次名稱或日期就可以。"]
+        return {"content": "\n".join(lines)}
+
+    def _session_option(name: str, period: str) -> str:
+        return f"{name}（{period}）" if period else name
+
+    async def _find_session_to_register(keyword: str, hint: str):
+        """回傳 (活動編號, 活動詳情, 場次)，選不出來時回傳要給使用者看的回覆。"""
+        activity_id = await _lookup_activity(find_activity_id, keyword)
+        if not activity_id:
+            return _report(f"找不到符合「{keyword}」的活動，麻煩提供更明確的活動名稱。")
+        detail = await _lookup_activity(get_activity_detail, activity_id)
+        sessions = detail.get("sessions", [])
+        if not sessions:
+            return _report(f"「{detail.get('title', keyword)}」的活動頁上沒有場次資料，請直接到活動頁面確認。")
+
+        chosen, candidates = choose_session(sessions, hint)
+        if chosen is not None:
+            return activity_id, detail, chosen
+        title = detail.get("title", keyword)
+        hint_missed = hint.strip() and not any(
+            session_matches(s.get("session_name", ""), s.get("event_period", ""), hint) for s in candidates
+        )
+        note = f"「{title}」沒有對得上「{hint}」的場次，這個活動有這些場次：" if hint_missed else f"「{title}」有 {len(candidates)} 個場次可以選："
+        return _ask_which_session(
+            f"你要報名「{title}」的哪一場？",
+            [_session_option(s.get("session_name", ""), s.get("event_period", "")) for s in candidates],
+            note,
+        )
+
+    async def _find_session_to_cancel(session: NCUSession, keyword: str, hint: str):
+        """從使用者自己的報名紀錄找要取消的場次，回傳 (活動編號, 活動詳情, 場次) 或要給使用者看的回覆。"""
+        data = await session.get_my_activity_registrations()
+        records = match_registrations(data.get("registrations", []), keyword, hint)
+        described = f"「{keyword}」" + (f"（{hint}）" if hint.strip() else "")
+        if not records:
+            return _report(f"你的報名紀錄裡找不到{described}。可以先問我「我報名了哪些活動？」，再用紀錄上的活動或場次名稱跟我說。")
+
+        cancellable = [r for r in records if "取消報名" in r.get("功能", "")]
+        if not cancellable:
+            names = "、".join(f"「{r.get('場次名稱') or r.get('活動名稱')}」" for r in records[:3])
+            return _report(f"{names}目前沒辦法線上取消（可能已經超過可以自己取消的時間，或活動已經結束），要取消的話請聯絡承辦單位。")
+        if len(cancellable) > 1:
+            return _ask_which_session(
+                f"你要取消{described}的哪一場？",
+                [_session_option(f"{r.get('活動名稱', '')}：{r.get('場次名稱', '')}", r.get("活動場次時間", "")) for r in cancellable],
+                f"你的報名紀錄裡有 {len(cancellable)} 筆{described}可以取消：",
+            )
+
+        record = cancellable[0]
+        # 報名紀錄頁上沒有活動編號（2026-10 實測「檢視活動資訊」的連結裡也沒有），用活動名稱找
+        activity_id = await _lookup_activity(find_activity_id, record.get("活動名稱", ""))
+        if not activity_id:
+            return _report(f"找不到「{record.get('活動名稱', keyword)}」的活動頁面，請直接到 iNCU 的報名紀錄取消。")
+        detail = await _lookup_activity(get_activity_detail, activity_id)
+        sessions = detail.get("sessions", [])
+        wanted = compact_name(record.get("場次名稱", ""))
+        target = next((s for s in sessions if compact_name(s.get("session_name", "")) == wanted), None)
+        if target is None and len(sessions) == 1:
+            target = sessions[0]
+        if target is None:
+            return _report(f"在活動頁上找不到「{record.get('場次名稱', '')}」這個場次，請直接到 iNCU 的報名紀錄取消。")
+        return activity_id, detail, target
+
+    async def _preview_activity_action(keyword: str, hint: str, action_type: str) -> dict:
         try:
             session = await _ensure_session()
             if session is None:
                 return {"content": NO_CREDENTIALS_MSG}
 
-            activity_id = _find_activity_id_by_keyword(keyword)
-            if not activity_id:
-                return {"content": f"**Action Agent 回報**：\n找不到符合「{keyword}」的活動，麻煩提供更明確的活動名稱。"}
-
             if action_type == "ACTIVITY_REGISTER":
-                dry_run = await session.register_for_activity_session(activity_id, confirm=False)
+                found = await _find_session_to_register(keyword, hint)
+            else:
+                found = await _find_session_to_cancel(session, keyword, hint)
+            if isinstance(found, dict):
+                return found
+            activity_id, detail, target = found
+
+            # 活動常常有好幾個場次，預覽跟之後真的送出都要指定場次，不然會變成第一個場次
+            session_id = target.get("session_id") or None
+            if action_type == "ACTIVITY_REGISTER":
+                dry_run = await session.register_for_activity_session(activity_id, session_id=session_id, confirm=False)
                 action_label = "報名"
             else:
-                dry_run = await session.cancel_activity_registration(activity_id, confirm=False)
+                dry_run = await session.cancel_activity_registration(activity_id, session_id=session_id, confirm=False)
                 action_label = "取消報名"
+        except ActivityLookupError as e:
+            # 查公開活動資料失敗跟登入無關，不要把 session 清掉（清掉的話使用者要重新登入）
+            return _report(f"查詢活動資料時發生錯誤：{e}")
         except Exception as e:
             await reset_session(username)
-            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+            return _report(f"系統執行時發生錯誤：{e}")
 
         if not dry_run.get("would_click"):
-            reason = dry_run.get(
-                "reason",
-                "目前無法執行這個動作，請確認是否符合報名資格，或有其他限制條件。",
-            )
-            return {"content": f"**Action Agent 回報**：\n{reason}"}
+            return _report(dry_run.get("reason", "目前無法執行這個動作，請確認是否符合報名資格，或有其他限制條件。"))
 
-        detail = get_activity_detail(activity_id)
-        envelope = {"kind": "activity_confirmation", "action_label": action_label, **detail}
+        envelope = {
+            "kind": "activity_confirmation",
+            "action_label": action_label,
+            **detail,
+            # 確認卡片只放要報名/取消的那個場次，使用者才知道送出的是哪一場
+            "sessions": [target],
+            "session_name": target.get("session_name", ""),
+        }
         return {
             "content": envelope,
-            "pending_action": {
-                "type": action_type,
-                "activity_id": activity_id,
-                "session_id": None,
-            },
+            "pending_action": {"type": action_type, "activity_id": activity_id, "session_id": session_id},
         }
 
     @tool
-    async def preview_activity_registration(keyword: str) -> dict:
+    async def preview_activity_registration(keyword: str, session: str = "") -> dict:
         """⚠️ 只會「預覽」報名，絕對不會真的送出報名。
 
-        使用者要求幫忙報名某個「已經指名」的活動時呼叫這個，會回傳活動內容 +
+        使用者要求幫忙報名某個「已經指名」的活動時呼叫這個，會回傳那個場次的內容 +
         報名按鈕的預覽，讓使用者確認要不要真的報名。真正送出報名不是由你決定、
         你也沒有辦法直接送出——系統會在使用者「下一則」訊息裡看到明確的「確定」
         才會真的送出，你只需要負責預覽跟提醒使用者確認即可。
+        活動有好幾個場次、使用者又沒說是哪一場時，這個工具會列出場次請使用者選，
+        使用者回答之後再呼叫一次，把他選的場次放在 session。
 
         Args:
             keyword: 活動名稱關鍵字。
+            session: 使用者指定的場次名稱關鍵字或日期（例如「藍海策略」「11/17」），沒指定就留空。
         """
-        return await _preview_activity_action(keyword, "ACTIVITY_REGISTER")
+        return await _preview_activity_action(keyword, session, "ACTIVITY_REGISTER")
 
     @tool
-    async def preview_activity_cancellation(keyword: str) -> dict:
+    async def preview_activity_cancellation(keyword: str, session: str = "") -> dict:
         """⚠️ 只會「預覽」取消報名，絕對不會真的送出取消。
 
-        使用者要求取消某個「已經指名」活動的報名時呼叫這個。真正送出取消同樣
-        需要使用者在下一則訊息裡明確回覆「確定」，不是由你決定、你也沒有辦法
-        直接送出。
+        使用者要求取消某個「已經指名」活動的報名時呼叫這個，會從使用者自己的報名紀錄
+        找出那一場。真正送出取消同樣需要使用者在下一則訊息裡明確回覆「確定」，不是由你
+        決定、你也沒有辦法直接送出。
 
         Args:
-            keyword: 活動名稱關鍵字。
+            keyword: 活動名稱或場次名稱的關鍵字（例如「出國講座」「客家學院學生出國說明會」）。
+            session: 同一個活動報名了好幾場時，使用者指定的場次名稱關鍵字或日期，沒指定就留空。
         """
-        return await _preview_activity_action(keyword, "ACTIVITY_CANCEL")
+        return await _preview_activity_action(keyword, session, "ACTIVITY_CANCEL")
 
     @tool
     async def search_campus_regulations(query: str) -> dict:

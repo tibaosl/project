@@ -31,8 +31,8 @@ def test_every_tool_has_a_description():
 def test_registration_and_cancellation_tools_never_expose_a_confirm_argument():
     # 安全機制的核心：報名/取消報名工具開放給模型的參數 schema 裡，絕對不能
     # 出現任何可以讓模型自己決定「要不要真的送出」的欄位（例如 confirm）。
-    # 真正送出永遠只能透過 supervisor_agent.py 裡的關鍵字攔截觸發，見
-    # agent_node 開頭對 CONFIRM_KEYWORDS 的說明。
+    # 真正送出永遠只能透過 supervisor_agent.py 裡的「確定」攔截觸發，見
+    # _agent_turn_events 開頭的說明跟 activity_tools.is_confirmation。
     preview_tool_names = {"preview_activity_registration", "preview_activity_cancellation"}
     for t in _tools():
         if t.name not in preview_tool_names:

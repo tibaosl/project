@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useSession } from "../context/SessionContext";
 import ThemeToggle from "../components/ThemeToggle";
 import Logo from "../components/Logo";
+import Icon from "../components/Icon";
 
 export default function Login() {
   const [username, setUsername] = useState("");
@@ -71,7 +72,12 @@ export default function Login() {
           <span className="ncux-badge ncux-badge-info">活動報名</span>
         </div>
 
-        {error && <div className="ncux-banner ncux-banner-warn login-error">⚠️ {error}</div>}
+        {error && (
+          <div className="ncux-banner ncux-banner-warn ncux-with-icon login-error">
+            <Icon name="alert" size={18} />
+            <span>{error}</span>
+          </div>
+        )}
 
         <button type="button" className="login-submit" onClick={handleChromeLogin} disabled={busy}>
           {isWaitingChrome ? "等待你在 Chrome 視窗登入..." : "使用中央大學 Portal 帳號登入"}
@@ -79,7 +85,7 @@ export default function Login() {
         <p className="login-oauth-note">
           {isWaitingChrome
             ? "請到 Chrome 視窗登入 Portal（有驗證就勾選「我不是機器人」），登入完成後會自動回到這裡。「記住我」會先幫你勾好，29 天內不用再輸入密碼。"
-            : "會開一個 Chrome 視窗讓你在 Portal 官方頁面登入，我們完全不會看到你的密碼；登入一次就能使用課表、時數、學業分析等功能。"}
+            : "會開一個 Chrome 視窗讓你在 Portal 官方頁面登入，我們完全不會看到你的密碼。登入一次就能使用課表、時數、學業分析等功能。"}
         </p>
 
         {!showManualForm ? (
@@ -121,7 +127,7 @@ export default function Login() {
             <div className="login-trust-note">
               只有查詢「自己的」課表、時數進度、選課或報名活動時才需要帳密——用來自動幫你登入
               Portal／選課系統。密碼只會在登入當下送到我們自己的伺服器驗證一次，驗證完就不會
-              再保留，瀏覽器裡也不會存密碼；之後每一輪對話只會用登入時換到的一次性通行證，不會
+              再保留，瀏覽器裡也不會存密碼。之後每一輪對話只會用登入時換到的一次性通行證，不會
               再傳密碼。單純查法規、查活動列表不需要帳密。
             </div>
 

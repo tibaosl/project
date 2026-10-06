@@ -83,7 +83,7 @@ export default function Chat() {
             updateMessage(assistantId, (m) => ({
               ...m,
               status: null,
-              content: (m.content ? `${m.content}\n\n` : "") + `⚠️ ${event.message}`,
+              content: (m.content ? `${m.content}\n\n` : "") + event.message,
             }));
           } else if (event.type === "done") {
             updateMessage(assistantId, (m) => ({ ...m, status: null, isStreaming: false }));
@@ -108,7 +108,7 @@ export default function Chat() {
         ...m,
         status: null,
         isStreaming: false,
-        content: m.content || `⚠️ 連線發生錯誤：${err.message}`,
+        content: m.content || `連線發生錯誤：${err.message}`,
       }));
     } finally {
       finishRequest();

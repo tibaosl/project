@@ -67,6 +67,7 @@ def test_scholarship_key_keeps_sub_awards_apart_unless_base():
 
 @pytest.mark.parametrize("text, expected", [
     ("資訊電機學院資訊工程學系", ("資訊工程學系", "資訊電機學院")),  # iNCU 成績單的系所是學院加系所
+    ("資訊電機學院資訊工程學系 / 不分組", ("資訊工程學系", "資訊電機學院")),  # 2026-10 真實成績單的寫法
     ("物理系", ("物理學系", "理學院")),
     ("電機資訊學院", ("資訊電機學院", "資訊電機學院")),  # 一覽表寫的是「電機資訊學院」
     ("管理學院", ("管理學院", "管理學院")),
@@ -112,7 +113,9 @@ def test_build_profile_reads_department_grade_and_completed_semesters():
         "ranks": {
             "semester": {"1141": {"average": 84.0, "class_rank": "5/52", "dept_rank": "12/110"},
                          "1142": {"average": 86.5, "class_rank": "7/52", "dept_rank": "15/110"}},
-            "cumulative": {"1141": {"class_rank": "8/52"}, "1142": {"class_rank": "6/52", "dept_rank": "14/110"}},
+            # 還沒有成績的 115-1 也有一列累計排名，不能拿來用
+            "cumulative": {"1141": {"class_rank": "8/52"}, "1142": {"class_rank": "6/52", "dept_rank": "14/110"},
+                           "1151": {"class_rank": "1/52", "dept_rank": "1/110"}},
         },
     }
     profile = s.build_profile(transcript, today=date(2026, 10, 6))
@@ -124,6 +127,22 @@ def test_build_profile_reads_department_grade_and_completed_semesters():
     assert profile.semesters[1].failed == ["物理"]
     assert profile.semesters[1].class_rank == "7/52"
     assert (profile.cumulative_class_rank, profile.cumulative_dept_rank) == ("6/52", "14/110")
+
+
+def test_withdrawn_course_is_not_a_failing_grade():
+    # 「無不及格科目」只看有成績的課，停修沒有成績（2026-10 實測時停修被當成不及格，誤判不符合）
+    withdrawn = {**_course("演算法", None), "score_text": "停修"}
+    transcript = {
+        "semesters": [{"term": "1142", "label": "114-2", "courses": [withdrawn, _course("物理", 55)],
+                       "summary": {"average": 81.69, "attempted_credits": 16}}],
+        "ranks": {},
+    }
+    profile = s.build_profile(transcript, today=date(2026, 10, 6))
+    assert profile.semesters[0].failed == ["物理"]
+
+    only_withdrawn = {**transcript, "semesters": [{**transcript["semesters"][0], "courses": [withdrawn]}]}
+    item = _indexed(no_failing=True, grades={"basis": "前一學期", "min_average": 75})
+    assert s.evaluate(item, s.build_profile(only_withdrawn, today=date(2026, 10, 6)))[0] == "eligible"
 
 
 def test_previous_year_follows_the_academic_calendar():
@@ -393,6 +412,15 @@ def test_match_scholarships_groups_and_sorts_results():
     assert result["excluded_count"] == 1  # 研究生獎學金；急難救助不推薦也不算
     assert result["statuses"] == ["原住民"]
     assert result["profile"]["year_average"] == 85.31
+
+
+def test_card_text_has_no_semicolons():
+    # 辦法常用分號隔開一條一條規定，使用者不喜歡分號，每段換成句號
+    index = [_indexed(name="測試獎學金", notes="不含延修生；審查時須具在學身分；",
+                      conditions=[{"kind": "經濟弱勢", "text": "低收入戶；中低收入戶"}])]
+    entry = s.match_scholarships(index, _profile(), today=date(2026, 10, 6))["maybe"][0]
+    assert entry["notes"] == "不含延修生。審查時須具在學身分。"
+    assert entry["pending"] == [{"kind": "經濟弱勢", "text": "低收入戶。中低收入戶"}]
 
 
 def test_tiers_of_the_same_scholarship_become_one_card():

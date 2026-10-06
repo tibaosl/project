@@ -1,3 +1,5 @@
+import Icon from "./Icon";
+
 function ProgressBar({ ratio, done }) {
   return (
     <div style={{ height: 8, borderRadius: 999, background: "var(--ncux-border)", overflow: "hidden" }}>
@@ -23,15 +25,18 @@ function CreditsBanner({ credits, department, grade, graduationAvailable }) {
   const done = credits.passed_threshold === true;
   const headline = graduationAvailable
     ? done
-      ? `✅ 已達畢業學分門檻（${credits.earned} / ${credits.required} 學分）`
-      : `⚠️ 已修 ${credits.earned} / ${credits.required} 學分，還差 ${credits.remaining} 學分`
+      ? `已達畢業學分門檻（${credits.earned} / ${credits.required} 學分）`
+      : `已修 ${credits.earned} / ${credits.required} 學分，還差 ${credits.remaining} 學分`
     : `已修 ${credits.earned} 學分（畢業資格審查表暫時取不到，無法對照畢業門檻）`;
 
   return (
-    <div className={`ncux-banner ${done ? "ncux-banner-ok" : "ncux-banner-warn"}`}>
-      <div>{headline}</div>
-      <div style={{ fontSize: 12.5, fontWeight: 400, marginTop: 4 }}>
-        {[department, grade].filter(Boolean).join("・")}
+    <div className={`ncux-banner ncux-with-icon ${done ? "ncux-banner-ok" : "ncux-banner-warn"}`}>
+      <Icon name={done ? "check-circle" : "alert"} size={18} />
+      <div>
+        <div>{headline}</div>
+        <div style={{ fontSize: 12.5, fontWeight: 400, marginTop: 4 }}>
+          {[department, grade].filter(Boolean).join("・")}
+        </div>
       </div>
     </div>
   );
@@ -39,7 +44,12 @@ function CreditsBanner({ credits, department, grade, graduationAvailable }) {
 
 function Alerts({ alerts }) {
   if (!alerts.length) {
-    return <div className="ncux-card-meta">✅ 沒有不及格或停修、需要重修的課。</div>;
+    return (
+      <div className="ncux-card-meta ncux-with-icon" style={{ gap: 6 }}>
+        <Icon name="check-circle" tone="ok" />
+        <span>沒有不及格或停修、需要重修的課。</span>
+      </div>
+    );
   }
   return alerts.map((a) => (
     <div key={`${a.term}-${a.course_no}`} className="ncux-card" style={{ padding: "10px 14px" }}>
@@ -60,30 +70,39 @@ function Alerts({ alerts }) {
   ));
 }
 
+function countText(label, earned, required) {
+  // 沒有要求也還沒修到的（例如「特殊檢核」的學分 0、門數 0）不顯示，只看下面列的細項
+  if (!earned && !required) return null;
+  return `${label} ${earned}${required ? ` / ${required}` : ""}`;
+}
+
 function GraduationCategories({ categories }) {
-  return categories.map((cat) => (
-    <div key={cat.name} style={{ marginBottom: 12 }}>
-      <div style={{ fontSize: 13.5, marginBottom: 4 }}>
-        <span className={`ncux-badge ${cat.passed ? "ncux-badge-ok" : "ncux-badge-warn"}`}>
-          {cat.passed ? "完成" : "未完成"}
-        </span>
-        <span style={{ fontWeight: 600 }}>{cat.name}</span>
-        <span className="ncux-card-meta">
-          {" "}
-          學分 {cat.earned_credits}
-          {cat.required_credits ? ` / ${cat.required_credits}` : ""}・門數 {cat.earned_courses}
-          {cat.required_courses ? ` / ${cat.required_courses}` : ""}
-        </span>
-      </div>
-      <ProgressBar ratio={cat.percentage / 100} done={cat.passed} />
-      {cat.unmet_rules.map((rule) => (
-        <div key={rule.name} style={{ fontSize: 12.5, marginTop: 4, color: "var(--ncux-text-muted)" }}>
-          ・{rule.name}：{remainingText(rule)}
-          {rule.memo && `（${rule.memo}）`}
+  return categories.map((cat) => {
+    const counts = [
+      countText("學分", cat.earned_credits, cat.required_credits),
+      countText("門數", cat.earned_courses, cat.required_courses),
+    ]
+      .filter(Boolean)
+      .join("・");
+    return (
+      <div key={cat.name} style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 13.5, marginBottom: 4 }}>
+          <span className={`ncux-badge ${cat.passed ? "ncux-badge-ok" : "ncux-badge-warn"}`}>
+            {cat.passed ? "完成" : "未完成"}
+          </span>
+          <span style={{ fontWeight: 600 }}>{cat.name}</span>
+          {counts && <span className="ncux-card-meta"> {counts}</span>}
         </div>
-      ))}
-    </div>
-  ));
+        <ProgressBar ratio={cat.percentage / 100} done={cat.passed} />
+        {cat.unmet_rules.map((rule) => (
+          <div key={rule.name} style={{ fontSize: 12.5, marginTop: 4, color: "var(--ncux-text-muted)" }}>
+            ・{rule.name}：{remainingText(rule)}
+            {rule.memo && `（${rule.memo}）`}
+          </div>
+        ))}
+      </div>
+    );
+  });
 }
 
 const CELL = { padding: "6px 8px", borderBottom: "1px solid var(--ncux-border)", whiteSpace: "nowrap" };

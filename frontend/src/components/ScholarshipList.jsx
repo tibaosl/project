@@ -1,3 +1,5 @@
+import Icon, { MetaLine } from "./Icon";
+
 // 「還要確認」的獎學金依要確認的條件分組：有好幾個條件時歸到排在前面的那組（身分條件在前，
 // 例如同時要經濟弱勢跟語言檢定的，沒有經濟弱勢身分就不用看了），組的順序也照這個
 const PENDING_ORDER = [
@@ -31,9 +33,18 @@ const PENDING_LABEL = {
 };
 
 function CheckMark({ ok }) {
-  if (ok === true) return <span style={{ color: "var(--ncux-ok-text)" }}>✓</span>;
-  if (ok === false) return <span style={{ color: "var(--ncux-danger-text)" }}>✗</span>;
-  return <span style={{ color: "var(--ncux-warn-text)" }}>？</span>;
+  if (ok === true) return <Icon name="check" tone="ok" />;
+  if (ok === false) return <Icon name="x" tone="danger" />;
+  return <Icon name="question" tone="warn" />;
+}
+
+function CheckLine({ ok, children }) {
+  return (
+    <li className="ncux-with-icon" style={{ gap: 6 }}>
+      <CheckMark ok={ok} />
+      <span>{children}</span>
+    </li>
+  );
 }
 
 function deadlineText(item) {
@@ -56,7 +67,7 @@ function Sources({ sources }) {
       {sources.slice(0, 2).map((s) => (
         <span key={s.file} style={{ marginRight: 12 }}>
           <a href={fileHref(s.file)} target="_blank" rel="noreferrer">
-            📄 {s.title}
+            <Icon name="file" /> {s.title}
           </a>
           {s.url && (
             <>
@@ -79,12 +90,12 @@ export function ScholarshipCard({ item }) {
   const tierConditions = new Set((item.tiers ?? []).flatMap((t) => t.conditions ?? []));
   const pending = item.pending.filter((p) => !tierConditions.has(p.text));
   return (
-    <div className="ncux-card" style={item.deadline_passed ? { opacity: 0.75 } : undefined}>
+    <div className="ncux-card">
       <div className="ncux-card-title">
         {item.name} <span className="ncux-badge ncux-badge-info">{item.kind}</span>
         {item.how_to_apply?.startsWith("免申請") && <span className="ncux-badge ncux-badge-ok">免申請</span>}
       </div>
-      {money && <div className="ncux-card-meta">💰 {money}</div>}
+      {money && <MetaLine icon="coin">{money}</MetaLine>}
       {item.tiers?.length > 0 && (
         <ul className="ncux-card-meta" style={{ margin: "2px 0", paddingLeft: 20 }}>
           {item.tiers.map((t) => (
@@ -96,28 +107,24 @@ export function ScholarshipCard({ item }) {
           ))}
         </ul>
       )}
-      {deadline && <div className="ncux-card-meta">📅 {deadline}</div>}
+      {deadline && <MetaLine icon="calendar">{deadline}</MetaLine>}
       <ul style={{ listStyle: "none", padding: 0, margin: "6px 0 4px", fontSize: 13, lineHeight: 1.7 }}>
         {item.checks.map((c) => (
-          <li key={c.label}>
-            <CheckMark ok={c.ok} /> {c.label}
-          </li>
+          <CheckLine key={c.label} ok={c.ok}>
+            {c.label}
+          </CheckLine>
         ))}
         {pending.map((p) => (
-          <li key={p.text}>
-            <CheckMark ok={null} /> 要確認：{p.text}
-          </li>
+          <CheckLine key={p.text} ok={null}>
+            要確認：{p.text}
+          </CheckLine>
         ))}
-        {pending.length < item.pending.length && (
-          <li>
-            <CheckMark ok={null} /> 要確認：上面各獎項的條件
-          </li>
-        )}
+        {pending.length < item.pending.length && <CheckLine ok={null}>要確認：上面各獎項的條件</CheckLine>}
       </ul>
       {item.conduct_min > 0 && (
         <div className="ncux-card-meta">另外要操行 {item.conduct_min} 分以上（成績單上沒有操行成績，請自己確認）</div>
       )}
-      {item.how_to_apply && <div className="ncux-card-meta">📝 {item.how_to_apply}</div>}
+      {item.how_to_apply && <MetaLine icon="form">{item.how_to_apply}</MetaLine>}
       {item.notes && <div className="ncux-card-meta">※ {item.notes}</div>}
       <Sources sources={item.sources} />
     </div>
@@ -165,26 +172,29 @@ function Section({ title, children }) {
 export default function ScholarshipList({ data }) {
   const { profile, eligible, maybe } = data;
   const headline = eligible.length
-    ? `🎓 有 ${eligible.length} 項獎學金你看起來符合資格`
+    ? `有 ${eligible.length} 項獎學金你看起來符合資格`
     : "目前沒有找到從成績單就能確定符合的獎學金";
   const closed = eligible.filter((item) => item.deadline_passed).length;
 
   return (
     <div>
-      <div className={`ncux-banner ${eligible.length ? "ncux-banner-ok" : "ncux-banner-warn"}`}>
+      <div className={`ncux-banner ncux-with-icon ${eligible.length ? "ncux-banner-ok" : "ncux-banner-warn"}`}>
+        <Icon name={eligible.length ? "cap" : "alert"} size={18} />
         <div>
-          {headline}
-          {maybe.length > 0 && `，另外 ${maybe.length} 項還要確認條件`}
-        </div>
-        <div style={{ fontSize: 12.5, fontWeight: 400, marginTop: 4 }}>{profileText(profile)}</div>
-        {closed > 0 && (
-          <div style={{ fontSize: 12.5, fontWeight: 400 }}>
-            其中 {closed} 項這學期的申請已經截止，可以留意下一次的公告。
+          <div>
+            {headline}
+            {maybe.length > 0 && `，另外 ${maybe.length} 項還要確認條件`}
           </div>
-        )}
-        {data.statuses?.length > 0 && (
-          <div style={{ fontSize: 12.5, fontWeight: 400 }}>已經算進你說明的身分：{data.statuses.join("、")}</div>
-        )}
+          <div style={{ fontSize: 12.5, fontWeight: 400, marginTop: 4 }}>{profileText(profile)}</div>
+          {closed > 0 && (
+            <div style={{ fontSize: 12.5, fontWeight: 400 }}>
+              其中 {closed} 項這學期的申請已經截止，可以留意下一次的公告。
+            </div>
+          )}
+          {data.statuses?.length > 0 && (
+            <div style={{ fontSize: 12.5, fontWeight: 400 }}>已經算進你說明的身分：{data.statuses.join("、")}</div>
+          )}
+        </div>
       </div>
 
       {eligible.length > 0 && (

@@ -197,3 +197,53 @@ button {
   font-weight: 600;
   color: var(--ncux-confirm-text);
 }
+
+/* ---- 自畫的線條圖示（components/Icon.jsx） ---- */
+
+.ncux-icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: -0.16em;
+}
+
+.ncux-icon-ok {
+  color: var(--ncux-ok-text);
+}
+
+.ncux-icon-warn {
+  color: var(--ncux-warn-text);
+}
+
+.ncux-icon-danger {
+  color: var(--ncux-danger-text);
+}
+
+/* 圖示接在一段文字前面：橫幅、提示框、狀態列 */
+.ncux-with-icon {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+}
+
+.ncux-with-icon > .ncux-icon {
+  margin-top: 0.2em;
+}
+
+/* 卡片裡「圖示＋說明」：圖示用主色淡一點，換行時文字對齊文字 */
+.ncux-meta-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  line-height: 1.55;
+}
+
+.ncux-meta-line > .ncux-icon {
+  margin-top: 0.2em;
+  color: var(--ncux-primary);
+  opacity: 0.85;
+}
+
+.ncux-reason.ncux-meta-line > .ncux-icon {
+  color: var(--ncux-accent);
+  opacity: 1;
+}

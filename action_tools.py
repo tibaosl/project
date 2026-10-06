@@ -1613,6 +1613,7 @@ class NCUSession:
                 }"""
             )
             raw_tables_all.extend(raw_tables)
+            skipped = 0
 
             for table in raw_tables:
                 if len(table) < 2:
@@ -1629,10 +1630,15 @@ class NCUSession:
                 header = [" ".join(cell.split()) for cell in table[0]]
                 for row in table[1:]:
                     if len(row) != len(header):
-                        print(f"[iNCU] 略過一列跟表頭欄位數不符的報名紀錄：{row}")
+                        skipped += 1
                         continue
                     cleaned_row = [" ".join(cell.split()) for cell in row]
                     registrations.append(dict(zip(header, cleaned_row)))
+
+            if skipped:
+                # 頁面上每筆紀錄另外有一份「欄位名稱｜值」兩欄的小表格（表頭是「#1」「#2」，窄螢幕版），
+                # 內容跟主表格重複，每列都印出來的話一頁就有一百多行紀錄
+                print(f"[iNCU] 略過 {skipped} 列跟表頭欄位數不符的資料（窄螢幕版的重複表格）")
 
         await _scrape_current_page()
 
@@ -1722,7 +1728,8 @@ class NCUSession:
         # 拿 registration_mode 來判斷，比在這裡重新寫一次判斷邏輯乾淨。
         # --------------------------------------------------------------
         try:
-            public_detail = get_activity_detail(activity_id)
+            # 同步的 requests，丟到背景 thread，不然這段時間整個後端都卡住
+            public_detail = await asyncio.to_thread(get_activity_detail, activity_id)
             target_session = None
             if session_id:
                 target_session = next(

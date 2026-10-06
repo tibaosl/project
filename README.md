@@ -30,12 +30,14 @@
   （`scholarship_tools.py`，見下面「獎學金推薦」）。
 * **學習護照時數進度查詢**：對照畢業門檻，算出各類別還差多少小時。
 * **活動查詢與推薦**：關鍵字搜尋、依「時數缺口」自動推薦活動、依時數標籤查詢，都會過濾掉
-  報名時間已經截止的場次（`activity_tools.py`）。
-* **查詢自己的活動報名紀錄**、**活動報名/取消報名**：報名/取消一定要使用者在對話裡明確回覆
-  「確定」才會真的送出，不會被機器人自己誤觸發。
+  報名時間已經截止、或正取跟備取都額滿的場次（`activity_tools.py`）。
+* **查詢自己的活動報名紀錄**（接下來的活動排在前面）、**活動報名/取消報名**：活動有好幾個場次時會先問
+  要哪一場，取消報名是從自己的報名紀錄找（活動名稱或場次名稱都可以）。報名/取消一定要使用者在對話裡
+  明確回覆「確定」才會真的送出（「我還不確定」「確定要報名嗎」不算），不會被機器人自己誤觸發。
 * **建議問題**：一進對話頁會隨機推薦幾個可以直接點的問題（沒登入只推薦不需登入的功能）。
   每輪回答完會在下面放可以直接點的選項（`suggestions.py`）：系統在反問使用者時，選項是那個反問的
-  回答（例如學院名稱，是非題就只有「要／不用了」，數量看問題決定），其他時候是 3 個「你可能還想問」。
+  回答（例如學院名稱，是非題就只有「要／不用了」，數量看問題決定），其他時候是最多 3 個「你可能還想問」。
+  模型會逐題抄出回答裡回答到它的那句話，抄得出來的（已經回答過的）就不推薦。
 
 ## 開發注意事項
 
@@ -142,7 +144,8 @@ Register-ScheduledTask -TaskName NCUXplore-update-documents -Action $action -Tri
 1. **挑文件**：把問題、對話歷史跟初篩出來的「目錄卡片」（標題、類型、適用範圍、版本、摘要、
    能回答的問題）交給模型，挑出最多 4 份文件，或判斷要反問使用者、資料庫裡沒有。
    判斷成「沒有」時會用關鍵字比對找候選文件，再確認一次。
-2. **回答**：把挑中文件的全文交給模型回答，標注引用 [1]、[2]。
+2. **回答**：把挑中文件的全文交給模型回答，標注引用 [1]、[2]。引用編號只用來決定下方要列出哪幾份參考資料，
+   送給使用者之前會拿掉，分號也會換成逗號或句號（`academic_agent.AnswerCleaner`）。
 
 文件解析結果、目錄卡片跟卡片向量都快取在 `storage/rag/`（以內容的 hash 當 key，檔案沒變就不會
 重做）。`data/` 新增或修改檔案後，下一次查詢會自動補做，也可以先手動建好：
@@ -197,7 +200,7 @@ python scholarship_tools.py --list   # 列出整理好的每一項獎學金，�
 
 ```powershell
 # 後端（pytest）
-python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py test_update_documents.py test_scholarship_tools.py
+python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py test_update_documents.py test_scholarship_tools.py test_activity_helpers.py test_supervisor_confirmation.py
 
 # 前端（Vitest）
 cd frontend

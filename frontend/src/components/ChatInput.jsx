@@ -29,7 +29,7 @@ export default function ChatInput({ onSend, disabled }) {
     <form className="chat-input-form" onSubmit={handleSubmit}>
       <input
         type="text"
-        placeholder="請輸入你的問題（例如：資工系英文畢業門檻）..."
+        placeholder="請輸入你的問題（例如：學生證不見了怎麼補辦）..."
         value={value}
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}

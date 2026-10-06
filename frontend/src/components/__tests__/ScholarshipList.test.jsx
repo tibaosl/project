@@ -121,6 +121,14 @@ describe("ScholarshipList", () => {
     expect(screen.getByText("要確認：上面各獎項的條件")).toBeInTheDocument();
   });
 
+  it("已截止的卡片不會變暗，圖示是自畫的 SVG 不是 emoji", () => {
+    const { container } = render(<MessageContent content={envelope({ eligible: [scholarship({})] })} />);
+    const card = container.querySelector(".ncux-card");
+    expect(card.style.opacity).toBe("");
+    expect(card.querySelectorAll("svg.ncux-icon").length).toBeGreaterThan(0);
+    expect(container.textContent).not.toMatch(/[💰📅📝📄🎓✓✗]/u);
+  });
+
   it("說明過的身分會顯示在上面", () => {
     render(<MessageContent content={envelope({ statuses: ["經濟弱勢"], eligible: [scholarship({})] })} />);
     expect(screen.getByText("已經算進你說明的身分：經濟弱勢")).toBeInTheDocument();

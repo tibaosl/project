@@ -1,9 +1,10 @@
 import { useTheme } from "../context/ThemeContext";
+import Icon from "./Icon";
 
 const OPTIONS = [
-  { mode: "light", icon: "☀️", label: "淺色" },
-  { mode: "dark", icon: "🌙", label: "深色" },
-  { mode: "system", icon: "🖥️", label: "系統預設" },
+  { mode: "light", icon: "sun", label: "淺色" },
+  { mode: "dark", icon: "moon", label: "深色" },
+  { mode: "system", icon: "monitor", label: "系統預設" },
 ];
 
 export default function ThemeToggle() {
@@ -21,7 +22,7 @@ export default function ThemeToggle() {
           aria-label={opt.label}
           aria-pressed={mode === opt.mode}
         >
-          {opt.icon}
+          <Icon name={opt.icon} size={15} />
         </button>
       ))}
     </div>

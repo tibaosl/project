@@ -213,4 +213,63 @@ describe("MessageContent 學業分析卡片", () => {
     render(<MessageContent content={{ ...academicAnalysis, alerts: [] }} />);
     expect(screen.getByText(/沒有不及格或停修/)).toBeInTheDocument();
   });
+
+  it("沒有學分、門數要求也還沒修到的類別不顯示「學分 0・門數 0」", () => {
+    const special = {
+      name: "特殊檢核", passed: false, required_credits: 0, earned_credits: 0, required_courses: 0, earned_courses: 0,
+      percentage: 66.67, unmet_rules: [{ name: "資電學院選修總學分", remaining_credits: 21, remaining_courses: 0, memo: "" }],
+    };
+    render(
+      <MessageContent
+        content={{ ...academicAnalysis, graduation_categories: [...academicAnalysis.graduation_categories, special] }}
+      />,
+    );
+    expect(screen.getByText("特殊檢核")).toBeInTheDocument();
+    expect(screen.queryByText(/學分 0・門數 0/)).not.toBeInTheDocument();
+    expect(screen.getByText(/資電學院選修總學分：還差 21 學分/)).toBeInTheDocument();
+    // 只有其中一項是 0 的照常顯示
+    expect(screen.getByText(/學分 1・門數 11 \/ 15/)).toBeInTheDocument();
+  });
+});
+
+describe("MessageContent 課表", () => {
+  const course = (day, period, time, details) => ({ day, period, time, raw_content: details.join("\n"), details });
+
+  it("清單以外的節次跟星期日有課也要顯示，照上課時間排在對的位置", () => {
+    render(
+      <MessageContent
+        content={[
+          course("星期一", "第二節", "09:00 09:50", ["CE1001-*", "程式設計", "E6-A101"]),
+          course("星期三", "第Z節", "12:00 12:50", ["PE1001-*", "午間桌球", "體育館"]),
+          course("星期日", "第五節", "13:00 13:50", ["GS1001-*", "週日通識", "E1-101"]),
+        ]}
+      />,
+    );
+    expect(screen.getByText("午間桌球")).toBeInTheDocument();
+    expect(screen.getByText("週日通識")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "星期日" })).toBeInTheDocument();
+    const rows = screen.getAllByRole("row").map((row) => row.textContent);
+    const lunch = rows.findIndex((text) => text.startsWith("第Ｚ節"));
+    expect(lunch).toBeGreaterThan(rows.findIndex((text) => text.startsWith("第四節")));
+    expect(lunch).toBeLessThan(rows.findIndex((text) => text.startsWith("第五節")));
+  });
+});
+
+describe("MessageContent 報名確認", () => {
+  it("確認卡片寫出要報名的是哪一個場次", () => {
+    const session = {
+      session_id: "event2", session_name: "AI時代的關鍵能力與藍海策略", registration_mode: "online",
+      event_period: "2026-11-17 15:00 ~ 2026-11-17 17:00",
+    };
+    render(
+      <MessageContent
+        content={{
+          kind: "activity_confirmation", action_label: "報名", title: "115-1人本AI論壇",
+          sessions: [session], session_name: session.session_name,
+        }}
+      />,
+    );
+    expect(screen.getByText(/確定要報名「AI時代的關鍵能力與藍海策略」這個場次嗎？/)).toBeInTheDocument();
+    expect(screen.getByText(/請回覆「確定報名」來送出/)).toBeInTheDocument();
+  });
 });
