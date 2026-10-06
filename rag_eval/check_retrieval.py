@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-import academic_agent as agent  # noqa: E402
+from backend.rag import academic_agent as agent  # noqa: E402
 from run_eval import _norm, history_string  # noqa: E402
 
 

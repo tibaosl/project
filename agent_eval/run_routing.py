@@ -32,8 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 from langchain_openai import ChatOpenAI  # noqa: E402
 
-import supervisor_agent  # noqa: E402
-from agent_tools import build_tools  # noqa: E402
+from backend.agent import supervisor_agent  # noqa: E402
+from backend.agent.agent_tools import build_tools  # noqa: E402
 
 R = "search_campus_regulations"
 NONE = "none"  # 不呼叫工具、直接回文字

@@ -8,7 +8,7 @@
 
 * **校園法規問答**：先看文件目錄挑出相關文件、再讀整份文件回答，回答附上來源出處
   （`rag_documents.py` 處理文件、`academic_agent.py` 查詢，細節見下面「校園法規問答（RAG）」）。
-* **學校網站文件爬蟲**：`python crawler.py` 把全校各行政單位（教務處、學務處各組、國際處、圖書館、
+* **學校網站文件爬蟲**：`python -m backend.rag.crawler` 把全校各行政單位（教務處、學務處各組、國際處、圖書館、
   計中、通識、體育室…）跟各學院、系所網站上的法規、修業規定、表單、說明網頁抓到 `data/`，給法規問答用
   （`crawler.py`，要抓哪些網站設定在 `crawler_sources.py`）。
 * **登入**：兩種方式擇一，登入後給一個一次性通行證（token），不會每次對話都重傳密碼。
@@ -39,11 +39,47 @@
   回答（例如學院名稱，是非題就只有「要／不用了」，數量看問題決定），其他時候是最多 3 個「你可能還想問」。
   模型會逐題抄出回答裡回答到它的那句話，抄得出來的（已經回答過的）就不推薦。
 
+## 專案結構
+
+```text
+backend/                      後端（Python）
+├── main.py                   FastAPI 伺服器：API、把 data/ 掛在 /files
+├── paths.py                  data/、storage/ 這些資料夾的位置
+├── logging_config.py
+├── agent/                    對話代理
+│   ├── supervisor_agent.py   判斷要用哪個功能、串流回答
+│   ├── agent_tools.py        給模型用的工具（每個功能一個）
+│   └── suggestions.py        開場推薦跟「你可能還想問」
+├── ncu/                      連學校的系統
+│   ├── action_tools.py       Portal 登入、iNCU 頁面（課表、時數、報名紀錄）、活動報名、選課
+│   ├── activity_tools.py     公開的活動查詢
+│   ├── oauth_portal.py       Portal 官方 OAuth
+│   └── secure_requests.py    連學校網站時的憑證驗證
+├── analysis/                 用自己的成績做的分析
+│   ├── academic_tools.py     學業分析
+│   └── scholarship_tools.py  獎學金推薦
+└── rag/                      校園法規問答
+    ├── academic_agent.py     挑文件、讀全文回答
+    ├── rag_documents.py      解析文件、產生文件卡片
+    ├── crawler.py            學校網站文件爬蟲
+    ├── crawler_sources.py    要抓哪些網站
+    ├── update_documents.py   每週自動更新文件
+    └── academic_hierarchy.json  系所跟學院的對照
+frontend/                     前端（React + Vite）
+tests/                        後端測試（pytest），tests/manual/ 是要真的帳密才能跑的手動測試
+agent_eval/、rag_eval/        選工具、法規問答的評估（會呼叫 OpenAI）
+run.py                        一鍵啟動前後端
+data/、storage/               爬蟲抓的文件、快取跟執行紀錄（不在 git 裡）
+```
+
+`backend/` 裡的程式要在專案根目錄用 `python -m` 執行，例如 `python -m backend.rag.crawler`
+（直接跑 `python backend/rag/crawler.py` 會找不到 `backend`）。
+
 ## 開發注意事項
 
 * **新增 agent 工具時**，要在 `suggestions.py` 的 `TOOL_SUGGESTIONS` 補一筆（功能名稱、
-  需不需要登入、幾個範例問題；不適合拿來推薦就讓範例留空），開場推薦跟追問才會涵蓋
-  新功能。`test_agent_tools_schema.py` 會檢查有沒有漏登記。
+  需不需要登入、幾個範例問題，不適合拿來推薦就讓範例留空），開場推薦跟追問才會涵蓋
+  新功能。`tests/test_agent_tools_schema.py` 會檢查有沒有漏登記。
 
 目前 GitHub 上的 branch：
 
@@ -95,23 +131,23 @@ python run.py
 用爬蟲從學校網站抓：
 
 ```powershell
-python crawler.py --dry-run   # 先看會抓哪些檔案、檔名對不對
-python crawler.py             # 抓到 data/<來源>/，例如 data/教務處註冊組/
+python -m backend.rag.crawler --dry-run   # 先看會抓哪些檔案、檔名對不對
+python -m backend.rag.crawler             # 抓到 data/<來源>/，例如 data/教務處註冊組/
 ```
 
-* 要抓哪些網站設定在 `crawler_sources.py`（約 80 個單位，每個網站的狀況都寫在裡面）。重抓時沒變的檔案不會再下載，
+* 要抓哪些網站設定在 `backend/rag/crawler_sources.py`（約 80 個單位，每個網站的狀況都寫在裡面）。重抓時沒變的檔案不會再下載，
   網站上更新的檔案會覆蓋，網站上已經拿掉的檔案會移到 `storage/crawler/removed/`。
 * 有些資訊不是附檔而是網頁本身（獎學金一覽、宿舍 Q&A），會存成 `.md`，海報圖片（英文畢業門檻）
   另存成 PDF，讓 RAG 用圖片轉錄讀（挑到網頁時會一起帶上）。網頁裡的瀏覽人次、今天日期這類每次都不一樣的
   內容會拿掉，不然每次重抓都會被當成改版、重做卡片。
 * 每個檔案的來源網址記在 `data/.crawler_manifest.json`。不在裡面的檔案（自己手動放進 `data/` 的）
-  爬蟲不會動。`python crawler.py --legacy` 可以檢查這些手動檔跟爬到的檔案有沒有重複，
+  爬蟲不會動。`python -m backend.rag.crawler --legacy` 可以檢查這些手動檔跟爬到的檔案有沒有重複，
   加 `--move-duplicate-legacy` 會把內容一模一樣的移到 `storage/crawler/legacy_backup/`。
   之前跟組員拿的舊 `data/`（根目錄那 77 個檔案）都已經有爬蟲抓的新版，可以直接移走再爬一次。
 
 ### 法規文件每週自動更新
 
-`python update_documents.py` 會依序重抓學校網站、幫新增或改版的文件補卡片跟向量、整理新增或改版的
+`python -m backend.rag.update_documents` 會依序重抓學校網站、幫新增或改版的文件補卡片跟向量、整理新增或改版的
 獎學金文件的申請資格，紀錄存在 `storage/update_logs/`（只留最近 12 份）。卡片先建好，網站開著的話
 下一次查詢載入新目錄只要幾秒。平常一週只有幾份到幾十份文件要產生卡片，費用很低。某個網站剛好掛掉的話，連續兩次連不上之後這一輪就先跳過它
 （原本抓到的檔案照舊保留），不會讓整個更新卡住。
@@ -129,7 +165,7 @@ Unregister-ScheduledTask NCUXplore-update-documents                    # 移除
 換一台電腦跑網站時，在專案資料夾用 PowerShell 重新註冊：
 
 ```powershell
-$action = New-ScheduledTaskAction -Execute "$PWD\venv\Scripts\pythonw.exe" -Argument update_documents.py -WorkingDirectory $PWD
+$action = New-ScheduledTaskAction -Execute "$PWD\venv\Scripts\pythonw.exe" -Argument "-m backend.rag.update_documents" -WorkingDirectory $PWD
 $trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Sunday -At 03:00
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 3) -MultipleInstances IgnoreNew
 Register-ScheduledTask -TaskName NCUXplore-update-documents -Action $action -Trigger $trigger -Settings $settings
@@ -151,7 +187,7 @@ Register-ScheduledTask -TaskName NCUXplore-update-documents -Action $action -Tri
 重做）。`data/` 新增或修改檔案後，下一次查詢會自動補做，也可以先手動建好：
 
 ```powershell
-python rag_documents.py   # 解析全部文件、補齊卡片，並印出目錄（用 6 個行程平行解析）
+python -m backend.rag.rag_documents   # 解析全部文件、補齊卡片，並印出目錄（用 6 個行程平行解析）
 ```
 
 第一次建好全部一千八百份左右的文件要一兩個小時：掃描版的 PDF 每頁要用圖片轉錄（每份最多 30 頁，
@@ -188,8 +224,8 @@ python rag_eval/check_retrieval.py                 # 只看初篩有沒有把標
 第一次要整理一百多份文件（約 5 分鐘、會花 OpenAI 的費用），先手動跑一次，不然第一個查詢要等：
 
 ```powershell
-python scholarship_tools.py          # 只整理新增、改版的文件
-python scholarship_tools.py --list   # 列出整理好的每一項獎學金，檢查整理得對不對
+python -m backend.analysis.scholarship_tools          # 只整理新增、改版的文件
+python -m backend.analysis.scholarship_tools --list   # 列出整理好的每一項獎學金，檢查整理得對不對
 ```
 
 改了整理資格的 prompt 或欄位要把 `scholarship_tools.py` 的 `SCHOLARSHIP_VERSION` 加一，舊快取才會失效。
@@ -199,8 +235,8 @@ python scholarship_tools.py --list   # 列出整理好的每一項獎學金，�
 ## 測試
 
 ```powershell
-# 後端（pytest）
-python -m pytest test_schedule_helpers.py test_oauth_portal.py test_rag_documents.py test_academic_agent.py test_crawler.py test_suggestions.py test_academic_tools.py test_registration_login.py test_update_documents.py test_scholarship_tools.py test_activity_helpers.py test_supervisor_confirmation.py
+# 後端（pytest，在專案根目錄跑，會跑 tests/ 底下全部的測試）
+python -m pytest
 
 # 前端（Vitest）
 cd frontend
@@ -209,12 +245,12 @@ npm test
 
 這兩組測試在 GitHub 上也會自動跑：每個 PR、還有併進 `main` 之後（`.github/workflows/tests.yml`），
 結果顯示在 PR 下方的檢查。CI 裡只有 `requirements.txt` 列的套件，加了新套件要記得寫進去，
-不然 CI 會失敗。
+不然 CI 會失敗。新的測試檔放在 `tests/`、檔名用 `test_` 開頭就會自動被跑到（設定在 `pytest.ini`）。
 
 改了 agent 的系統提示、工具說明（`agent_tools.py` 的 docstring）或 supervisor 用的模型之後，
 跑 `python agent_eval/run_routing.py` 檢查 agent 會不會選對工具（只看選了哪個工具，不會真的
 執行，不用登入，但需要 `OPENAI_API_KEY`）。
 
-`test_agent_tools_schema.py`、`test_hours_activity.py` 這兩個需要 `.env` 裡有真的
-`OPENAI_API_KEY`（甚至 `NCU_USERNAME`/`NCU_PASSWORD`）才能跑，一般開發改動前端/一般工具
-邏輯不一定用得到，看檔案開頭的說明。
+`tests/manual/` 底下的 `test_hours_activity.py`（活動查詢、時數、報名）跟 `course_search.py`（選課搜尋）
+是直接執行的腳本（例如 `python tests/manual/course_search.py`），登入的部分需要 `.env` 裡有
+`NCU_USERNAME`/`NCU_PASSWORD`，`python -m pytest` 不會跑它們，用法看檔案開頭的說明。

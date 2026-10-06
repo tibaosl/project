@@ -47,7 +47,7 @@ def start():
         subprocess.run([npm, "install"], cwd=FRONTEND_DIR, check=True)
 
     print("[run.py] 啟動後端（FastAPI, http://127.0.0.1:8000）...")
-    backend_proc = subprocess.Popen([sys.executable, "main.py"], cwd=PROJECT_DIR)
+    backend_proc = subprocess.Popen([sys.executable, "-m", "backend.main"], cwd=PROJECT_DIR)
 
     time.sleep(1.5)
 
