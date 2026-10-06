@@ -18,9 +18,10 @@
   Orbit（網址有 /zh_tw/，附檔是 /xhr/archive/download?file=…，有時候回傳 PDF 線上檢視器），
   其餘是各單位自己寫的。特殊的：電機系的表格辦法要呼叫 API（Source.api）、數學系的檔案清單
   是 Vue 元件屬性裡的 JSON、工學院的附檔放在 assets.ppnet.tw、網學所首頁是 meta refresh 轉址。
-- 抓不到的：資管系、經濟系、產經所、IMBA、天文所的網站從校外連不上；總務處（停車證、出納）
-  還沒看過網站，沒有收；統計所、工學院學士班、資電學院學士班的辦法放在 Google 雲端硬碟，
+- 抓不到的：IMBA、天文所的網站連不上（2026-10-06 再試還是一樣）。總務處（停車證、出納）
+  還沒看過網站，沒有收。統計所、工學院學士班、資電學院學士班的辦法放在 Google 雲端硬碟，
   Google 的 robots.txt 不允許程式下載。需要的話手動下載放進 data/（爬蟲不會動手動放的檔案）。
+  資管系、經濟系、產經所 10-04 連不上，10-06 連得上之後補進來了。
 - 教師升等、委員會設置、招生、報帳這類不是學生會問的文件，由 GLOBAL_EXCLUDE 統一排除；
   各系所依入學年度分的修業規定、應修科目表，太舊（COHORT_YEARS_KEPT）的不抓。
 """
@@ -589,7 +590,7 @@ SOURCES: tuple[Source, ...] = (
             Page("https://in.ncu.edu.tw/mse/auth5.php", "材料科學與工程研究所常見問題"),
         ),
     ),
-    # ---------------- 2026-10 擴充：管理學院（資管系、經濟系、產經所、IMBA 的網站從校外連不上，沒有收） ----------------
+    # ---------------- 2026-10 擴充：管理學院（IMBA 的網站連不上，沒有收） ----------------
     Source(
         name="管理學院",
         seeds=tuple(f"https://www.mgt.ncu.edu.tw/zh-TW/article/{page}" for page in (
@@ -607,9 +608,35 @@ SOURCES: tuple[Source, ...] = (
         exclude=(r"視訊會議|校外委員|印領清冊|導生聚",),
     ),
     Source(
+        name="資訊管理學系",
+        # 修業規定、課程地圖、抵免、學位論文規定、獎學金辦法、下載專區（分頁的檔案都直接寫在網頁裡）
+        seeds=tuple(f"https://im.mgt.ncu.edu.tw/{page}" for page in (
+            "course/rule", "course/courseMap", "course/waiver", "course/paperrule", "course/scholarship", "file",
+        )),
+        pages=(Page("https://im.mgt.ncu.edu.tw/course/double", "資訊管理學系雙聯學位計畫"),),
+        # 下載專區每個檔案都有 Word 跟 ODT（名稱是「開放格式版本」）兩份，只留 Word 的。評分表是口試委員填的。
+        # 修業規定每一年都有英文的 Required Course List、Regulations，跟中文版內容一樣。
+        exclude=(r"座位表", r"主管新任", r"開放格式版本", r"評分表", r"^[^\u3400-\u9fff]+$", r"Regulations for"),
+    ),
+    Source(
         name="財務金融學系",
         seeds=("https://fm.mgt.ncu.edu.tw/zh-TW/category/Download",),
         exclude=(r"座位表|教室照片",),
+    ),
+    Source(
+        name="經濟學系",
+        # 修業辦法、辦法與表格。學士班的應修科目在教務處的教務章則，課程地圖是圖片檔
+        seeds=tuple(f"https://ec.mgt.ncu.edu.tw/zh-TW/c/{page}" for page in ("practice-method", "related-form")),
+        # 「講義下載」的 PPT2013 是 423 頁的數理經濟講義，連結文字只有 PPT2013，爬蟲認不出名稱，
+        # 會拿網頁標題當名稱，所以用這個名稱排除
+        exclude=(r"^國立中央大學經濟系-辦法與表格$",),
+    ),
+    Source(
+        name="產業經濟研究所",
+        seeds=tuple(f"https://ie.mgt.ncu.edu.tw/zh-TW/category/{page}" for page in (
+            "ca_20190129_020805", "ca_20190129_020812",  # 修業事宜、檔案下載
+        )),
+        exclude=(r"英文版", r"以前入學生"),  # 107 學年度以前入學的碩士生都已經超過修業年限
     ),
     Source(
         name="會計研究所",
