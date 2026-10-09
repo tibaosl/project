@@ -78,6 +78,15 @@ def test_expected_tools_are_all_registered():
     assert expected <= names, f"缺少預期的工具：{expected - names}"
 
 
+def test_every_tool_has_a_friendly_progress_message():
+    # 執行工具時畫面上顯示的進度文字，不能讓使用者看到程式裡的工具名稱
+    from backend.agent.supervisor_agent import TOOL_STATUS
+
+    names = {t.name for t in _tools()} - {"search_campus_regulations"}  # 法規問答自己送進度
+    assert names <= set(TOOL_STATUS), f"沒有進度文字的工具：{names - set(TOOL_STATUS)}"
+    assert not any(name in text for name in names for text in TOOL_STATUS.values())
+
+
 def test_every_tool_is_registered_for_suggested_questions():
     # 新增工具時要在 suggestions.TOOL_SUGGESTIONS 補一筆（不適合推薦就讓 examples 留空），
     # 開場推薦跟「你可能還想問」才會涵蓋到新功能。
