@@ -30,6 +30,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -449,11 +451,37 @@ def _read_json(path: Path) -> Optional[dict]:
         return None
 
 
-def _write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
-    tmp.replace(path)
+def _temp_path(path: Path, suffix: str = ".tmp") -> Path:
+    # 暫存檔名加上行程跟執行緒編號：同時有好幾個問題（或評估跟網頁同時跑）
+    # 處理同一份文件時，才不會寫到同一個暫存檔。
+    return path.with_name(f"{path.stem}.{os.getpid()}.{threading.get_ident()}{suffix}")
+
+
+def replace_file(tmp: Path, path: Path, attempts: int = 5) -> None:
+    """把寫好的暫存檔換成正式檔名。
+
+    Windows 上目標檔正好被別的行程讀取或替換時，replace 會「存取被拒」，稍等再試。
+    """
+    for attempt in range(attempts):
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.1 * (attempt + 1))
+
+
+def write_json_cache(path: Path, data: dict) -> None:
+    """寫快取檔。快取寫不進去不影響這次的回答，下次再重新產生，所以失敗只印警告。"""
+    tmp = _temp_path(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+        replace_file(tmp, path)
+    except OSError as e:
+        print(f"[文件快取] {path.name} 寫不進去，下次再重新產生：{e}")
+        tmp.unlink(missing_ok=True)
 
 
 def parse_file(path: Path) -> Optional[ParsedDocument]:
@@ -489,7 +517,7 @@ def parse_file(path: Path) -> Optional[ParsedDocument]:
         print(f"[文件解析] {path.name} 抽不到任何文字，略過。")
         return None
 
-    _write_json(cache_path, {"parser_version": PARSER_VERSION, "file_name": file_name, "text": text, "page_count": page_count})
+    write_json_cache(cache_path, {"parser_version": PARSER_VERSION, "file_name": file_name, "text": text, "page_count": page_count})
     return ParsedDocument(file_name, text, page_count, file_hash)
 
 
@@ -580,7 +608,7 @@ def _build_and_cache_card(doc: ParsedDocument) -> Optional[dict]:
     except Exception as e:
         print(f"[文件卡片] {doc.file_name} 產生卡片失敗：{e}")
         return None
-    _write_json(CACHE_DIR / "cards" / f"{doc.content_key}.json", {"card_version": CARD_VERSION, "file_name": doc.file_name, "card": card})
+    write_json_cache(CACHE_DIR / "cards" / f"{doc.content_key}.json", {"card_version": CARD_VERSION, "file_name": doc.file_name, "card": card})
     return card
 
 
@@ -649,9 +677,9 @@ def attach_embeddings(catalog: list[CatalogDocument]) -> None:
                 cache[keys[i]] = vector
             current = {key: cache[key] for key in dict.fromkeys(keys)}
             cache_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp = cache_path.with_name(cache_path.stem + ".tmp.npz")
+            tmp = _temp_path(cache_path, ".tmp.npz")
             np.savez(tmp, keys=np.array(list(current)), vectors=np.stack(list(current.values())))
-            tmp.replace(cache_path)
+            replace_file(tmp, cache_path)
         except Exception as e:
             print(f"[文件向量] 有 {len(missing)} 份文件的卡片向量算不出來，初篩先只用關鍵字：{e}")
     for doc, key in zip(catalog, keys):

@@ -18,8 +18,10 @@
   Orbit（網址有 /zh_tw/，附檔是 /xhr/archive/download?file=…，有時候回傳 PDF 線上檢視器），
   其餘是各單位自己寫的。特殊的：電機系的表格辦法要呼叫 API（Source.api）、數學系的檔案清單
   是 Vue 元件屬性裡的 JSON、工學院的附檔放在 assets.ppnet.tw、網學所首頁是 meta refresh 轉址。
-- 抓不到的：IMBA、天文所的網站連不上（2026-10-06 再試還是一樣）。總務處（停車證、出納）
-  還沒看過網站，沒有收。統計所、工學院學士班、資電學院學士班的辦法放在 Google 雲端硬碟，
+- 總務處（www.oga.ncu.edu.tw）跟生醫理工學院（ncu.edu.tw/chst/#/…）的頁面是 JavaScript 載入的，
+  原始 HTML 裡沒有內容，設 render=True 用 Playwright 的無頭 Chromium 渲染完再讀（2026-10-10）。
+  一樣遵守 robots.txt、每頁間隔 1 秒，只讀公開頁面，不直接呼叫網站的 API（總務處的 API 要登入）。
+- 抓不到的：IMBA、天文所的網站連不上（2026-10-06 再試還是一樣）。統計所、工學院學士班、資電學院學士班的辦法放在 Google 雲端硬碟，
   Google 的 robots.txt 不允許程式下載。需要的話手動下載放進 data/（爬蟲不會動手動放的檔案）。
   資管系、經濟系、產經所 10-04 連不上，10-06 連得上之後補進來了。
 - 教師升等、委員會設置、招生、報帳這類不是學生會問的文件，由 GLOBAL_EXCLUDE 統一排除；
@@ -56,6 +58,7 @@ class Source:
     latest_only: tuple[str, ...] = ()  # 名稱符合的文件只留年度最新的一份（regex 第一個括號群組是年度）
     include: tuple[str, ...] = ()      # 名稱符合的不套用 GLOBAL_EXCLUDE 跟年度太舊的規則
     api: str = ""                      # 文件清單要呼叫網站 API 才拿得到時，crawler.API_PROVIDERS 裡的名稱
+    render: bool = False               # 網頁內容是 JavaScript 載入的（例如總務處），要用瀏覽器渲染完再讀（crawler.Renderer）
 
 
 # 所有來源都套用的排除規則（比對挑出來的文件名稱）。各單位網站的「法規」「下載」頁常常把教師、
@@ -112,6 +115,7 @@ LIB = "https://www.lib.ncu.edu.tw/{}"
 CC = "https://www.cc.ncu.edu.tw/p/412-1033-{}.php"
 RD = "https://ncu.edu.tw/rd/tw/page/index.php?{}"
 CTE = "https://cte.ncu.edu.tw/zh-TW/{}"
+OGA = "https://www.oga.ncu.edu.tw/{}"
 MANDARIN = "https://mandarin.lc.ncu.edu.tw/{}/"
 
 # 順序有意義：同一個檔案出現在好幾個來源時，存在排前面的來源的資料夾裡
@@ -292,6 +296,30 @@ SOURCES: tuple[Source, ...] = (
     Source(
         name="研究發展處",
         seeds=(RD.format("num=168&root=14"), RD.format("num=83&root=7")),  # 國科會博士生獎學金、研究獎助生
+    ),
+    Source(
+        # 網站是 Nuxt 做的，網頁本身只有空殼，內容是前端呼叫要授權的 API 畫出來的，用瀏覽器渲染完再讀。
+        # 只收學生會用到的：車輛、自行車通行證，郵件包裹，學雜費繳費、退費，物品借用，校園餐廳商店，交通。
+        name="總務處",
+        render=True,
+        seeds=tuple(OGA.format(page) for page in (
+            "bypass/student",  # 「學生」頁：郵件包裹領取須知、繳納學雜費流程圖
+            "34fba40c/news/ea37a9c7", "34fba40c/news/8f7790b8", "34fba40c/news/c67dbe34",  # 事務組：車輛通行證、自行車證
+            "34fba40c/news/f243dac6",  # 事務組：物品借用
+            "a14bd963/news/87114b27", "a14bd963/news/76fd9fde", "a14bd963/news/d9213595",  # 出納組：表單、繳費、學雜費
+        )),
+        pages=(
+            Page(OGA.format("questions/4c8e117e"), "總務處常見問答"),
+            Page(OGA.format("34fba40c/questions/cf63c09c"), "總務處事務組常見問答"),
+            Page(OGA.format("a14bd963/questions/1a055c7f"), "總務處出納組常見問答"),
+            Page(OGA.format("2e319283/questions/d2b9a57d"), "總務處資產組常見問答"),
+            Page(OGA.format("2e319283/news/daeb8e93"), "校園餐廳介紹"),
+            Page(OGA.format("2e319283/news/4bafe7b8"), "校園商店介紹"),
+        ),
+        follow=(Follow(url=r"/(34fba40c|a14bd963)/news/[0-9a-f]+/detail/"),),  # 列表裡有些項目要點進內文才有附件
+        # 出納組、資產組的下載區大多是給行政人員的（財產、零用金、國庫支票、扣繳稅率、系統操作說明）
+        exclude=(r"教職員|公務|宿舍住戶訪客", r"採購|招標|廠商", r"財產|零用金|收據|承辦人|開班權限|國庫|定存單|質權|信用證明",
+                 r"兼任教師|繳回款項|所得|課稅|列稅|物品領用|館舍空間|報名學員|垃圾車|網路郵局|作業流程示意圖"),
     ),
     Source(
         name="師資培育中心",
@@ -730,7 +758,16 @@ SOURCES: tuple[Source, ...] = (
         seeds=tuple(f"https://www.lawgov.ncu.edu.tw/p/426-1002-{page}.php?Lang=zh-tw" for page in (25, 12, 13, 18, 20)),
         pages=(Page("https://www.lawgov.ncu.edu.tw/p/426-1002-18.php?Lang=zh-tw", "法律學分學程"),),
     ),
-    # ---------------- 2026-10 擴充：生醫理工學院（學院網站是 JavaScript 產生的，沒有收） ----------------
+    # ---------------- 2026-10 擴充：生醫理工學院 ----------------
+    Source(
+        # 學院網站是單頁網站（網址是 #/ 開頭），選單沒有連結、內容是 JavaScript 畫的，用瀏覽器渲染
+        # 「下載專區 > 學生相關」（2026-10-10 補上，之前因為讀不到沒有收）
+        name="生醫理工學院",
+        render=True,
+        seeds=("https://ncu.edu.tw/chst/#/relatedstudent",),
+        # 113 年版的自主學習補助辦法跟 114 年版（6-1，辦法跟申請表在同一份）同時放著，只收新版，獎學金才不會重複
+        exclude=(r"自主學習補助辦法\(1130411\)",),
+    ),
     Source(
         # 自己寫的網站，首頁網址在 /index.php/ch/Index/ 底下，其他頁不在同一層
         name="生命科學系",

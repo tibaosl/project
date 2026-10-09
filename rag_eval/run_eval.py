@@ -186,6 +186,8 @@ def main():
     items = json.loads((Path(__file__).parent / args.file).read_text(encoding="utf-8"))
     if args.only:
         items = [i for i in items if any(i["id"].startswith(p) for p in args.only)]
+        if not items:
+            sys.exit(f"沒有 id 開頭是 {' '.join(args.only)} 的題目（多個開頭用空白分開）")
 
     module = load_module(args.module)
     if args.router_only:

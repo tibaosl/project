@@ -588,3 +588,41 @@ def test_broken_pdf_link_falls_back_to_the_other_format(data_dir):
     report = Crawler(FakeFetcher(site), Manifest(data_dir / ".crawler_manifest.json")).crawl(Source(name="某系", seeds=(page,)))
     assert report.added == ["某系/學分抵免辦法.odt"]
     assert any("改抓 .odt 版" in s for s in report.skipped)
+
+
+def test_general_affairs_link_texts_are_cleaned():
+    # 總務處（Nuxt 做的網站）連結文字前面有日期跟組別、後面有無障礙說明，title 前面有「[檔案下載]」
+    from backend.rag.crawler import clean_name
+    assert clean_name("2018-06-08-事務組 檔案下載-國立中央大學機車通行證申請表（此為PDF檔案，請參閱檔案摘要或說明頁）") == (
+        "國立中央大學機車通行證申請表"
+    )
+    assert clean_name("[檔案下載]自行車識別證正確黏貼位置.pdf") == "自行車識別證正確黏貼位置"
+    assert clean_name("• 學生郵件包裹領取須知") == "學生郵件包裹領取須知"
+    assert clean_name("2026-10-01 公告") == "2026-10-01 公告"  # 只拿掉「日期-單位」這種前綴
+
+
+def test_render_sources_are_read_with_the_browser(monkeypatch):
+    # Source.render 的網頁用 Renderer（瀏覽器）讀，其他照舊用 requests
+    from backend.rag import crawler as c
+    from backend.rag.crawler_sources import Source
+
+    calls = []
+
+    class FakeRenderer:
+        def get_html(self, url):
+            calls.append(("render", url))
+            return '<html><body><a href="/files/a.pdf">機車通行證申請表</a></body></html>', url
+
+    class FakeFetcher:
+        def get_html(self, url):
+            calls.append(("requests", url))
+            return "<html><body></body></html>", url
+
+    crawler = c.Crawler.__new__(c.Crawler)
+    crawler.fetcher, crawler.renderer = FakeFetcher(), FakeRenderer()
+    report = c.Report("總務處")
+    links, _ = crawler.collect(Source(name="總務處", render=True, seeds=("https://www.oga.ncu.edu.tw/x",)), report)
+    assert calls == [("render", "https://www.oga.ncu.edu.tw/x")]
+    assert "https://www.oga.ncu.edu.tw/files/a.pdf" in {info.url for info in links.values()}
+    crawler.collect(Source(name="資工系", seeds=("https://www.csie.ncu.edu.tw/y",)), c.Report("資工系"))
+    assert calls[-1] == ("requests", "https://www.csie.ncu.edu.tw/y")
