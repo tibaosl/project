@@ -76,6 +76,12 @@ NOT_FOUND_ANSWER = (
     "目前收錄的校園法規文件裡，找不到可以回答這個問題的規定，所以沒辦法給你可靠的答案。"
     "建議直接洽詢承辦單位或所屬系辦確認。"
 )
+NOT_FOUND_ANSWER_EN = (
+    "I couldn't find a regulation in the campus documents collected here that answers this question, "
+    "so I can't give you a reliable answer. Please check with the office in charge or your department office."
+)
+CLARIFY_FALLBACK = "可以再說明一下你想查的是哪個學院、系所或學制的規定嗎？"
+CLARIFY_FALLBACK_EN = "Could you tell me which college, department or degree program (undergraduate or graduate) you are asking about?"
 
 _client: Optional[OpenAI] = None
 _catalog_cache: dict = {"signature": None, "catalog": []}
@@ -159,6 +165,9 @@ ROUTER_INSTRUCTIONS = """你是中央大學校園法規問答系統的「文件�
      判斷系所屬於哪個學院）。所屬單位沒有專屬文件時，挑可能涵蓋它的全校性文件，不要拿
      別的學院、別的系的文件代替。
    - 注意「適用對象」：教師的規定不能拿來回答學生的問題，學生的也不能拿來回答教師的。
+   - 使用者只說了系所、沒說學制（大學部、碩士班、博士班），而目錄裡這個系所或它的學院同時有
+     大學部跟研究所的不同規定時（例如畢業學分、英文門檻常常大學部跟碩士班不一樣），不要自己假設是
+     大學部，兩種學制都挑最相關的文件（在名額內），回答才能分學制說明。
    - 同一種文件有多個年度或版本時，挑最新的（目錄裡標了「舊版」的不要挑，改挑它指向的最新版）；
      使用者指定了年度就挑那個年度；新舊版本依入學年度等條件都可能適用時，兩份都挑。
    - 同一個單位有好幾份文件都講到這件事（例如辦法跟它的申請表、說明），版本日期又不一樣時，
@@ -339,6 +348,19 @@ def retrieve_candidates(
     return chosen
 
 
+def _has_han(text: str) -> bool:
+    return any(0x3400 <= ord(ch) <= 0x9FFF for ch in text)
+
+
+def asked_in_english(text: str) -> bool:
+    """問題裡沒有中文字、有英文字母，就當成用英文問。
+
+    文件大多是中文，挑文件的步驟常把英文問題改寫成中文，回答模型看到中文的「整理後的問題」
+    就跟著用中文回答（2026-10 評估的英文題常常這樣），所以由程式判斷語言、明確告訴回答模型。
+    """
+    return not _has_han(text) and any("a" <= ch.lower() <= "z" for ch in text)
+
+
 def today_context(now: Optional[datetime] = None) -> str:
     """今天的日期跟學年度學期。校曆這類文件收進來之後，「這學期加退選」「今年畢業典禮」
     要知道今天是哪一學期才答得出來（不然只能反問）。第 1 學期是 8 月到隔年 1 月。
@@ -443,11 +465,15 @@ ANSWER_INSTRUCTIONS = """你是中央大學 NCUXplore 的校園法規助理，�
 2. 第一句就直接回答問題（數字、日期、可不可以、要去哪裡），再補充必要的條件、流程或注意事項。
    補充的內容以跟問題直接相關為限，不要把文件裡其他學院、身分、學制的資料全部列出來
    （使用者沒說是哪一種、需要分情況回答時例外）。
+   答案是費用、分數門檻或期限時，文件裡同一項目的金額、各分項標準（例如聽力、閱讀各自的最低分）
+   也要一起寫出來。
 3. 注意文件的適用範圍與版本：
    - 說明答案適用於哪個學院、系所、學制或年度版本。
    - 文件裡沒有使用者所屬單位的規定時，要明說查不到，不能拿其他單位的規定代替；
      若要順帶提其他單位的規定，要講清楚那不是使用者的規定。
    - 同一種文件有多個年度版本時，以最新版本為主；依入學年度等條件而不同時，分別說明。
+   - 規定依入學年度分段時，每一段的起訖都要寫清楚（例如「98～102 學年度入學」「103 學年度以後入學」），
+     舊規定不要寫成「98 學年度以後」這種跟新規定重疊的說法。
    - 好幾份文件都寫到同一件事、但寫法或數字不一樣時（例如辦法跟申請說明、新舊公告），
      以日期較新、或專門講這件事的那份為準，不要把每份的說法都列出來。
 4. 規定依條件（學院、身分、學制等）而不同，使用者又沒說是哪一種時，簡短分情況列出，或請使用者補充。
@@ -507,11 +533,16 @@ def build_answer_request(plan: dict, query_str: str, history_str: str) -> str:
         ) if part)
         blocks.append(f"[{i}] {card['title']}（{meta}）\n{fit_document(doc.text, plan['question'])}")
 
+    language = (
+        "回答語言：使用者用英文發問，整份回答都要用英文寫（整理後的問題是中文，只是為了挑文件）。\n"
+        if asked_in_english(query_str) else ""
+    )
     return (
         f"{today_context()}\n"
         f"對話紀錄（使用者說過的話，以及系統反問或請使用者補充的話）：{history_str or '無'}\n"
         f"使用者這一次的問題：{query_str}\n"
-        f"整理後的完整問題：{plan['question']}\n\n"
+        f"整理後的完整問題：{plan['question']}\n"
+        f"{language}\n"
         "文件：\n\n" + "\n\n==========\n\n".join(blocks)
     )
 
@@ -588,13 +619,16 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "") -> It
         print(f"[Academic Agent] 問題：「{query_str}」→「{plan['question']}」｜{plan['decision']}｜{file_names}")
         yield {"type": "plan", "question": plan["question"], "decision": plan["decision"], "documents": file_names}
 
+        english = asked_in_english(query_str)
         if plan["decision"] == "clarify":
-            clarify = plan["clarify_question"] or "可以再說明一下你想查的是哪個學院、系所或學制的規定嗎？"
+            clarify = plan["clarify_question"]
+            if not clarify or (english and _has_han(clarify)):
+                clarify = CLARIFY_FALLBACK_EN if english else CLARIFY_FALLBACK
             yield {"type": "token", "text": replace_semicolons(clarify)}
             yield {"type": "sources", "sources": []}
             return
         if plan["decision"] == "not_found":
-            yield {"type": "token", "text": NOT_FOUND_ANSWER}
+            yield {"type": "token", "text": NOT_FOUND_ANSWER_EN if english else NOT_FOUND_ANSWER}
             yield {"type": "sources", "sources": []}
             return
 
