@@ -172,3 +172,53 @@ def test_failed_embeddings_leave_documents_without_vectors(tmp_path, monkeypatch
     docs = [_catalog_doc("D01", "學則")]
     rd.attach_embeddings(docs)
     assert docs[0].embedding is None
+
+
+def test_concurrent_cache_writes_do_not_collide(tmp_path):
+    # 評估跟網頁同時解析同一份文件時，兩邊會同時寫同一份快取
+    import json
+    from concurrent.futures import ThreadPoolExecutor
+
+    target = tmp_path / "parsed" / "same.json"
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda i: rd.write_json_cache(target, {"n": i}), range(40)))
+
+    assert json.loads(target.read_text(encoding="utf-8"))["n"] in range(40)
+    assert [p.name for p in target.parent.iterdir()] == ["same.json"]
+
+
+def test_cache_replace_retries_while_the_target_is_locked(tmp_path, monkeypatch):
+    # Windows 上目標檔正被別的行程讀取時，改名會「存取被拒」
+    from pathlib import Path
+
+    monkeypatch.setattr(rd.time, "sleep", lambda seconds: None)
+    real_replace = Path.replace
+    failures = iter([PermissionError("存取被拒"), PermissionError("存取被拒")])
+
+    def flaky_replace(self, target):
+        error = next(failures, None)
+        if error:
+            raise error
+        return real_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", flaky_replace)
+    target = tmp_path / "card.json"
+    rd.write_json_cache(target, {"ok": True})
+    assert target.exists()
+
+
+def test_cache_write_failure_does_not_break_the_answer(tmp_path, monkeypatch, caplog):
+    from pathlib import Path
+
+    monkeypatch.setattr(rd.time, "sleep", lambda seconds: None)
+
+    def always_locked(self, target):
+        raise PermissionError("存取被拒")
+
+    monkeypatch.setattr(Path, "replace", always_locked)
+    caplog.set_level("INFO", logger=rd.__name__)
+    target = tmp_path / "card.json"
+    rd.write_json_cache(target, {"ok": True})  # 不會丟例外
+    assert not target.exists()
+    assert list(tmp_path.iterdir()) == []  # 暫存檔也清掉
+    assert "寫不進去" in caplog.text

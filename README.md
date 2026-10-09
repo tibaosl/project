@@ -8,7 +8,7 @@
 
 * **校園法規問答**：先看文件目錄挑出相關文件、再讀整份文件回答，回答附上來源出處
   （`rag_documents.py` 處理文件、`academic_agent.py` 查詢，細節見下面「校園法規問答（RAG）」）。
-* **學校網站文件爬蟲**：`python -m backend.rag.crawler` 把全校各行政單位（教務處、學務處各組、國際處、圖書館、
+* **學校網站文件爬蟲**：`python -m backend.rag.crawler` 把全校各行政單位（教務處、學務處各組、總務處、國際處、圖書館、
   計中、通識、體育室…）跟各學院、系所網站上的法規、修業規定、表單、說明網頁抓到 `data/`，給法規問答用
   （`crawler.py`，要抓哪些網站設定在 `crawler_sources.py`）。
 * **登入**：兩種方式擇一，登入後給一個一次性通行證（token），不會每次對話都重傳密碼。
@@ -147,6 +147,9 @@ python -m backend.rag.crawler             # 抓到 data/<來源>/，例如 data/
 * 有些資訊不是附檔而是網頁本身（獎學金一覽、宿舍 Q&A），會存成 `.md`，海報圖片（英文畢業門檻）
   另存成 PDF，讓 RAG 用圖片轉錄讀（挑到網頁時會一起帶上）。網頁裡的瀏覽人次、今天日期這類每次都不一樣的
   內容會拿掉，不然每次重抓都會被當成改版、重做卡片。
+* 總務處、生醫理工學院的網頁是 JavaScript 載入的，原始 HTML 裡沒有內容，這兩個來源用 Playwright 的
+  無頭 Chromium 渲染完再讀（`crawler_sources.py` 的 `render=True`），所以爬蟲也要先跑過
+  `python -m playwright install chromium`。
 * 每個檔案的來源網址記在 `data/.crawler_manifest.json`。不在裡面的檔案（自己手動放進 `data/` 的）
   爬蟲不會動。`python -m backend.rag.crawler --legacy` 可以檢查這些手動檔跟爬到的檔案有沒有重複，
   加 `--move-duplicate-legacy` 會把內容一模一樣的移到 `storage/crawler/legacy_backup/`。

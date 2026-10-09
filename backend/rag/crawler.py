@@ -278,6 +278,12 @@ _BOILERPLATE = [re.compile(p, re.I) for p in (
     r"(\s+(PDF|DOCX?|ODT))?\s*更新日期\s*[:：]?.*$",  # 「…修業辦法 PDF 更新日期 115.04.23」
     r"[（(]\s*(pdf|docx?|odt|xlsx?|pptx?)\s*[,，]\s*[\d.]+\s*[KMG]?B?\s*[）)]?",  # 「(PDF, 102KB)」
     r"^\d{1,2}\)\s*",  # 光電系的「05) 光電系免修學分申請表」
+    # 總務處（Nuxt 做的網站）：「2018-06-08-事務組 檔案下載-國立中央大學機車通行證申請表（此為PDF檔案，請參閱檔案摘要或說明頁）」
+    r"[（(]\s*此為\S*?(檔案)?\s*[，,]\s*請參閱檔案摘要或說明頁\s*[）)]",
+    r"^\s*\d{4}-\d{2}-\d{2}-\S{1,8}?(組|處|隊|室|中心)\s*",
+    r"^\s*檔案下載\s*[-－:：]\s*",
+    r"^\s*\[\s*檔案下載\s*\]\s*",  # 同一個連結的 title 寫成「[檔案下載]國立中央大學機車通行證申請表.pdf」
+    r"^\s*[•●・‧]\s*",  # 清單的項目符號被寫進連結文字（「• 學生郵件包裹領取須知」）
     r"^(請參閱|請參考|詳見)\s*",
     # 生科系附件的 title 寫成「(國立中央大學生命科學系助學工讀辦法.pdf)(pdf檔下載」
     r"[（(]\s*(pdf|odt|docx?)?\s*檔?\s*下載\s*[)）]?\s*$",
@@ -924,6 +930,10 @@ class Fetcher:
         with self._locks_guard:
             return self._locks.setdefault(host, threading.Lock())
 
+    def allows(self, url: str) -> bool:
+        """robots.txt 允不允許程式讀這個網址（Renderer 用瀏覽器開網頁之前也要問）。"""
+        return self._robots_allows(url)
+
     def _robots_allows(self, url: str) -> bool:
         parts = urlparse(url)
         host = parts.hostname or ""
@@ -1022,6 +1032,54 @@ class Fetcher:
             response.close()
             raise FetchError(f"HTTP {response.status_code}")
         return self.read(response)
+
+
+RENDER_DELAY = 1.0  # 用瀏覽器開的網頁每頁都會載入一堆 JavaScript、圖片，頁面之間多隔一點
+RENDER_SETTLE_MS = 1500  # 網路靜下來之後再等一下，讓 JavaScript 把內容畫完
+
+
+class Renderer:
+    """網頁內容是 JavaScript 載入的網站（Source.render，例如總務處）：網頁本身只有空殼，內容是前端呼叫
+    要授權的 API 畫出來的。這種網站用 Playwright 的 Chromium 像一般瀏覽器一樣打開、等內容畫好，
+    再把畫好的 HTML 交給一般的解析，不去呼叫它的 API。
+
+    跟 Fetcher 一樣遵守 robots.txt。第一次用到才啟動瀏覽器，整輪爬完要呼叫 close()。
+    只在主執行緒用（Playwright 的同步 API 不能跨執行緒），collect 本來就是一頁一頁讀的。
+    """
+
+    def __init__(self, fetcher: Fetcher):
+        self.fetcher = fetcher
+        self._playwright = None
+        self._browser = None
+
+    def get_html(self, url: str) -> tuple[str, str]:
+        from playwright.sync_api import Error as PlaywrightError
+        from playwright.sync_api import sync_playwright
+
+        if not self.fetcher.allows(url):
+            raise RobotsDisallowed("網站的 robots.txt 不允許程式讀取")
+        if self._browser is None:
+            self._playwright = sync_playwright().start()
+            self._browser = self._playwright.chromium.launch()
+        page = self._browser.new_page(user_agent=USER_AGENT, locale="zh-TW")
+        try:
+            response = page.goto(url, wait_until="networkidle", timeout=60_000)
+            if response is not None and response.status >= 400:
+                raise FetchError(f"HTTP {response.status}")
+            page.wait_for_timeout(RENDER_SETTLE_MS)
+            return page.content(), page.url
+        except PlaywrightError as e:
+            raise FetchError(f"瀏覽器開不了這個網頁：{str(e)[:150]}") from e
+        finally:
+            page.close()
+            time.sleep(RENDER_DELAY)
+
+    def close(self) -> None:
+        if self._browser is not None:
+            self._browser.close()
+        if self._playwright is not None:
+            self._playwright.stop()
+        self._browser = self._playwright = None
 
 
 def decode_html(data: bytes, content_type: str) -> str:
@@ -1264,6 +1322,7 @@ class Crawler:
         self.manifest = manifest
         self.dry_run = dry_run
         self.run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.renderer = Renderer(fetcher)
 
     # ---------- 頁面 ----------
     def collect(self, source: Source, report: Report) -> tuple[dict[str, LinkInfo], list[tuple[Page, str, str]]]:
@@ -1287,7 +1346,7 @@ class Crawler:
                 continue
             seen.add(url_key(url))
             try:
-                html, final_url = self.fetcher.get_html(url)
+                html, final_url = (self.renderer if source.render else self.fetcher).get_html(url)
             except FetchError as e:
                 report.errors.append(f"讀不到頁面 {url}：{e}")
                 report.pages_ok = False
@@ -1727,6 +1786,15 @@ def main() -> None:
     sources = [s for s in SOURCES if not args.source or s.name in args.source]
 
     crawler = Crawler(Fetcher(), manifest, dry_run=args.dry_run)
+    try:
+        _crawl_sources(crawler, sources, manifest, args)
+    finally:
+        crawler.renderer.close()
+    if args.dry_run:
+        print("（--dry-run：沒有寫入任何檔案）")
+
+
+def _crawl_sources(crawler: "Crawler", sources: list, manifest: "Manifest", args) -> None:
     for source in sources:
         print(f"[{source.name}] 開始")
         try:
@@ -1738,8 +1806,6 @@ def main() -> None:
             if not args.dry_run:
                 manifest.save()  # 每個來源做完（或出錯、按 Ctrl+C）都存，已經寫進 data/ 的檔案才記得是爬蟲抓的
         print_report(report, args.verbose or args.dry_run)
-    if args.dry_run:
-        print("（--dry-run：沒有寫入任何檔案）")
 
 
 if __name__ == "__main__":

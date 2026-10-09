@@ -233,14 +233,9 @@ def _extract_and_cache(doc: rag_documents.CatalogDocument) -> Optional[dict]:
     except Exception as e:
         print(f"[獎學金] {doc.file_name} 整理失敗：{e}")
         return None
-    path = _cache_path(doc)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(
-        json.dumps({"version": SCHOLARSHIP_VERSION, "file_name": doc.file_name, "result": result}, ensure_ascii=False, indent=1),
-        encoding="utf-8",
+    rag_documents.write_json_cache(
+        _cache_path(doc), {"version": SCHOLARSHIP_VERSION, "file_name": doc.file_name, "result": result}
     )
-    tmp.replace(path)
     return result
 
 

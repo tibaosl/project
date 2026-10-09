@@ -2,7 +2,7 @@
 #     pip install -r requirements.txt
 # 另外要裝的不是 pip 套件：
 #   * 讀 .doc、.odt 要裝 LibreOffice（rag_documents.py 會找 soffice）
-#   * test_registration_login.py 會開 Playwright 的 Chromium：python -m playwright install chromium
+#   * test_registration_login.py 跟爬蟲的總務處、生醫理工學院來源會開 Playwright 的 Chromium：python -m playwright install chromium
 
 # 網站後端
 fastapi==0.139.2
