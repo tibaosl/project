@@ -62,6 +62,17 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "我報名了哪些活動？",
         "查一下我的活動報名紀錄",
     )),
+    "get_my_agenda": FeatureSuggestions("我的行程", True, (
+        "我這週有什麼行程？",
+        "明天要上什麼課？",
+        "下週有哪些事要注意？",
+    )),
+    "get_campus_calendar": FeatureSuggestions("校曆", False, (
+        "期中考是什麼時候？",
+        "這學期什麼時候放寒假？",
+        "這個月有放假嗎？",
+        "停修申請到哪一天？",
+    )),
     # 活動搜尋是比對活動標題的關鍵字，範例要挑常出現在標題裡的類別（藝文、英文常常查不到）
     "search_campus_activities": FeatureSuggestions("校園活動", False, (
         "有沒有講座類的活動？",
@@ -175,6 +186,8 @@ _CARD_CONTENTS: dict[str, Any] = {
     "activity_recommendations": "依時數缺口推薦、還能報名的活動場次（時間、時數、名額）",
     "activity_tag_search": "提供這類時數、還能報名的活動場次（時間、時數、名額）",
     "activity_detail": "活動內容跟每個場次的時間、地點、時數、名額",
+    "campus_calendar": "校曆上符合的事件跟日期（開始、結束日），已經過去的會標出來",
+    "personal_agenda": "這段期間每天要上的課（時間、教室）、放假停課的日子、已報名的活動場次、校曆上的截止日跟考試",
 }
 
 
