@@ -29,6 +29,11 @@
   但還要確認清寒、原住民這類身分條件的。使用者在對話裡說明身分（例如「我是低收入戶」）就會重新比對
   （`scholarship_tools.py`，見下面「獎學金推薦」）。
 * **學習護照時數進度查詢**：對照畢業門檻，算出各類別還差多少小時。
+* **我的行程**：把課表、已報名的活動跟校曆整理成每天的行程（「我這週有什麼行程」「明天要上什麼課」），
+  放假、補假、停課的日子不列課並標出原因，寒暑假不列課，好幾天的受理期間在最後一天提醒
+  （`backend/analysis/agenda.py`）。
+* **校曆查詢**：教務處的〈學年度校曆〉用規則解析成有日期的事件（不呼叫模型），回答「期中考是什麼時候」
+  「下週有放假嗎」這類問題，不用登入（`backend/analysis/academic_calendar.py`）。
 * **活動查詢與推薦**：關鍵字搜尋、依「時數缺口」自動推薦活動、依時數標籤查詢，都會過濾掉
   報名時間已經截止、或正取跟備取都額滿的場次（`activity_tools.py`）。
 * **查詢自己的活動報名紀錄**（接下來的活動排在前面）、**活動報名/取消報名**：活動有好幾個場次時會先問
@@ -55,9 +60,11 @@ backend/                      後端（Python）
 │   ├── activity_tools.py     公開的活動查詢
 │   ├── oauth_portal.py       Portal 官方 OAuth
 │   └── secure_requests.py    連學校網站時的憑證驗證
-├── analysis/                 用自己的成績做的分析
+├── analysis/                 用自己的資料跟學校公開資料整理的資訊
 │   ├── academic_tools.py     學業分析
-│   └── scholarship_tools.py  獎學金推薦
+│   ├── scholarship_tools.py  獎學金推薦
+│   ├── academic_calendar.py  解析校曆
+│   └── agenda.py             我的行程（課表、活動、校曆）
 └── rag/                      校園法規問答
     ├── academic_agent.py     挑文件、讀全文回答
     ├── rag_documents.py      解析文件、產生文件卡片

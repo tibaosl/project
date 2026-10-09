@@ -247,3 +247,79 @@ button {
   color: var(--ncux-accent);
   opacity: 1;
 }
+
+/* ---- 校曆（CampusCalendar.jsx）、我的行程（PersonalAgenda.jsx） ---- */
+
+.calendar-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0;
+}
+
+.calendar-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 8px 2px;
+  border-bottom: 1px solid var(--ncux-border);
+}
+
+.calendar-date {
+  min-width: 10.5em;
+  font-weight: 600;
+  color: var(--ncux-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.calendar-title {
+  flex: 1 1 14em;
+  color: var(--ncux-text);
+}
+
+.calendar-tags {
+  white-space: nowrap;
+}
+
+/* 已經過去的事件只加標籤，不把整列變暗（變暗的卡片使用者反映看起來像壞掉） */
+.calendar-past {
+  background: var(--ncux-border);
+  color: var(--ncux-text-muted);
+}
+
+.agenda-day {
+  padding: 10px 16px;
+}
+
+.agenda-day-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.agenda-day-header .ncux-card-title {
+  margin-bottom: 0;
+}
+
+.agenda-time {
+  font-weight: 600;
+  margin-right: 8px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ncux-text);
+}
+
+.agenda-detail {
+  color: var(--ncux-text-muted);
+}
+
+.agenda-inline-badge {
+  margin-left: 6px;
+  vertical-align: 1px;
+}
+
+.calendar-summary {
+  font-weight: 600;
+  color: var(--ncux-text);
+  margin: 6px 0 2px;
+}

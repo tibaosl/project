@@ -44,8 +44,28 @@ from backend.ncu.activity_tools import (
     sort_registrations,
 )
 from backend.rag.academic_agent import query_academic_knowledge
+from backend.analysis.academic_calendar import (
+    PERIODS,
+    calendar_envelope,
+    calendar_source,
+    events_between,
+    format_day,
+    load_calendar,
+    period_range,
+    search_events,
+)
 from backend.analysis.academic_tools import analyze_academic_progress, fetch_academic_records
+from backend.analysis.agenda import build_agenda
 from backend.analysis.scholarship_tools import DeclaredStatus, recommend_scholarships
+
+CalendarPeriod = Literal["today", "tomorrow", "this_week", "next_week", "next_30_days", "this_month", "next_month"]
+AgendaPeriod = Literal["today", "tomorrow", "this_week", "next_week", "next_7_days"]
+
+
+def _period_title(period: str) -> str:
+    first, last = period_range(period)
+    days = format_day(first) if first == last else f"{format_day(first)}～{format_day(last)}"
+    return f"{PERIODS.get(period, '')}（{days}）"
 
 NO_CREDENTIALS_MSG = (
     "[Action Agent 回報]:\n尚未登入或登入已失效，無法執行。請登出後重新用 Portal 登入！"
@@ -482,6 +502,91 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         return {"content": "\n".join(lines)}
 
     @tool
+    async def get_campus_calendar(keyword: str = "", period: Optional[CalendarPeriod] = None) -> dict:
+        """查詢中央大學的校曆（學校行事曆）上的日期：開始上課、加退選、停修、期中期末評量、放假補假、
+        寒暑假、畢業典禮、校慶、各種申請截止日（不需要登入）。
+
+        使用時機：使用者問學校某件事「什麼時候」「到哪一天」，或某段期間學校有什麼行事，例如
+        「期中考是什麼時候」「什麼時候放寒假」「下週有放假嗎」「加退選到哪一天」「這個月有什麼要注意的日期」。
+        不適用於規定的內容本身（例如停修有什麼限制、加退選要怎麼操作，請用 search_campus_regulations），
+        也不適用於使用者自己的課表、活動行程（請用 get_my_agenda）。
+
+        Args:
+            keyword: 要找的事件，例如「期中」「寒假」「加退選」「停修」「畢業典禮」「放假」。只給 keyword
+                會列出這學年所有符合的日期。問一段期間有什麼事（「下週有什麼」）就留空，只給 period。
+            period: 要看的期間：today、tomorrow、this_week（今天到週日）、next_week（下週一到週日）、
+                next_30_days、this_month、next_month。跟 keyword 一起給時，只找這段期間裡符合的事件
+                （例如「下週有放假嗎」給 keyword「放假」、period「next_week」）。兩個都沒給就是接下來 30 天。
+        """
+        try:
+            events = await asyncio.to_thread(load_calendar)
+        except Exception as e:
+            return {"content": f"**Action Agent 回報**：\n讀取校曆時發生錯誤：{e}"}
+        if not events:
+            return {"content": "**Action Agent 回報**：\n目前沒有收錄校曆，查不到學校行事曆上的日期。"}
+
+        keyword = keyword.strip()
+        if keyword and not period:
+            matched = search_events(events, keyword)
+            if not matched:
+                return {"content": f"**Action Agent 回報**：\n這學年的校曆裡找不到跟「{keyword}」有關的日期。"}
+            return {"content": calendar_envelope(matched, f"校曆：{keyword}", source=calendar_source())}
+
+        period = period or "next_30_days"
+        first, last = period_range(period)
+        title = _period_title(period)
+        in_range = [e for e in events if e.start <= last and e.end >= first]
+        if keyword:
+            matched = search_events(in_range, keyword)
+            if not matched:
+                return {"content": f"**校曆**：{title}沒有跟「{keyword}」有關的日期。"}
+            return {"content": calendar_envelope(matched, f"校曆：{title}的「{keyword}」", source=calendar_source())}
+        days_off = [e for e in in_range if e.no_class]
+        summary = (
+            f"這段期間放假、停課：{'、'.join(f'{format_day(e.start)} {e.title}' for e in days_off)}"
+            if days_off else "這段期間沒有放假或停課。"
+        )
+        return {"content": calendar_envelope(events_between(events, first, last), f"校曆：{title}",
+                                             source=calendar_source(), summary=summary)}
+
+    @tool
+    async def get_my_agenda(period: AgendaPeriod = "this_week") -> dict:
+        """整理使用者「自己」這段期間每天的行程（需要登入）：要上的課（放假、停課的日子會跳過並標出原因）、
+        已經報名的活動場次，以及校曆上的重要日期（截止日、考試、放假）。
+
+        使用時機：使用者問自己某段時間有什麼事，例如「我這週有什麼行程」「明天要上什麼課」「今天有課嗎」
+        「下週有哪些事要注意」。只想看整學期固定的課表請用 get_my_schedule，只想看活動報名紀錄請用
+        get_my_registered_activities，問學校的行事曆日期（不是自己的行程）請用 get_campus_calendar。
+
+        Args:
+            period: today、tomorrow、this_week（今天到這週日）、next_week（下週一到週日）、next_7_days。
+        """
+        session = await _ensure_session()
+        if session is None:
+            return {"content": NO_CREDENTIALS_MSG}
+
+        schedule = registrations = None
+        try:
+            schedule = await get_schedule(session)
+        except Exception as e:
+            print(f"[Agent] 我的行程：課表抓取失敗：{e}")
+        try:
+            registrations = (await session.get_my_activity_registrations()).get("registrations", [])
+        except Exception as e:
+            print(f"[Agent] 我的行程：報名紀錄抓取失敗：{e}")
+        if schedule is None and registrations is None:
+            await reset_session(username)
+            return {"content": "**Action Agent 回報**：\n課表跟活動報名紀錄都抓不到，可能是登入狀態失效了，請重新登入再試一次。"}
+
+        try:
+            events = await asyncio.to_thread(load_calendar)
+        except Exception as e:
+            print(f"[Agent] 我的行程：讀取校曆失敗：{e}")
+            events = []
+        first, last = period_range(period)
+        return {"content": build_agenda(first, last, events, schedule, registrations, f"我的行程：{_period_title(period)}")}
+
+    @tool
     async def search_campus_activities(keyword: str) -> dict:
         """單純查詢/瀏覽校內活動列表（不需要登入）。
 
@@ -805,6 +910,8 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         recommend_activities_for_my_deficiencies,
         find_activities_by_hour_category,
         get_my_registered_activities,
+        get_my_agenda,
+        get_campus_calendar,
         preview_activity_registration,
         preview_activity_cancellation,
         search_campus_regulations,

@@ -19,6 +19,8 @@ gpt-5.4-mini 54/54。
 （跑 10 次 8 對），「11/17 那場」跑 10 次都對，也都帶了 session="11/17"。
 之後 AGENT_SYSTEM_PROMPT 加了「問密碼是什麼、去哪拿是在問制度」：「導師密碼是什麼」原本 10 次有 8 次直接拒絕、
 不查文件，改完 10 次都查文件。加 3 題（開發 2、保留 1）：63/63、25/25。
+2026-10-10 加了「我的行程」（get_my_agenda）跟「校曆查詢」（get_campus_calendar），開發題加 8 題、保留題 2 題，
+「學雜費什麼時候要繳」改成查法規或查校曆都算對：70/71、27/27，錯的是一直不穩定的「幫我報名職涯講座」。
 """
 
 import argparse
@@ -49,7 +51,13 @@ CASES = [
     ("畢業門檻", [], {R, NONE}), ("畢業要修幾學分？", [], {R, "get_my_academic_analysis"}),
     ("學習護照時數的畢業門檻是幾小時？", [], {R}), ("How do I apply for an enrollment certificate?", [], {R}),
     ("外國學生要怎麼確認論文指導教授？", [], {R}), ("宿舍怎麼申請？", [], {R}),
-    ("我這學期的課表", [], {"get_my_schedule"}), ("我禮拜三有什麼課？", [], {"get_my_schedule"}),
+    ("我這學期的課表", [], {"get_my_schedule"}), ("我禮拜三有什麼課？", [], {"get_my_schedule", "get_my_agenda"}),
+    # 個人行程跟校曆（2026-10-10 加）
+    ("我這週有什麼行程？", [], {"get_my_agenda"}), ("明天要上什麼課？", [], {"get_my_agenda"}),
+    ("今天有課嗎？", [], {"get_my_agenda"}),
+    ("期中考是什麼時候？", [], {"get_campus_calendar"}), ("下週有放假嗎？", [], {"get_campus_calendar"}),
+    ("這學期什麼時候放寒假？", [], {"get_campus_calendar"}), ("停修申請到哪一天？", [], {"get_campus_calendar", R}),
+    ("停修有什麼限制？", [], {R}),
     ("我還差幾學分才能畢業？", [], {"get_my_academic_analysis"}), ("我的必修修完了嗎？", [], {"get_my_academic_analysis"}),
     ("我這學期平均幾分？", [], {"get_my_academic_analysis"}), ("我有被當的課嗎？", [], {"get_my_academic_analysis"}),
     ("我的英文畢業門檻過了嗎？", [], {"get_my_academic_analysis"}),
@@ -96,7 +104,8 @@ HOLDOUT = [
     ("有沒有生涯規劃時數的活動？", [], {"find_activities_by_hour_category"}),
     ("我想報名那個 Python 工作坊", [], {"preview_activity_registration"}),
     ("Python 工作坊我不想去了", [], {"preview_activity_cancellation"}), ("找一下作業系統這門課", [], {"search_course_catalog"}),
-    ("學雜費什麼時候要繳？", [], {R}), ("休學要怎麼辦？", [], {R}), ("在學證明英文版多少錢？", [], {R}),
+    ("學雜費什麼時候要繳？", [], {R, "get_campus_calendar"}), ("休學要怎麼辦？", [], {R}), ("在學證明英文版多少錢？", [], {R}),
+    ("畢業典禮是哪一天？", [], {"get_campus_calendar"}), ("我下禮拜要做什麼？", [], {"get_my_agenda"}),
     ("工五館門禁怎麼申請？", [], {R}), ("學分抵免怎麼申請？", [], {R}), ("體育課要修幾學期？", [], {R}),
     ("我體育修完了嗎？", [], {"get_my_academic_analysis"}), ("hi", [], {NONE}), ("你會做什麼？", [], {NONE}),
     ("有沒有我拿得到的獎學金", [], {"recommend_scholarships_for_me"}),

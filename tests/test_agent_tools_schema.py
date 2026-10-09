@@ -60,6 +60,8 @@ def test_no_tool_takes_username_or_password_as_a_model_supplied_argument():
 def test_expected_tools_are_all_registered():
     expected = {
         "get_my_schedule",
+        "get_my_agenda",
+        "get_campus_calendar",
         "search_course_catalog",
         "get_my_hours_dashboard",
         "get_my_academic_analysis",

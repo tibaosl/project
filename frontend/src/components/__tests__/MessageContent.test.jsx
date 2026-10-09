@@ -297,3 +297,58 @@ describe("MessageContent 報名確認", () => {
     expect(screen.getByText(/請回覆「確定報名」來送出/)).toBeInTheDocument();
   });
 });
+
+describe("MessageContent 校曆與我的行程", () => {
+  it("校曆卡片列出日期、事件跟類型，已經過的只加標籤，並附上資料來源", () => {
+    render(
+      <MessageContent
+        content={{
+          kind: "campus_calendar", title: "校曆：期中", source: "教務處/115 學年度校曆.pdf",
+          events: [
+            { start: "2026-10-27", end: "2026-10-30", label: "10/27（二）～10/30（五）", title: "期中成績評量", kind: "exam", past: false },
+            { start: "2026-09-02", end: "2026-09-16", label: "9/2（三）～9/16（三）", title: "加退選", kind: "course", past: true },
+          ],
+        }}
+      />,
+    );
+    const items = screen.getAllByRole("listitem");
+    expect(items[0]).toHaveTextContent("10/27（二）～10/30（五）期中成績評量考試");
+    expect(within(items[1]).getByText("已經過了")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "115 學年度校曆" })).toHaveAttribute(
+      "href", "/files/%E6%95%99%E5%8B%99%E8%99%95/115%20%E5%AD%B8%E5%B9%B4%E5%BA%A6%E6%A0%A1%E6%9B%86.pdf",
+    );
+  });
+
+  it("沒有事件時說明這段期間沒有行事", () => {
+    render(<MessageContent content={{ kind: "campus_calendar", title: "校曆：下週", events: [] }} />);
+    expect(screen.getByText("這段期間校曆上沒有特別的行事。")).toBeInTheDocument();
+  });
+
+  it("行程卡片：放假的日子標出原因，課跟活動依時間排序，沒事的日子也說明", () => {
+    const day = (date, label, extra) => ({ date, label, is_today: false, holiday: "", classes: [], activities: [], events: [], ...extra });
+    render(
+      <MessageContent
+        content={{
+          kind: "personal_agenda", title: "我的行程：這週", notes: ["這次沒有抓到活動報名紀錄，所以沒有列出活動。"],
+          days: [
+            day("2026-10-09", "10/9（五）", { holiday: "國慶日補假1日" }),
+            day("2026-10-11", "10/11（日）", { is_today: true }),
+            day("2026-10-12", "10/12（一）", {
+              classes: [{ time: "15:00-15:50", title: "作業系統", detail: "工程五館 A101" }, { time: "09:00-10:50", title: "資料結構", detail: "" }],
+              activities: [{ time: "13:00-14:00", title: "人本AI論壇", session: "", place: "國鼎圖書館" }],
+              events: [{ title: "受理課程停修申請", kind: "course", note: "最後一天" }],
+            }),
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByText("國慶日補假1日")).toBeInTheDocument();
+    expect(screen.getByText("停課")).toBeInTheDocument();
+    expect(screen.getByText("今天")).toBeInTheDocument();
+    expect(screen.getByText("沒有排定的行程")).toBeInTheDocument();
+    const times = screen.getAllByText(/^\d{2}:\d{2}-\d{2}:\d{2}$/).map((node) => node.textContent);
+    expect(times).toEqual(["09:00-10:50", "13:00-14:00", "15:00-15:50"]);
+    expect(screen.getByText(/受理課程停修申請（最後一天）/)).toBeInTheDocument();
+    expect(screen.getByText("這次沒有抓到活動報名紀錄，所以沒有列出活動。")).toBeInTheDocument();
+  });
+});
