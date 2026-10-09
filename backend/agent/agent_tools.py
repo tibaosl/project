@@ -18,6 +18,7 @@
 
 import asyncio
 import secrets
+import time
 from typing import Any, Literal, Optional
 
 from langchain_core.tools import tool
@@ -164,6 +165,10 @@ async def reset_session(username: str):
 # ----------------------------------------------------------------------------
 _session_tokens: dict[str, str] = {}
 _username_tokens: dict[str, set[str]] = {}
+# token 最後一次使用的時間（time.monotonic）。閒置太久的 token 失效，前端會請使用者重新登入：
+# 忘了登出、電腦借給別人用的時候，別人不能一直用你的身分查成績、報名活動。
+_token_last_used: dict[str, float] = {}
+TOKEN_IDLE_SECONDS = 12 * 60 * 60
 
 
 def issue_session_token(username: str) -> str:
@@ -171,17 +176,24 @@ def issue_session_token(username: str) -> str:
     token = secrets.token_urlsafe(32)
     _session_tokens[token] = username
     _username_tokens.setdefault(username, set()).add(token)
+    _token_last_used[token] = time.monotonic()
     return token
 
 
 def resolve_session_token(token: str) -> Optional[str]:
-    """把 token 換回 username；token 不存在（沒登入過/已登出/伺服器重啟過）回傳 None。"""
-    if not token:
+    """把 token 換回 username；token 不存在（沒登入過/已登出/伺服器重啟過）或閒置太久回傳 None。"""
+    if not token or token not in _session_tokens:
         return None
-    return _session_tokens.get(token)
+    now = time.monotonic()
+    if now - _token_last_used.get(token, now) > TOKEN_IDLE_SECONDS:
+        revoke_session_token(token)
+        return None
+    _token_last_used[token] = now
+    return _session_tokens[token]
 
 
 def revoke_session_token(token: str):
+    _token_last_used.pop(token, None)
     username = _session_tokens.pop(token, None)
     if username is None:
         return

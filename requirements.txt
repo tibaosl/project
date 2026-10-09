@@ -23,7 +23,7 @@ python-docx==1.2.0
 
 # 爬蟲、Portal 跟選課系統
 requests==2.34.2
-urllib3==2.7.0
+urllib3==2.8.0
 beautifulsoup4==4.15.0
 lxml==6.1.1
 playwright==1.61.0

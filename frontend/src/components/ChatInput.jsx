@@ -1,5 +1,8 @@
 import { useState } from "react";
 
+// 跟後端 main.py 的 MAX_MESSAGE_CHARS 一樣
+export const MAX_MESSAGE_CHARS = 2000;
+
 export default function ChatInput({ onSend, disabled }) {
   const [value, setValue] = useState("");
 
@@ -34,6 +37,8 @@ export default function ChatInput({ onSend, disabled }) {
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
         disabled={disabled}
+        maxLength={MAX_MESSAGE_CHARS}
+        aria-label="輸入問題"
       />
       <button type="submit" disabled={disabled || !value.trim()}>
         送出

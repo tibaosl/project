@@ -6,6 +6,7 @@ import sys
 import json
 import asyncio
 import mimetypes
+import uuid
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -28,10 +29,18 @@ from backend.ncu import oauth_portal
 from backend.agent.suggestions import pick_starter_questions
 from backend import paths
 from backend.logging_config import make_print_logger
+from backend.security import LocalOnlyMiddleware
 
 print = make_print_logger(__name__)
 
 app = FastAPI(title="NCUXplore Agent System")
+# 只接受本機的 Host、擋掉其他網站送來的請求，並加上安全標頭（見 backend/security.py）
+app.add_middleware(LocalOnlyMiddleware)
+
+# 一則訊息的長度上限。正常的問題遠低於這個長度，太長的多半是貼錯東西，
+# 送進模型只會白花錢、拖慢回答。
+MAX_MESSAGE_CHARS = 2000
+TOO_LONG_MESSAGE = f"訊息太長了（上限 {MAX_MESSAGE_CHARS} 字），請精簡一下問題再送出。"
 
 # ⚠️ data/ 底下是爬蟲抓回來的校園法規文件，直接掛在 /files 下對外提供，
 # 沒有做任何驗證。目前只靠 uvicorn.run(host="127.0.0.1", ...)（見檔案最下面）
@@ -40,7 +49,8 @@ app = FastAPI(title="NCUXplore Agent System")
 # host 改成 "0.0.0.0"。
 # 爬蟲把網頁內容存成 .md，當純文字送出瀏覽器才會直接顯示（text/markdown 會被當成下載）。
 mimetypes.add_type("text/plain", ".md")
-app.mount("/files", StaticFiles(directory=paths.DATA_DIR), name="files")
+# check_dir=False：還沒跑過爬蟲、沒有 data/ 的時候後端照樣能啟動（/files 回 404）
+app.mount("/files", StaticFiles(directory=paths.DATA_DIR, check_dir=False), name="files")
 
 @app.get("/api/health")
 async def health():
@@ -142,7 +152,7 @@ async def login_with_chrome():
 
 class LogoutRequest(BaseModel):
     token: str
-    username: str = ""
+    username: str = ""  # 舊版前端會帶，現在不採用（見下面）
 
 
 @app.post("/api/logout")
@@ -151,10 +161,14 @@ async def logout(req: LogoutRequest):
     有效 token 時，才順手關掉共用的背景瀏覽器 session（避免長時間掛著沒人
     用的 Playwright session 占資源）——如果貿然一律關掉，會把同一個帳號
     在其他分頁還在用的 session 也一起弄斷。
+
+    帳號一律用 token 換回來的，不信任請求裡的 username：不然任何人帶一個
+    無效 token 加上別人的帳號，就能把別人的登入狀態關掉。
     """
+    username = resolve_session_token(req.token)
     revoke_session_token(req.token)
-    if req.username and not has_active_tokens(req.username):
-        await reset_session(req.username)
+    if username and not has_active_tokens(username):
+        await reset_session(username)
     return {"status": "success"}
 
 
@@ -169,9 +183,16 @@ class ChatRequest(BaseModel):
     # 前端 ui.py 在這個分支已經刪掉了，沒有理由再冒這個風險）。
     token: str = ""
     # 前端每個瀏覽器分頁會各自帶一個獨立的 thread_id，讓不同使用者的對話
-    # 歷史、pending_action 不會共用同一份 LangGraph 對話狀態。沒帶的話退回
-    # 舊的預設值，行為等同改動前（僅供沒更新前端的舊呼叫端相容用）。
-    thread_id: str = "default_session"
+    # 歷史、pending_action 不會共用同一份 LangGraph 對話狀態（伺服器端還會
+    # 再加上帳號，見 _thread_key）。沒帶的話這一輪當成新的對話。
+    thread_id: str = ""
+
+
+def _thread_key(username: str, thread_id: str) -> str:
+    """LangGraph 對話紀錄的 key 綁定帳號：就算知道別人的 thread_id，也讀不到別人的對話
+    （裡面可能有成績、獎學金這些個人資料），同一個 thread_id 換了帳號也不會接著上一個人的對話。
+    沒帶 thread_id 的請求每次都是新的對話，不再共用同一個預設 thread。"""
+    return f"{username or 'guest'}:{thread_id or uuid.uuid4().hex}"
 
 
 def _resolve_credentials(req: ChatRequest) -> tuple[str, str, bool]:
@@ -203,10 +224,12 @@ async def chat_with_agent(req: ChatRequest):
             "sources": [],
             "debug_info": {"current_step": "session_expired"},
         }
+    if len(req.user_message) > MAX_MESSAGE_CHARS:
+        return {"status": "error", "response": [TOO_LONG_MESSAGE], "sources": [], "debug_info": {"current_step": "rejected"}}
 
     try:
         final_state = await run_ncuxplore_agent(
-            req.user_message, username, password, thread_id=req.thread_id
+            req.user_message, username, password, thread_id=_thread_key(username, req.thread_id)
         )
     except Exception as e:
         # agent 內部任何未預期的例外（Playwright 掛掉、OpenAI timeout...）都
@@ -284,9 +307,13 @@ async def chat_with_agent_stream(req: ChatRequest):
             yield f"data: {json.dumps(expired_event, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
             return
+        if len(req.user_message) > MAX_MESSAGE_CHARS:
+            yield f"data: {json.dumps({'type': 'error', 'message': TOO_LONG_MESSAGE}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
+            return
         try:
             async for event in run_ncuxplore_agent_stream(
-                req.user_message, username, password, thread_id=req.thread_id
+                req.user_message, username, password, thread_id=_thread_key(username, req.thread_id)
             ):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as e:
