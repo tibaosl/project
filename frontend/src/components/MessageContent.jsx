@@ -1,4 +1,5 @@
 import ReactMarkdown from "react-markdown";
+import remarkCjkFriendly from "remark-cjk-friendly/parseOnly";
 import remarkGfm from "remark-gfm";
 import HoursDashboard from "./HoursDashboard";
 import ActivityList from "./ActivityList";
@@ -55,9 +56,11 @@ export default function MessageContent({ content }) {
   if (typeof content === "string") {
     // remark-gfm：react-markdown 預設只支援 CommonMark，表格要靠它才會畫成 <table>，
     // 不然整張表會變成一段夾著 | 的文字。
+    // remark-cjk-friendly：CommonMark 把全形標點（）「」：等）當成標點，** 一邊緊貼全形標點、
+    // 另一邊是中文字時開不起來或關不起來，會顯示成字面上的 **（法規回答很常這樣用粗體）。
     return (
       <div className="markdown-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{ table: ScrollableTable }}>
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkCjkFriendly]} components={{ table: ScrollableTable }}>
           {ensureBlankLineBeforeTables(content)}
         </ReactMarkdown>
       </div>
