@@ -132,6 +132,28 @@ def test_stream_clarify_and_not_found_skip_the_answer_step(monkeypatch):
     assert result["sources"] == []
 
 
+def test_asked_in_english_only_without_chinese_characters():
+    assert agent.asked_in_english("How much is the EMI incentive per credit?")
+    assert not agent.asked_in_english("EMI 課程獎勵每學分多少？")
+    assert not agent.asked_in_english("115-1？")  # 沒有英文字母也不算
+
+
+def test_english_questions_get_english_answers_even_if_the_plan_is_rewritten_in_chinese(monkeypatch):
+    # 挑文件的步驟常把英文問題改寫成中文，回答步驟要另外被告知用英文回答
+    fake = _use_fakes(monkeypatch, _plan(documents=["D01"], question="大學部學費是多少？"))
+    agent.query_academic_knowledge("How much is the undergraduate tuition?", "")
+    assert "整份回答都要用英文寫" in fake.calls[1]["messages"][1]["content"]
+
+    fake = _use_fakes(monkeypatch, _plan(documents=["D01"]))
+    agent.query_academic_knowledge("學費多少？", "")
+    assert "用英文" not in fake.calls[1]["messages"][1]["content"]
+
+    _use_fakes(monkeypatch, _plan(decision="not_found"))
+    assert agent.query_academic_knowledge("Can I park on campus?", "")["answer"] == agent.NOT_FOUND_ANSWER_EN
+    _use_fakes(monkeypatch, _plan(decision="clarify", clarify="請問你是哪個學院？"))
+    assert agent.query_academic_knowledge("What is the English requirement?", "")["answer"] == agent.CLARIFY_FALLBACK_EN
+
+
 def test_stream_reports_errors_instead_of_raising(monkeypatch):
     def broken():
         raise RuntimeError("沒有 API key")
