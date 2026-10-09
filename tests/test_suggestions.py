@@ -249,3 +249,18 @@ def test_calendar_cards_only_answer_what_was_asked(monkeypatch):
         called_tools=("get_campus_calendar",),
     )
     assert (kind, questions) == ("follow_ups", ["這學期什麼時候放寒假？", "停修申請到哪一天？"])
+
+
+def test_english_follow_ups_are_not_cut_by_the_chinese_length_limit(monkeypatch):
+    llm = _FakeLLM('{"kind": "follow_ups", "options": ["How do I apply for an enrollment certificate in English?", '
+                   '"Is the library open on national holidays?"]}')
+    kind, questions = _run(monkeypatch, llm, user_message="Is the main library open on Sunday?",
+                           answer="Yes. The Main Library is open on Sunday from 10:00 to 19:00.")
+    assert kind == "follow_ups"
+    assert questions == ["How do I apply for an enrollment certificate in English?", "Is the library open on national holidays?"]
+
+
+def test_english_questions_ask_for_english_options():
+    prompt = suggestions._build_suggestion_prompt("Is the library open on Sunday?", "Yes.", "", ["校園法規"], False)
+    assert prompt.rstrip().endswith("使用者用英文發問，選項、問題全部用英文寫。")
+    assert "全部用英文" not in suggestions._build_suggestion_prompt("圖書館星期日有開嗎？", "有。", "", [], False)
