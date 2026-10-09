@@ -7,6 +7,8 @@ import json
 import asyncio
 import mimetypes
 import uuid
+from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -28,12 +30,35 @@ from backend.agent.agent_tools import (
 from backend.ncu import oauth_portal
 from backend.agent.suggestions import pick_starter_questions
 from backend import paths
+from backend.analysis.academic_calendar import load_calendar
 from backend.logging_config import make_print_logger
+from backend.rag import academic_agent
 from backend.security import LocalOnlyMiddleware
 
 print = make_print_logger(__name__)
 
-app = FastAPI(title="NCUXplore Agent System")
+
+def warm_up():
+    """預先載入法規文件目錄、初篩索引跟校曆（1,900 份文件約 6 秒），第一個問題就不用多等。
+    失敗也沒關係，第一次查詢時會再載入一次。"""
+    try:
+        catalog = academic_agent.get_catalog()
+        if catalog:
+            academic_agent.search_index(catalog)
+        load_calendar()
+        print(f"[main API] 已預先載入法規文件目錄（{len(catalog)} 份）跟校曆。")
+    except Exception as e:
+        print(f"[main API] 預先載入失敗，第一次查詢時會再載入：{e}")
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    # 丟到背景 thread 跑，不擋住後端啟動（還沒載完就有人問的話，查詢會等同一把鎖、不會重複載入）
+    asyncio.get_running_loop().run_in_executor(None, warm_up)
+    yield
+
+
+app = FastAPI(title="NCUXplore Agent System", lifespan=lifespan)
 # 只接受本機的 Host、擋掉其他網站送來的請求，並加上安全標頭（見 backend/security.py）
 app.add_middleware(LocalOnlyMiddleware)
 
