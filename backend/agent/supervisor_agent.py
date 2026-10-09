@@ -38,6 +38,25 @@ HISTORY_WINDOW = 12
 # 工具的情境一個安全網，避免無限迴圈）。
 MAX_TOOL_ROUNDS = 4
 
+# 執行工具時畫面上顯示的進度文字。以前顯示「正在執行 get_my_agenda...」，使用者看到的是程式裡的工具名稱。
+# search_campus_regulations 不在這裡：法規問答會自己送出「正在挑選相關文件」這類進度。
+TOOL_STATUS = {
+    "get_my_schedule": "正在讀取你的課表...",
+    "get_my_agenda": "正在整理你的行程（課表、活動報名、校曆）...",
+    "get_campus_calendar": "正在查詢校曆...",
+    "search_course_catalog": "正在搜尋課程...",
+    "get_my_hours_dashboard": "正在讀取你的學習護照時數...",
+    "get_my_academic_analysis": "正在分析你的成績跟畢業學分...",
+    "recommend_scholarships_for_me": "正在比對你可以申請的獎學金...",
+    "get_my_registered_activities": "正在讀取你的活動報名紀錄...",
+    "search_campus_activities": "正在搜尋校園活動...",
+    "get_activity_details": "正在查詢活動的詳細資訊...",
+    "recommend_activities_for_my_deficiencies": "正在依你的時數缺口找活動...",
+    "find_activities_by_hour_category": "正在找有這類時數的活動...",
+    "preview_activity_registration": "正在準備報名的資料...",
+    "preview_activity_cancellation": "正在準備取消報名的資料...",
+}
+
 # 「確認/繼續」這類回覆用簡單規則判斷，不靠 LLM（見 agent_node 開頭的
 # 說明）。要在呼叫 LLM 之前就攔截，才能確保「會真的改動學校系統資料」的
 # 動作只在使用者明確表態時才會發生，行為要可預期，不交給模型自己判斷要不要
@@ -165,7 +184,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         print("[Agent] 偵測到針對 pending_action 的確認回覆，直接送出。")
 
         if not username:
-            content = "[Action Agent 回報]:\n尚未登入，無法執行。請先用 Portal 登入！"
+            content = "尚未登入，無法執行。請先用 Portal 登入！"
             yield {"type": "result", "content": content}
             yield {"type": "final", "agent_results": [content], "sources": [], "pending_action": {}, "called_tools": []}
             return
@@ -185,7 +204,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
             session = await get_or_create_session(username, password)
 
             if session is None:
-                content = "[Action Agent 回報]:\n尚未登入或登入已失效，無法執行。請登出後重新用 Portal 登入！"
+                content = "尚未登入或登入已失效，無法執行。請登出後重新用 Portal 登入！"
                 yield {"type": "result", "content": content}
                 yield {
                     "type": "final", "agent_results": [content], "sources": [], "pending_action": {},
@@ -204,7 +223,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
             else:
                 result = {"message": "沒有找到待確認的動作，請重新告訴我想做什麼。"}
 
-            content = f"**Action Agent 回報**：\n{result.get('message', '')}"
+            content = f"{result.get('message', '')}"
             yield {"type": "result", "content": content}
             yield {
                 "type": "final", "agent_results": [content], "sources": [], "pending_action": {},
@@ -213,7 +232,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         except Exception as e:
             print(f"[Agent] 確認動作執行時發生錯誤: {e}")
             await reset_session(username)
-            content = f"**Action Agent 回報**：\n系統執行時發生錯誤：{str(e)}"
+            content = f"系統執行時發生錯誤：{str(e)}"
             yield {"type": "result", "content": content}
             yield {
                 "type": "final", "agent_results": [content], "sources": [], "pending_action": {},
@@ -273,7 +292,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
                 "called_tools": [f"__continue__:{pending_action['type']}"],
             }
         except Exception as e:
-            content = f"**Action Agent 回報**：\n查詢活動時發生錯誤：{str(e)}"
+            content = f"查詢活動時發生錯誤：{str(e)}"
             yield {"type": "result", "content": content}
             yield {
                 "type": "final", "agent_results": [content], "sources": [], "pending_action": {},
@@ -368,7 +387,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
                 messages.append(ToolMessage(content=content[:2000], tool_call_id=tool_call["id"]))
                 continue
 
-            yield {"type": "status", "text": f"正在執行 {name}..."}
+            yield {"type": "status", "text": TOOL_STATUS.get(name, "正在處理你的問題...")}
             try:
                 result = await tool_fn.ainvoke(tool_call["args"])
             except Exception as e:

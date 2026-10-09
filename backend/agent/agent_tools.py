@@ -68,7 +68,7 @@ def _period_title(period: str) -> str:
     return f"{PERIODS.get(period, '')}（{days}）"
 
 NO_CREDENTIALS_MSG = (
-    "[Action Agent 回報]:\n尚未登入或登入已失效，無法執行。請登出後重新用 Portal 登入！"
+    "尚未登入或登入已失效，無法執行。請登出後重新用 Portal 登入！"
 )
 
 # 背景瀏覽器 session 依「帳號」各自保存一份，而不是整個程式共用一個全域
@@ -342,11 +342,11 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             schedule_data = await get_schedule(session)
         except Exception as e:
             await reset_session(username)
-            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+            return {"content": f"系統執行時發生錯誤：{e}"}
 
         if schedule_data is not None:
             return {"content": schedule_data}
-        return {"content": "**Action Agent 回報**：\n執行失敗：無法解析課表或查無資料"}
+        return {"content": "執行失敗：無法解析課表或查無資料"}
 
     @tool
     async def search_course_catalog(keyword: str) -> dict:
@@ -368,13 +368,13 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             search_data = await search_courses(session, keyword)
         except RegistrationUnavailableError as e:
             # 只是選課系統進不去，Portal 登入還好好的，不要把整個 session 清掉害使用者被登出
-            return {"content": f"**Action Agent 回報**：\n{e}"}
+            return {"content": f"{e}"}
         except Exception as e:
             await reset_session(username)
-            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+            return {"content": f"系統執行時發生錯誤：{e}"}
 
         if not search_data:
-            return {"content": f"**Action Agent 回報**：\n找不到關鍵字為「{keyword}」的課程。"}
+            return {"content": f"找不到關鍵字為「{keyword}」的課程。"}
 
         result_text = f"**「{keyword}」搜尋結果：**\n\n"
         for item in search_data:
@@ -396,7 +396,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             dashboard_data = await session.get_hours_dashboard()
         except Exception as e:
             await reset_session(username)
-            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+            return {"content": f"系統執行時發生錯誤：{e}"}
 
         envelope = {
             "kind": "hours_dashboard",
@@ -431,7 +431,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             )
         except Exception as e:
             await reset_session(username)
-            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+            return {"content": f"系統執行時發生錯誤：{e}"}
 
         return {"content": analyze_academic_progress(transcript, graduation, focus)}
 
@@ -457,14 +457,14 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             transcript, _ = await fetch_academic_records(session, include_graduation=False)
         except Exception as e:
             await reset_session(username)
-            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+            return {"content": f"系統執行時發生錯誤：{e}"}
 
         try:
             # 要載入法規文件目錄（有新文件時還要呼叫模型整理獎學金資格），丟到背景 thread 跑，
             # 不然這段時間整個 FastAPI event loop 都會被卡住
             envelope = await asyncio.to_thread(recommend_scholarships, transcript, statuses or [])
         except Exception as e:
-            return {"content": f"**Action Agent 回報**：\n整理獎學金資料時發生錯誤：{e}"}
+            return {"content": f"整理獎學金資料時發生錯誤：{e}"}
         return {"content": envelope}
 
     @tool
@@ -483,11 +483,11 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             data = await session.get_my_activity_registrations()
         except Exception as e:
             await reset_session(username)
-            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+            return {"content": f"系統執行時發生錯誤：{e}"}
 
         registrations = data.get("registrations", [])
         if not registrations:
-            return {"content": "**Action Agent 回報**：\n目前沒有查到任何活動報名紀錄。"}
+            return {"content": "目前沒有查到任何活動報名紀錄。"}
 
         upcoming, past = sort_registrations(registrations)
         lines = [f"**你的活動報名紀錄（共 {len(registrations)} 筆）：**"]
@@ -521,15 +521,15 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         try:
             events = await asyncio.to_thread(load_calendar)
         except Exception as e:
-            return {"content": f"**Action Agent 回報**：\n讀取校曆時發生錯誤：{e}"}
+            return {"content": f"讀取校曆時發生錯誤：{e}"}
         if not events:
-            return {"content": "**Action Agent 回報**：\n目前沒有收錄校曆，查不到學校行事曆上的日期。"}
+            return {"content": "目前沒有收錄校曆，查不到學校行事曆上的日期。"}
 
         keyword = keyword.strip()
         if keyword and not period:
             matched = search_events(events, keyword)
             if not matched:
-                return {"content": f"**Action Agent 回報**：\n這學年的校曆裡找不到跟「{keyword}」有關的日期。"}
+                return {"content": f"這學年的校曆裡找不到跟「{keyword}」有關的日期。"}
             return {"content": calendar_envelope(matched, f"校曆：{keyword}", source=calendar_source())}
 
         period = period or "next_30_days"
@@ -576,7 +576,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             print(f"[Agent] 我的行程：報名紀錄抓取失敗：{e}")
         if schedule is None and registrations is None:
             await reset_session(username)
-            return {"content": "**Action Agent 回報**：\n課表跟活動報名紀錄都抓不到，可能是登入狀態失效了，請重新登入再試一次。"}
+            return {"content": "課表跟活動報名紀錄都抓不到，可能是登入狀態失效了，請重新登入再試一次。"}
 
         try:
             events = await asyncio.to_thread(load_calendar)
@@ -609,10 +609,10 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             # 不然查詢的這段時間整個後端（包括其他人的請求、前端的連線檢查）都會卡住
             results = await asyncio.to_thread(search_activities, keyword=keyword)
         except Exception as e:
-            return {"content": f"**Action Agent 回報**：\n查詢活動時發生錯誤：{e}"}
+            return {"content": f"查詢活動時發生錯誤：{e}"}
 
         if not results:
-            return {"content": f"**Action Agent 回報**：\n找不到符合「{keyword}」的活動。"}
+            return {"content": f"找不到符合「{keyword}」的活動。"}
 
         lines = [f"**「{keyword}」活動搜尋結果（共 {len(results)} 筆）：**\n"]
         for item in results[:10]:
@@ -630,10 +630,10 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         try:
             activity_id = await asyncio.to_thread(find_activity_id, keyword)
             if not activity_id:
-                return {"content": f"**Action Agent 回報**：\n找不到符合「{keyword}」的活動，麻煩提供更明確的活動名稱。"}
+                return {"content": f"找不到符合「{keyword}」的活動，麻煩提供更明確的活動名稱。"}
             detail = await asyncio.to_thread(get_activity_detail, activity_id)
         except Exception as e:
-            return {"content": f"**Action Agent 回報**：\n查詢活動詳情時發生錯誤：{e}"}
+            return {"content": f"查詢活動詳情時發生錯誤：{e}"}
 
         return {"content": {"kind": "activity_detail", **detail}}
 
@@ -652,18 +652,18 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             dashboard_data = await session.get_hours_dashboard()
         except Exception as e:
             await reset_session(username)
-            return {"content": f"**Action Agent 回報**：\n系統執行時發生錯誤：{e}"}
+            return {"content": f"系統執行時發生錯誤：{e}"}
 
         deficiencies = get_deficiency_details(dashboard_data)
         if not deficiencies:
-            return {"content": "**Action Agent 回報**：\n你的學習護照時數已經全部達標了，沒有需要補的細項！"}
+            return {"content": "你的學習護照時數已經全部達標了，沒有需要補的細項！"}
 
         try:
             recommendations, next_indices, exhausted_by_tag = await asyncio.to_thread(
                 recommend_activities_for_categories, deficiencies, limit_per_tag=5
             )
         except Exception as e:
-            return {"content": f"**Action Agent 回報**：\n查詢活動時發生錯誤：{e}"}
+            return {"content": f"查詢活動時發生錯誤：{e}"}
         has_more = not all(exhausted_by_tag.values())
 
         envelope = {
@@ -706,7 +706,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
                 find_activities_by_hour_tag, [tag_name], limit_per_tag=5
             )
         except Exception as e:
-            return {"content": f"**Action Agent 回報**：\n查詢活動時發生錯誤：{e}"}
+            return {"content": f"查詢活動時發生錯誤：{e}"}
 
         has_more = not all(exhausted_by_tag.values())
         envelope = {
@@ -725,7 +725,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         return result
 
     def _report(message: str) -> dict:
-        return {"content": f"**Action Agent 回報**：\n{message}"}
+        return {"content": f"{message}"}
 
     def _ask_which_session(question: str, options: list[str], note: str = "") -> dict:
         """選不出是哪一個場次時列出候選請使用者選。不給 pending_action，所以不可能送出任何東西。"""
