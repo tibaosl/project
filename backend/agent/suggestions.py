@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from backend.language import asked_in_english, has_han
 from backend.logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -105,6 +106,8 @@ STARTER_COUNT = 6
 FOLLOW_UP_COUNT = 3
 FOLLOW_UP_CANDIDATES = 6  # 請模型多想幾題，扣掉回覆裡已經有答案的，還夠挑 3 題
 MAX_QUESTION_LENGTH = 40
+# 英文選項（使用者用英文問的時候）同樣的意思要多好幾倍的字母，字數上限乘上這個倍數
+ENGLISH_LENGTH_FACTOR = 3
 
 
 def _available_features(logged_in: bool) -> list[FeatureSuggestions]:
@@ -245,6 +248,8 @@ def _feature_catalog(logged_in: bool) -> str:
 def _build_suggestion_prompt(
     user_message: str, answer: str, question: str, used_labels: list[str], logged_in: bool
 ) -> str:
+    # prompt 是中文的，只寫「跟使用者同一種語言」的話，英文問題的選項還是常常變成中文（2026-10-10 實測）
+    language = "使用者用英文發問，選項、問題全部用英文寫。" if asked_in_english(user_message) else ""
     return f"""你是中央大學校園助手 NCUXplore 的介面，要在系統的回覆下面放幾個讓使用者直接點選的選項。
 
 系統的功能（選項只能是這些功能做得到的事）：
@@ -272,7 +277,7 @@ def _build_suggestion_prompt(
 - 要使用者提供實際存在的名稱、但你不知道實際有哪些時（例如要報名哪一場活動），options 一定給空陣列 []：
   不要自己編名稱（像「Python 入門工作坊」），也不要放「活動名稱」「工作坊名稱」這種佔位文字，
   這種選項點下去沒有用，使用者自己打字比較快。
-- 每個 {MAX_OPTION_LENGTH} 字以內。系統看得到剛剛的對話，所以選項可以很短。
+- 每個 {MAX_OPTION_LENGTH} 個中文字以內（英文 {MAX_OPTION_LENGTH * ENGLISH_LENGTH_FACTOR} 個字母以內）。系統看得到剛剛的對話，所以選項可以很短。
 - 只有在問「哪個學院」時才用這些學院名稱：{COLLEGES}。
 - 問使用者想查什麼時，給具體、系統做得到的事（例如「英文畢業門檻」「最近的講座」）。
 
@@ -287,12 +292,13 @@ def _build_suggestion_prompt(
 - 寫完每一題都要回頭檢查系統的回覆有沒有回答到：有的話把回覆裡回答它的那一句原文抄在
   answered_by，沒有就填空字串。系統的回覆是卡片時，卡片上已經有的內容也算回答到了
   （answered_by 填「卡片」）。
-- 每題 25 字以內，只能是上面功能做得到的問題。
+- 每題 25 個中文字以內（英文 75 個字母以內），只能是上面功能做得到的問題。
 
-選項都用使用者的口吻、繁體中文，不要編號。
+選項都用使用者的口吻，跟使用者用同一種語言（中文一律用繁體中文，使用者用英文問就用英文），不要編號。
 只輸出 JSON，例如 {{"kind": "answers", "options": ["要", "不用了"]}}，或
 {{"kind": "follow_ups", "candidates": [{{"q": "停修會影響獎學金嗎", "answered_by": ""}},
-{{"q": "停修期限到什麼時候", "answered_by": "115 學年度第 1 學期的停修申請期間是 115/10/19 到 115/11/27"}}]}}。"""
+{{"q": "停修期限到什麼時候", "answered_by": "115 學年度第 1 學期的停修申請期間是 115/10/19 到 115/11/27"}}]}}。
+{language}"""
 
 
 def parse_question_list(text: str) -> list[str]:
@@ -348,7 +354,8 @@ def _clean_questions(questions: list[str], user_message: str, max_length: int = 
     asked = _compact(user_message)
     cleaned: list[str] = []
     for q in questions:
-        if _compact(q) != asked and q not in cleaned and len(q) <= max_length:
+        limit = max_length if has_han(q) else max_length * ENGLISH_LENGTH_FACTOR
+        if _compact(q) != asked and q not in cleaned and len(q) <= limit:
             cleaned.append(q)
     return cleaned
 
@@ -358,11 +365,14 @@ def _answered_examples(answer: Any, called_tools: list[str]) -> set[str]:
 
     2026-10 實測：看完獎學金卡片又推薦「有什麼獎學金適合我？」、看完時數又推薦「我的服務學習時數夠了嗎？」，
     跟模型說卡片上有什麼也擋不乾淨，所以直接濾掉。學業分析只有 overview 是全部都顯示，
-    只問學分（credits）或成績（grades）時另一半還沒回答，不濾。
+    只問學分（credits）或成績（grades）時另一半還沒回答，不濾。校曆卡片只回答了查的那件事
+    （查期中考，寒假還沒回答），也不濾。
     """
     if isinstance(answer, str):
         return set()
     if isinstance(answer, dict) and answer.get("kind") == "academic_analysis" and answer.get("focus") != "overview":
+        return set()
+    if isinstance(answer, dict) and answer.get("kind") == "campus_calendar":
         return set()
     return {_compact(q) for t in called_tools if t in TOOL_SUGGESTIONS for q in TOOL_SUGGESTIONS[t].examples}
 

@@ -38,6 +38,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from backend.rag import rag_documents
+from backend.language import asked_in_english, has_han
 from backend.logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -348,17 +349,9 @@ def retrieve_candidates(
     return chosen
 
 
-def _has_han(text: str) -> bool:
-    return any(0x3400 <= ord(ch) <= 0x9FFF for ch in text)
-
-
-def asked_in_english(text: str) -> bool:
-    """問題裡沒有中文字、有英文字母，就當成用英文問。
-
-    文件大多是中文，挑文件的步驟常把英文問題改寫成中文，回答模型看到中文的「整理後的問題」
-    就跟著用中文回答（2026-10 評估的英文題常常這樣），所以由程式判斷語言、明確告訴回答模型。
-    """
-    return not _has_han(text) and any("a" <= ch.lower() <= "z" for ch in text)
+# 文件大多是中文，挑文件的步驟常把英文問題改寫成中文，回答模型看到中文的「整理後的問題」
+# 就跟著用中文回答（2026-10 評估的英文題常常這樣），所以由程式判斷語言、明確告訴回答模型。
+_has_han = has_han
 
 
 def today_context(now: Optional[datetime] = None) -> str:
@@ -569,7 +562,7 @@ class AnswerCleaner:
         hold = _PARTIAL_CITATION_RE.search(text)
         cut = hold.start() if hold else len(text)
         # 結尾的分號要看下一段是不是換行，才知道要換成逗號還是句號
-        trailing_semicolon = re.search(r"；\s*$", text[:cut])
+        trailing_semicolon = re.search(r"[；;]\s*$", text[:cut])
         if trailing_semicolon:
             cut = trailing_semicolon.start()
         self.pending = text[cut:]
@@ -584,11 +577,22 @@ class AnswerCleaner:
 
 
 def replace_semicolons(text: str, ends_line: bool = True) -> str:
-    """分號換成逗號，在行尾（ends_line 時連整段結尾）的換成句號。使用者不喜歡回答裡有分號。"""
+    """分號換成逗號，在行尾（ends_line 時連整段結尾）的換成句號。使用者不喜歡回答裡有分號。
+    英文回答的「;」也一樣換（後面接空白才換，不會動到網址、HTML 符號這類寫法）。"""
     text = re.sub(r"；(?=\s*\n)", "。", text)
+    text = _replace_ascii_semicolons(text, r"[ \t]*\n", ".")
     if ends_line:
         text = re.sub(r"；(\s*)$", r"。\1", text)
-    return text.replace("；", "，")
+        text = _replace_ascii_semicolons(text, r"\s*$", ".")
+    text = text.replace("；", "，")
+    return _replace_ascii_semicolons(text, r"[ \t]", ",")
+
+
+def _replace_ascii_semicolons(text: str, followed_by: str, replacement: str) -> str:
+    """英文的「;」，後面接 followed_by 才換。「&amp;」這種 HTML 符號的分號不換。"""
+    return re.sub(
+        rf"(&#?\w+)?;(?={followed_by})", lambda m: m.group(0) if m.group(1) else replacement, text
+    )
 
 
 def cited_sources(answer: str, documents: list[rag_documents.CatalogDocument]) -> list[str]:

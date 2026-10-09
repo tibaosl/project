@@ -346,3 +346,13 @@ def test_streamed_answer_hides_citations_but_sources_still_follow_them(monkeypat
 def test_replace_semicolons_uses_commas_inside_a_line_and_full_stops_at_the_end():
     assert agent.replace_semicolons("先填表；再送件；") == "先填表，再送件。"
     assert agent.replace_semicolons("- 學士班；\n- 碩士班") == "- 學士班。\n- 碩士班"
+
+
+def test_english_semicolons_are_replaced_too_but_not_inside_urls_or_entities():
+    assert agent.replace_semicolons("Apply at the office; it takes 3 days;") == "Apply at the office, it takes 3 days."
+    assert agent.replace_semicolons("- Undergraduate;\n- Graduate") == "- Undergraduate.\n- Graduate"
+    assert agent.replace_semicolons("See https://a.example/x;y=1 &amp; more") == "See https://a.example/x;y=1 &amp; more"
+    cleaner = agent.AnswerCleaner()
+    assert cleaner.feed("Fee is 10 dollars;") + cleaner.feed(" pay at the counter") + cleaner.flush() == (
+        "Fee is 10 dollars, pay at the counter"
+    )

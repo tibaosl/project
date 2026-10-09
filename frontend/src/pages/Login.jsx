@@ -66,8 +66,10 @@ export default function Login() {
         <p className="subtitle">中央大學校園智慧助手</p>
         <div className="login-feature-pills">
           <span className="ncux-badge ncux-badge-info">法規查詢</span>
-          <span className="ncux-badge ncux-badge-info">課表</span>
+          <span className="ncux-badge ncux-badge-info">校曆</span>
+          <span className="ncux-badge ncux-badge-info">課表與行程</span>
           <span className="ncux-badge ncux-badge-info">學業分析</span>
+          <span className="ncux-badge ncux-badge-info">獎學金</span>
           <span className="ncux-badge ncux-badge-info">時數進度</span>
           <span className="ncux-badge ncux-badge-info">活動報名</span>
         </div>
@@ -138,7 +140,7 @@ export default function Login() {
         )}
 
         <button type="button" className="login-skip" onClick={handleSkip} disabled={busy}>
-          先不登入，只查法規／活動資訊
+          先不登入，只查法規、校曆、活動資訊
         </button>
       </div>
     </div>
