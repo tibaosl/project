@@ -239,3 +239,13 @@ def test_guest_follow_up_fallback_never_suggests_login_features(monkeypatch):
     assert kind == "follow_ups"
     assert len(questions) == 3
     assert set(questions) <= public_examples
+
+
+def test_calendar_cards_only_answer_what_was_asked(monkeypatch):
+    # 查期中考的校曆卡片沒有回答寒假，「這學期什麼時候放寒假？」還是可以推薦
+    llm = _FakeLLM('{"kind": "follow_ups", "options": ["這學期什麼時候放寒假？", "停修申請到哪一天？"]}')
+    kind, questions = _run(
+        monkeypatch, llm, user_message="期中考是什麼時候？", answer={"kind": "campus_calendar", "events": []},
+        called_tools=("get_campus_calendar",),
+    )
+    assert (kind, questions) == ("follow_ups", ["這學期什麼時候放寒假？", "停修申請到哪一天？"])

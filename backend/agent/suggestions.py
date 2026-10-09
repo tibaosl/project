@@ -358,11 +358,14 @@ def _answered_examples(answer: Any, called_tools: list[str]) -> set[str]:
 
     2026-10 實測：看完獎學金卡片又推薦「有什麼獎學金適合我？」、看完時數又推薦「我的服務學習時數夠了嗎？」，
     跟模型說卡片上有什麼也擋不乾淨，所以直接濾掉。學業分析只有 overview 是全部都顯示，
-    只問學分（credits）或成績（grades）時另一半還沒回答，不濾。
+    只問學分（credits）或成績（grades）時另一半還沒回答，不濾。校曆卡片只回答了查的那件事
+    （查期中考，寒假還沒回答），也不濾。
     """
     if isinstance(answer, str):
         return set()
     if isinstance(answer, dict) and answer.get("kind") == "academic_analysis" and answer.get("focus") != "overview":
+        return set()
+    if isinstance(answer, dict) and answer.get("kind") == "campus_calendar":
         return set()
     return {_compact(q) for t in called_tools if t in TOOL_SUGGESTIONS for q in TOOL_SUGGESTIONS[t].examples}
 
