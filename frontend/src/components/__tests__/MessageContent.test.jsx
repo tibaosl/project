@@ -73,6 +73,30 @@ describe("MessageContent", () => {
     expect(screen.getByRole("listitem")).toHaveTextContent("資電學院英文門檻如下：[1]");
     expect(screen.getByRole("listitem")).not.toHaveTextContent("雅思");
   });
+
+  // 回歸測試：CommonMark 判斷 ** 能不能開始、結束粗體時把全形標點（）「」：等）當成標點，
+  // 結尾的 ** 前面是全形標點、後面緊接中文字就關不起來（開頭的 ** 反過來也一樣），
+  // 網頁上會出現字面上的 **。2026-10-06 實測問「導師密碼是什麼？」，回答最後一句就是這樣。
+  it.each([
+    [
+      "結尾的 ** 前面是全形括號",
+      "以上是全校適用，以**115-1學期選課相關資訊（2026/05/15更新）**及選課問答集的說明為準。",
+      "115-1學期選課相關資訊（2026/05/15更新）",
+    ],
+    ["整段粗體用全形括號包起來", "**（注意）**請先完成導師確認", "（注意）"],
+    ["開頭的 ** 後面是全形引號", "請向導師索取**「導師密碼」**。", "「導師密碼」"],
+    ["粗體以全形冒號結尾", "- **申請資格：**大學部學生", "申請資格："],
+  ])("粗體旁邊是全形標點時也會顯示成粗體（%s）", (_, content, bold) => {
+    const { container } = render(<MessageContent content={content} />);
+    expect(container.querySelector("strong")?.textContent).toBe(bold);
+    expect(container.textContent).not.toContain("**");
+  });
+
+  it("行內 code 裡的 ** 照原樣顯示，不會變成粗體", () => {
+    const { container } = render(<MessageContent content="格式寫成 `**（注意）**請先` 就好" />);
+    expect(container.querySelector("code")).toHaveTextContent("**（注意）**請先");
+    expect(container.querySelector("strong")).toBeNull();
+  });
 });
 
 describe("ensureBlankLineBeforeTables", () => {
