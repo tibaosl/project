@@ -21,6 +21,8 @@ gpt-5.4-mini 54/54。
 不查文件，改完 10 次都查文件。加 3 題（開發 2、保留 1）：63/63、25/25。
 2026-10-10 加了「我的行程」（get_my_agenda）跟「校曆查詢」（get_campus_calendar），開發題加 8 題、保留題 2 題，
 「學雜費什麼時候要繳」改成查法規或查校曆都算對：70/71、27/27，錯的是一直不穩定的「幫我報名職涯講座」。
+同一天加了「匯出行事曆」（export_calendar_file），開發題加 3 題、保留題 1 題：73/74、28/28，新加的都對，
+錯的一樣是「幫我報名職涯講座」。
 """
 
 import argparse
@@ -58,6 +60,10 @@ CASES = [
     ("期中考是什麼時候？", [], {"get_campus_calendar"}), ("下週有放假嗎？", [], {"get_campus_calendar"}),
     ("這學期什麼時候放寒假？", [], {"get_campus_calendar"}), ("停修申請到哪一天？", [], {"get_campus_calendar", R}),
     ("停修有什麼限制？", [], {R}),
+    # 匯出行事曆（2026-10-10 加）
+    ("課表可以匯入 Google 日曆嗎？", [], {"export_calendar_file"}),
+    ("幫我把校曆加到手機行事曆", [], {"export_calendar_file"}),
+    ("我想把這學期的課加進我的行事曆", [], {"export_calendar_file"}),
     ("我還差幾學分才能畢業？", [], {"get_my_academic_analysis"}), ("我的必修修完了嗎？", [], {"get_my_academic_analysis"}),
     ("我這學期平均幾分？", [], {"get_my_academic_analysis"}), ("我有被當的課嗎？", [], {"get_my_academic_analysis"}),
     ("我的英文畢業門檻過了嗎？", [], {"get_my_academic_analysis"}),
@@ -106,6 +112,7 @@ HOLDOUT = [
     ("Python 工作坊我不想去了", [], {"preview_activity_cancellation"}), ("找一下作業系統這門課", [], {"search_course_catalog"}),
     ("學雜費什麼時候要繳？", [], {R, "get_campus_calendar"}), ("休學要怎麼辦？", [], {R}), ("在學證明英文版多少錢？", [], {R}),
     ("畢業典禮是哪一天？", [], {"get_campus_calendar"}), ("我下禮拜要做什麼？", [], {"get_my_agenda"}),
+    ("有沒有辦法把行程同步到 iPhone 的行事曆？", [], {"export_calendar_file"}),
     ("工五館門禁怎麼申請？", [], {R}), ("學分抵免怎麼申請？", [], {R}), ("體育課要修幾學期？", [], {R}),
     ("我體育修完了嗎？", [], {"get_my_academic_analysis"}), ("hi", [], {NONE}), ("你會做什麼？", [], {NONE}),
     ("有沒有我拿得到的獎學金", [], {"recommend_scholarships_for_me"}),

@@ -34,6 +34,9 @@
   （`backend/analysis/agenda.py`）。
 * **校曆查詢**：教務處的〈學年度校曆〉用規則解析成有日期的事件（不呼叫模型），回答「期中考是什麼時候」
   「下週有放假嗎」這類問題，不用登入（`backend/analysis/academic_calendar.py`）。
+* **匯出到行事曆**：下載 .ics 檔，匯入 Google 日曆、iPhone、Outlook。沒登入是整年的校曆，登入後再加上
+  這學期每週的課（放假、停課的日子跳過）跟已報名的活動。校曆、我的行程卡片下面都有下載按鈕，
+  也可以直接問「課表可以匯入 Google 日曆嗎」（`backend/analysis/calendar_export.py`、`/api/calendar/export`）。
 * **活動查詢與推薦**：關鍵字搜尋、依「時數缺口」自動推薦活動、依時數標籤查詢，都會過濾掉
   報名時間已經截止、或正取跟備取都額滿的場次（`activity_tools.py`）。
 * **查詢自己的活動報名紀錄**（接下來的活動排在前面）、**活動報名/取消報名**：活動有好幾個場次時會先問
@@ -64,7 +67,8 @@ backend/                      後端（Python）
 │   ├── academic_tools.py     學業分析
 │   ├── scholarship_tools.py  獎學金推薦
 │   ├── academic_calendar.py  解析校曆
-│   └── agenda.py             我的行程（課表、活動、校曆）
+│   ├── agenda.py             我的行程（課表、活動、校曆）
+│   └── calendar_export.py    匯出行事曆檔（.ics）
 └── rag/                      校園法規問答
     ├── academic_agent.py     挑文件、讀全文回答
     ├── rag_documents.py      解析文件、產生文件卡片

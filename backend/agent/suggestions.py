@@ -74,6 +74,10 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "這個月有放假嗎？",
         "停修申請到哪一天？",
     )),
+    "export_calendar_file": FeatureSuggestions("匯出行事曆", False, (
+        "可以把校曆加到我的手機行事曆嗎？",
+        "怎麼把校曆匯入 Google 日曆？",
+    )),
     # 活動搜尋是比對活動標題的關鍵字，範例要挑常出現在標題裡的類別（藝文、英文常常查不到）
     "search_campus_activities": FeatureSuggestions("校園活動", False, (
         "有沒有講座類的活動？",
@@ -191,6 +195,7 @@ _CARD_CONTENTS: dict[str, Any] = {
     "activity_detail": "活動內容跟每個場次的時間、地點、時數、名額",
     "campus_calendar": "校曆上符合的事件跟日期（開始、結束日），已經過去的會標出來",
     "personal_agenda": "這段期間每天要上的課（時間、教室）、放假停課的日子、已報名的活動場次、校曆上的截止日跟考試",
+    "calendar_export": "下載行事曆檔（.ics）的按鈕跟匯入 Google 日曆、手機的步驟，內容是整年校曆，有登入再加上這學期的課跟已報名的活動",
 }
 
 

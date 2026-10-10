@@ -323,3 +323,50 @@ button {
   color: var(--ncux-text);
   margin: 6px 0 2px;
 }
+
+/* 下載行事曆檔（CalendarExportButton）：次要按鈕，不搶卡片內容的視線 */
+.calendar-export {
+  margin-top: 10px;
+}
+
+.calendar-export-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  font-size: 13.5px;
+  color: var(--ncux-primary);
+  background: var(--ncux-primary-light);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.calendar-export-button:hover:not(:disabled) {
+  border-color: var(--ncux-primary);
+}
+
+.calendar-export-button:focus-visible {
+  outline: 2px solid var(--ncux-primary);
+  outline-offset: 2px;
+}
+
+.calendar-export-button:disabled {
+  cursor: wait;
+  opacity: 0.7;
+}
+
+.calendar-export-message {
+  margin: 6px 0 0;
+}
+
+.calendar-export-message.is-error {
+  color: var(--ncux-danger-text);
+}
+
+.calendar-export-steps ol {
+  margin: 4px 0 6px;
+  padding-left: 20px;
+  line-height: 1.7;
+}

@@ -119,6 +119,11 @@ export function SessionProvider({ children }) {
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
 }
 
+/** 卡片裡的小元件用：沒有包在 SessionProvider 裡（例如單獨測試卡片）時回傳 null，當成沒登入。 */
+export function useOptionalSession() {
+  return useContext(SessionContext);
+}
+
 export function useSession() {
   const ctx = useContext(SessionContext);
   if (!ctx) {

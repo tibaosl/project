@@ -1,4 +1,5 @@
 import Icon from "./Icon";
+import CalendarExportButton from "./CalendarExportButton";
 
 // 事件類型的標籤（backend/analysis/academic_calendar.py 的 event_kind）
 export const EVENT_KINDS = {
@@ -54,6 +55,7 @@ export default function CampusCalendar({ data }) {
         </ul>
       )}
       <SourceLink source={data.source} />
+      <CalendarExportButton />
     </div>
   );
 }
