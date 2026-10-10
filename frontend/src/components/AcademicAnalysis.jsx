@@ -130,9 +130,17 @@ function formatScore(value) {
   return value != null ? value.toFixed(2) : "—";
 }
 
+/** 「GPA 3.85（4.3 制）」：iNCU 沒有 GPA，是照學校的對照表自己算的，跟學校的累計平均對不上時標註。 */
+function gpaText(gpa) {
+  if (gpa.gpa == null) return "";
+  const note = gpa.gpa_matches_school_average === false ? "，算法跟學校的累計平均有出入，僅供參考" : "";
+  return `GPA ${gpa.gpa.toFixed(2)}（4.3 制${note}）`;
+}
+
 function GpaTable({ semesters }) {
+  const hasGpa = semesters.some((s) => s.gpa != null);
   return (
-    <Table headers={["學期", "學期平均", "變化", "實得學分", "班排名", "系排名"]}>
+    <Table headers={["學期", "學期平均", ...(hasGpa ? ["GPA"] : []), "變化", "實得學分", "班排名", "系排名"]}>
       {semesters.map((s, i) => {
         const prev = i > 0 ? semesters[i - 1].average : null;
         const change = s.average != null && prev != null ? s.average - prev : null;
@@ -140,6 +148,7 @@ function GpaTable({ semesters }) {
           <tr key={s.term}>
             <td style={CELL}>{s.label}</td>
             <td style={CELL}>{formatScore(s.average)}</td>
+            {hasGpa && <td style={CELL}>{formatScore(s.gpa)}</td>}
             <td
               style={{
                 ...CELL,
@@ -181,6 +190,7 @@ function GradesHeader({ gpa, department, grade }) {
         累計學業平均 {formatScore(gpa.cumulative_average)}
         {latest && `・累計排名 班 ${latest.class_rank}、系 ${latest.dept_rank}`}
       </div>
+      {gpa.gpa != null && <div className="ncux-card-meta">{gpaText(gpa)}</div>}
       <div className="ncux-card-meta">
         {[department, grade, latest && `排名截至 ${latest.label}`].filter(Boolean).join("・")}
       </div>
@@ -240,6 +250,7 @@ export default function AcademicAnalysis({ data }) {
         <Section title="成績趨勢">
           <div className="ncux-card-meta" style={{ marginBottom: 6 }}>
             累計學業平均 {formatScore(data.gpa.cumulative_average)}
+            {data.gpa.gpa != null && `、${gpaText(data.gpa)}`}
             {data.gpa.latest_change != null &&
               `，最近一學期比前一學期${data.gpa.latest_change >= 0 ? "進步" : "退步"} ${Math.abs(
                 data.gpa.latest_change,

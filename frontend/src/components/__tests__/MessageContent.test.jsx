@@ -169,6 +169,37 @@ const academicAnalysis = {
 };
 
 describe("MessageContent 學業分析卡片", () => {
+  const withGpa = {
+    ...academicAnalysis,
+    focus: "grades",
+    gpa: {
+      ...academicAnalysis.gpa,
+      gpa: 3.62,
+      gpa_credits: 35,
+      gpa_matches_school_average: true,
+      semesters: academicAnalysis.gpa.semesters.map((s, i) => ({ ...s, gpa: [3.7, 3.53][i] })),
+    },
+  };
+
+  it("grades：有算出 GPA 時顯示累計 GPA 跟每學期的 GPA", () => {
+    render(<MessageContent content={withGpa} />);
+    expect(screen.getByText("GPA 3.62（4.3 制）")).toBeInTheDocument();
+    expect(screen.getByText(/累計學業平均 85.55、GPA 3.62（4.3 制）/)).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "GPA" })).toBeInTheDocument();
+    expect(screen.getByText("3.53")).toBeInTheDocument();
+  });
+
+  it("GPA 跟學校的累計平均對不上時標成僅供參考", () => {
+    render(<MessageContent content={{ ...withGpa, gpa: { ...withGpa.gpa, gpa_matches_school_average: false } }} />);
+    expect(screen.getByText("GPA 3.62（4.3 制，算法跟學校的累計平均有出入，僅供參考）")).toBeInTheDocument();
+  });
+
+  it("沒有 GPA 的舊資料不顯示 GPA 欄", () => {
+    render(<MessageContent content={{ ...academicAnalysis, focus: "grades" }} />);
+    expect(screen.queryByRole("columnheader", { name: "GPA" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/4.3 制/)).not.toBeInTheDocument();
+  });
+
   it("overview：學分缺口、重修提醒、畢業類別、成績變化、累計排名都顯示", () => {
     render(<MessageContent content={academicAnalysis} />);
 
