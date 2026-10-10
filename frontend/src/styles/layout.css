@@ -850,3 +850,29 @@
     right: 12px;
   }
 }
+
+/* 文字回答下面的複製按鈕（CopyAnswerButton）：小、淡，不搶回答的視線 */
+.copy-answer-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 3px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ncux-text-muted);
+  background: transparent;
+  border: 1px solid var(--ncux-border);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.copy-answer-button:hover {
+  color: var(--ncux-primary);
+  border-color: var(--ncux-primary);
+}
+
+.copy-answer-button:focus-visible {
+  outline: 2px solid var(--ncux-primary);
+  outline-offset: 2px;
+}
