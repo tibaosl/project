@@ -29,6 +29,7 @@ from backend.agent.agent_tools import (
     get_or_create_session,
     fetch_schedule_and_registrations,
     load_calendar_safely,
+    start_prewarm,
 )
 from backend.ncu import oauth_portal
 from backend.agent.suggestions import pick_starter_questions
@@ -114,6 +115,7 @@ async def login(req: LoginRequest):
         return {"status": "error", "message": "登入失敗，請確認帳號密碼是否正確。"}
 
     token = issue_session_token(req.username)
+    start_prewarm(req.username, session)
     print(f"[main API] {req.username} 登入成功，已核發 session token。")
     return {"status": "success", "token": token, "username": req.username}
 
@@ -170,6 +172,7 @@ async def login_with_chrome():
         await adopt_session(username, session)
 
     token = issue_session_token(username)
+    start_prewarm(username, session)
     print(f"[main API] {username}（{identity.get('chinese_name') or '未知姓名'}）透過 Chrome 登入成功。")
     return {
         "status": "success",

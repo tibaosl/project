@@ -25,6 +25,7 @@ from typing import Any, Literal, Optional
 from langchain_core.tools import tool
 
 from backend.ncu.action_tools import (
+    INCU_MY_ACTIVITIES_URL,
     NCUSession,
     RegistrationUnavailableError,
     get_schedule,
@@ -108,6 +109,7 @@ async def get_or_create_session(username: str, password: str) -> Optional[NCUSes
     if not username:
         return None
 
+    await wait_for_prewarm(username)
     lock = await _get_session_lock(username)
     async with lock:
         session = _sessions.get(username)
@@ -158,8 +160,61 @@ async def adopt_session(username: str, session: NCUSession):
         _sessions[username] = session
 
 
+# ----------------------------------------------------------------------------
+# 登入後預熱 iNCU：第一次進 iNCU 的子系統（活動報名紀錄、時數、成績）要先經過 Portal 的 OAuth
+# 同意頁，開首頁加授權大約十幾秒（2026-10 實測第一次問「我這週有什麼行程」要 22 秒，其中 13 秒
+# 花在這裡）。登入成功後就在背景先做掉，使用者打完第一個問題時通常已經好了。
+#
+# 預熱跟工具用的是同一個 iNCU 分頁，不能同時操作，所以 get_or_create_session 會先等預熱做完
+# （action_tools.py 是組員選課也會改的檔案，不在那邊加鎖）。預熱失敗只記錄，工具照常自己開 iNCU。
+# ----------------------------------------------------------------------------
+PREWARM_TIMEOUT_SECONDS = 45
+_prewarm_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _prewarm_incu(username: str, session: NCUSession) -> None:
+    started = time.monotonic()
+    try:
+        async def warm():
+            page = await session.open_incu_home()
+            await page.goto(INCU_MY_ACTIVITIES_URL, wait_until="networkidle")
+            await session._handle_oauth_consent_if_present(page)
+
+        await asyncio.wait_for(warm(), timeout=PREWARM_TIMEOUT_SECONDS)
+        print(f"[Agent] {username} 的 iNCU 已經先授權好（{time.monotonic() - started:.1f} 秒）")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # 包括逾時，工具之後照常自己開 iNCU
+        print(f"[Agent] {username} 的 iNCU 預熱沒有完成，之後查詢時再開：{type(e).__name__} {e}")
+
+
+def start_prewarm(username: str, session: NCUSession) -> None:
+    """登入成功後呼叫（main.py 的 /api/login、/api/login/chrome）。"""
+    old = _prewarm_tasks.pop(username, None)
+    if old is not None:
+        old.cancel()
+    _prewarm_tasks[username] = asyncio.get_running_loop().create_task(_prewarm_incu(username, session))
+
+
+async def wait_for_prewarm(username: str) -> None:
+    task = _prewarm_tasks.get(username)
+    if task is None:
+        return
+    try:
+        await asyncio.shield(task)  # 等的人被取消（例如前端斷線）時，不要連預熱一起取消
+    except asyncio.CancelledError:
+        if not task.cancelled():
+            raise
+    finally:
+        if task.done() and _prewarm_tasks.get(username) is task:
+            del _prewarm_tasks[username]
+
+
 async def reset_session(username: str):
     """該帳號的登入類操作出錯時關閉並清掉它的 session，下次呼叫會重新登入。"""
+    task = _prewarm_tasks.pop(username, None)
+    if task is not None:
+        task.cancel()
     lock = await _get_session_lock(username)
     async with lock:
         session = _sessions.pop(username, None)
