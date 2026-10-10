@@ -46,6 +46,7 @@ class Page:
     name: str              # 存檔的檔名，也是給 RAG 看的標題
     selector: str = ""     # 主要內容的 CSS selector，留空自動判斷
     images: bool = False   # 內容裡的大張圖片（海報）另存成 PDF，讓 RAG 用圖片轉錄讀內容
+    categories: bool = False  # 總務處那種「分類下拉選單 + 下一頁」的圖文清單：每一筆的詳細頁依分類整理成一份（crawler.Renderer.category_listing）
 
 
 @dataclass(frozen=True)
@@ -313,8 +314,9 @@ SOURCES: tuple[Source, ...] = (
             Page(OGA.format("34fba40c/questions/cf63c09c"), "總務處事務組常見問答"),
             Page(OGA.format("a14bd963/questions/1a055c7f"), "總務處出納組常見問答"),
             Page(OGA.format("2e319283/questions/d2b9a57d"), "總務處資產組常見問答"),
-            Page(OGA.format("2e319283/news/daeb8e93"), "校園餐廳介紹"),
-            Page(OGA.format("2e319283/news/4bafe7b8"), "校園商店介紹"),
+            # 分類（第九餐廳、松果餐廳、14舍B1商場…）在下拉選單，每家店的營業時間、電話在詳細頁
+            Page(OGA.format("2e319283/news/daeb8e93"), "校園餐廳介紹", categories=True),
+            Page(OGA.format("2e319283/news/4bafe7b8"), "校園商店介紹", categories=True),
         ),
         follow=(Follow(url=r"/(34fba40c|a14bd963)/news/[0-9a-f]+/detail/"),),  # 列表裡有些項目要點進內文才有附件
         # 出納組、資產組的下載區大多是給行政人員的（財產、零用金、國庫支票、扣繳稅率、系統操作說明）
