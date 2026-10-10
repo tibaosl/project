@@ -89,9 +89,9 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "哪些活動有人文藝術時數？",
         "有提供自我探索與生涯規劃時數的活動嗎？",
     )),
-    # 法規查詢只能回答 data/ 裡有的文件，範例要挑文件裡查得到的（停車證這類總務處的文件目前沒有），
-    # 而且要是全校學生都可能問的，不要只適用某個系（原本的「資工系的英文畢業門檻」換掉了）
-    "search_campus_regulations": FeatureSuggestions("校園法規", False, (
+    # 法規查詢只能回答 data/ 裡有的文件，範例要挑文件裡查得到的，而且要是全校學生都可能問的，
+    # 不要只適用某個系（原本的「資工系的英文畢業門檻」換掉了）。餐廳、開放時間這類生活資訊也查得到
+    "search_campus_regulations": FeatureSuggestions("法規與校園生活", False, (
         "導師密碼是什麼？",
         "學生證不見了要怎麼補辦？",
         "在學證明要怎麼申請？",
@@ -100,6 +100,9 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "書卷獎可以拿多少錢？",
         "停修有什麼限制？",
         "學生生病要怎麼請假？",
+        "學校有哪些餐廳？",
+        "圖書館開到幾點？",
+        "機車通行證要怎麼申請？",
     )),
     "get_activity_details": FeatureSuggestions("活動詳情", False),
     "preview_activity_registration": FeatureSuggestions("活動報名", True),
@@ -301,8 +304,8 @@ def _build_suggestion_prompt(
 
 選項都用使用者的口吻，跟使用者用同一種語言（中文一律用繁體中文，使用者用英文問就用英文），不要編號。
 只輸出 JSON，例如 {{"kind": "answers", "options": ["要", "不用了"]}}，或
-{{"kind": "follow_ups", "candidates": [{{"q": "停修會影響獎學金嗎", "answered_by": ""}},
-{{"q": "停修期限到什麼時候", "answered_by": "115 學年度第 1 學期的停修申請期間是 115/10/19 到 115/11/27"}}]}}。
+{{"kind": "follow_ups", "candidates": [{{"q": "停修會影響獎學金嗎？", "answered_by": ""}},
+{{"q": "停修期限到什麼時候？", "answered_by": "115 學年度第 1 學期的停修申請期間是 115/10/19 到 115/11/27"}}]}}。
 {language}"""
 
 
@@ -353,6 +356,19 @@ def parse_suggestion(text: str) -> Optional[tuple[str, list[str]]]:
 def _compact(text: str) -> str:
     """比對問題用：拿掉空白跟標點（「我的時數夠了嗎」跟「我的時數夠了嗎？」算同一題）。"""
     return re.sub(r"[\W_]+", "", text)
+
+
+# 模型產生的追問偶爾少了問號（2026-10 實測：「這個月有放假嗎」），看起來像沒打完。有疑問詞的補上，
+# 「幫我整體分析一下學業狀況」這種請求本來就不用問號。
+_QUESTION_WORDS = re.compile(r"嗎|呢|什麼|多少|哪|幾|怎麼|怎樣|如何|是否|有沒有|能不能|可不可以|要不要|會不會|是不是")
+_REQUEST_START = re.compile(r"^(幫我|請|查|推薦|列出|告訴我|整理|看一下|給我)")
+
+
+def _with_question_mark(question: str) -> str:
+    if (has_han(question) and not re.search(r"[？?。！!]$", question)
+            and _QUESTION_WORDS.search(question) and not _REQUEST_START.match(question)):
+        return question + "？"
+    return question
 
 
 def _clean_questions(questions: list[str], user_message: str, max_length: int = MAX_QUESTION_LENGTH) -> list[str]:
@@ -440,7 +456,7 @@ async def generate_suggestions(
         return kind, _clean_questions(options, user_message, MAX_OPTION_LENGTH)[:MAX_REPLY_OPTIONS]
 
     answered = _answered_examples(answer, called_tools)
-    questions = [q for q in _clean_questions(options, user_message) if _compact(q) not in answered]
+    questions = [_with_question_mark(q) for q in _clean_questions(options, user_message) if _compact(q) not in answered]
     if not questions:
         # 模型失敗、或想得到的都已經回答過了，才拿範例問題來補。模型有給一兩題就只放那幾題：
         # 補上跟這輪無關的範例（例如問完停修卻推薦「學生證不見了怎麼補辦」）反而奇怪。

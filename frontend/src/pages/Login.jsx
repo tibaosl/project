@@ -66,6 +66,7 @@ export default function Login() {
         <p className="subtitle">中央大學校園智慧助手</p>
         <div className="login-feature-pills">
           <span className="ncux-badge ncux-badge-info">法規查詢</span>
+          <span className="ncux-badge ncux-badge-info">校園生活</span>
           <span className="ncux-badge ncux-badge-info">校曆</span>
           <span className="ncux-badge ncux-badge-info">課表與行程</span>
           <span className="ncux-badge ncux-badge-info">學業分析</span>

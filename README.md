@@ -6,7 +6,8 @@
 
 ## 目前有的功能
 
-* **校園法規問答**：先看文件目錄挑出相關文件、再讀整份文件回答，回答附上來源出處
+* **校園法規與生活資訊問答**：先看文件目錄挑出相關文件、再讀整份文件回答，回答附上來源出處。
+  除了法規、辦法、表單，也能問校內餐廳與商店（地點、營業時間）、ATM、圖書館與運動中心的開放時間跟收費
   （`rag_documents.py` 處理文件、`academic_agent.py` 查詢，細節見下面「校園法規問答（RAG）」）。
 * **學校網站文件爬蟲**：`python -m backend.rag.crawler` 把全校各行政單位（教務處、學務處各組、總務處、國際處、圖書館、
   計中、通識、體育室…）跟各學院、系所網站上的法規、修業規定、表單、說明網頁抓到 `data/`，給法規問答用
@@ -156,6 +157,8 @@ python -m backend.rag.crawler             # 抓到 data/<來源>/，例如 data/
 * 總務處、生醫理工學院的網頁是 JavaScript 載入的，原始 HTML 裡沒有內容，這兩個來源用 Playwright 的
   無頭 Chromium 渲染完再讀（`crawler_sources.py` 的 `render=True`），所以爬蟲也要先跑過
   `python -m playwright install chromium`。
+  總務處的「校園餐廳介紹」「校園商店介紹」是分類在下拉選單、一頁 10 筆要按下一頁的清單（`Page(categories=True)`），
+  爬蟲的瀏覽器會逐一選分類、翻頁，再打開每家店的詳細頁，整理成依地點分組、有營業時間跟電話的一份 Markdown。
 * 每個檔案的來源網址記在 `data/.crawler_manifest.json`。不在裡面的檔案（自己手動放進 `data/` 的）
   爬蟲不會動。`python -m backend.rag.crawler --legacy` 可以檢查這些手動檔跟爬到的檔案有沒有重複，
   加 `--move-duplicate-legacy` 會把內容一模一樣的移到 `storage/crawler/legacy_backup/`。

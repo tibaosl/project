@@ -41,6 +41,7 @@ import threading
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -861,6 +862,35 @@ def page_markdown(soup: BeautifulSoup, page: Page, url: str, base: str = "") -> 
     return f"# {page.name}\n\n來源網頁：{url}\n\n{body}\n", root
 
 
+_DETAIL_NOISE = re.compile(r"^(發布單位\s*[:：].*|\d{4}-\d{2}-\d{2})$")
+
+
+def detail_text(html: str, url: str, name: str) -> str:
+    """圖文清單（Page.categories）裡一筆的詳細頁內容，拿掉發布單位、日期、重複的標題。"""
+    soup = BeautifulSoup(html, "lxml")
+    root = main_content(soup)
+    _drop_view_counters(root)
+    blocks: list[str] = []
+    _render(root, base_url(soup, url), blocks)
+    lines = [line.strip() for line in normalize_text("\n\n".join(blocks)).splitlines()]
+    kept = [line for line in lines if line and line.lstrip("#").strip() != name and not _DETAIL_NOISE.match(line)]
+    return "\n".join(kept)
+
+
+def listing_markdown(page: Page, url: str, entries: list[tuple[str, str, str]]) -> str:
+    """entries 是 (分類, 名稱, 詳細頁內容)，依分類分段（分類照第一次出現的順序），沒有分類的放最後。"""
+    groups: dict[str, list[tuple[str, str]]] = {}
+    for category, name, text in entries:
+        groups.setdefault(category, []).append((name, text))
+    if "" in groups:
+        groups["其他"] = groups.pop("")
+    parts = [f"# {page.name}", f"來源網頁：{url}"]
+    for category, items in groups.items():
+        parts.append(f"## {category}")
+        parts.extend(f"### {name}\n\n{text}" if text else f"### {name}" for name, text in items)
+    return "\n\n".join(parts) + "\n"
+
+
 def content_images(root: Tag, base_url: str) -> list[str]:
     """內容裡可能是海報的圖片（寬高標得太小的是圖示，先排除）。"""
     urls = []
@@ -1036,6 +1066,7 @@ class Fetcher:
 
 RENDER_DELAY = 1.0  # 用瀏覽器開的網頁每頁都會載入一堆 JavaScript、圖片，頁面之間多隔一點
 RENDER_SETTLE_MS = 1500  # 網路靜下來之後再等一下，讓 JavaScript 把內容畫完
+MAX_LIST_PAGES = 20  # 要按「下一頁」的清單最多讀幾頁（防止按鈕一直按得下去）
 
 
 class Renderer:
@@ -1053,6 +1084,51 @@ class Renderer:
         self._browser = None
 
     def get_html(self, url: str) -> tuple[str, str]:
+        with self._page(url) as page:
+            return page.content(), page.url
+
+    def category_listing(self, url: str) -> tuple[str, dict[str, tuple[str, str]]]:
+        """總務處網站的圖文清單（校園餐廳介紹、校園商店介紹）：分類在下拉選單、要按「搜尋」才會換，
+        一頁 10 筆要按「下一頁」，網址都不會變。像真人一樣先讀完不分類的清單，再一個一個選分類、
+        按搜尋、讀完每一頁，記下每筆屬於哪個分類。
+
+        回傳 (頁面網址, {詳細頁網址: (名稱, 分類)})，照下拉選單的分類順序排，不在任何分類裡的放最後、分類是空字串。
+        """
+        with self._page(url) as page:
+            names = dict(self._list_items(page))
+            categorized: dict[str, tuple[str, str]] = {}
+            select = page.locator("select", has=page.locator("option", has_text="請選擇分類")).first
+            options = select.locator("option").evaluate_all("els => els.map(e => [e.value, e.textContent.trim()])")
+            for value, label in options:
+                if value in ("", "-1"):
+                    continue
+                select.select_option(value=value)
+                page.get_by_role("button", name="搜尋").first.click()
+                self._settle(page)
+                for href, name in self._list_items(page):
+                    categorized.setdefault(href, (name, label))
+            others = {href: (name, "") for href, name in names.items() if href not in categorized}
+            return page.url, {**categorized, **others}
+
+    def _list_items(self, page) -> list[tuple[str, str]]:
+        found, seen = [], set()
+        for _ in range(MAX_LIST_PAGES):
+            links = page.locator("a.news-table-list").evaluate_all(
+                "els => els.map(e => [e.href, (e.title || e.textContent).trim()])")
+            key = tuple(href for href, _ in links)
+            if key in seen:  # 按了下一頁內容沒變，就是最後一頁了
+                break
+            seen.add(key)
+            found.extend((href, name) for href, name in links if self.fetcher.allows(href))
+            next_page = page.locator(".pagination li", has=page.locator("button[aria-label='下一頁']"))
+            if next_page.count() == 0 or "disabled" in (next_page.first.get_attribute("class") or ""):
+                break
+            next_page.first.locator("button").click()
+            self._settle(page)
+        return found
+
+    @contextmanager
+    def _page(self, url: str):
         from playwright.sync_api import Error as PlaywrightError
         from playwright.sync_api import sync_playwright
 
@@ -1067,12 +1143,18 @@ class Renderer:
             if response is not None and response.status >= 400:
                 raise FetchError(f"HTTP {response.status}")
             page.wait_for_timeout(RENDER_SETTLE_MS)
-            return page.content(), page.url
+            yield page
         except PlaywrightError as e:
             raise FetchError(f"瀏覽器開不了這個網頁：{str(e)[:150]}") from e
         finally:
             page.close()
             time.sleep(RENDER_DELAY)
+
+    @staticmethod
+    def _settle(page) -> None:
+        # 按鈕換頁、換分類之後，等清單重新載入，再多等一下（同一頁裡的動作也不要太密集）
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(max(RENDER_SETTLE_MS, int(RENDER_DELAY * 1000)))
 
     def close(self) -> None:
         if self._browser is not None:
@@ -1632,11 +1714,14 @@ class Crawler:
     def _write_snapshot(self, source: Source, page: Page, url: str, html: str, report: Report) -> list[str]:
         soup = BeautifulSoup(html, "lxml")
         base = base_url(soup, url)
-        markdown, root = page_markdown(soup, page, url, base)
+        if page.categories:
+            markdown, root = self._listing_markdown(page, url), None
+        else:
+            markdown, root = page_markdown(soup, page, url, base)
         written = []
         image_bytes: list[bytes] = []
         image_urls: list[str] = []
-        if page.images:
+        if page.images and root is not None:
             for image_url in content_images(root, base):
                 try:
                     data = self.fetcher.get_bytes(image_url)
@@ -1664,6 +1749,18 @@ class Crawler:
                                   build=lambda: images_to_pdf(image_bytes), image_urls=image_urls)
             written.append(images_path)
         return written
+
+    def _listing_markdown(self, page: Page, url: str) -> str:
+        """Page.categories 的清單：讀完每個分類的每一頁，再打開每一筆的詳細頁。哪一頁讀不到就整份不更新
+        （丟出 FetchError，原本的檔案留著），不然少了幾家店也會被當成改版。"""
+        final_url, items = self.renderer.category_listing(url)
+        if not items:
+            raise FetchError("清單裡一筆都沒有讀到")
+        entries = []
+        for href, (name, category) in items.items():
+            html, detail_url = self.renderer.get_html(href)
+            entries.append((category, name, detail_text(html, detail_url, name)))
+        return listing_markdown(page, final_url, entries)
 
     def _write_generated(self, source: Source, path: str, url: str, title: str, kind: str, data: Optional[bytes],
                          content_hash: str, report: Report, build=None, image_urls=None) -> None:

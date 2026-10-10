@@ -215,7 +215,7 @@ def test_follow_ups_drop_candidates_the_answer_already_covers(monkeypatch):
         {"q": "停修可以取消嗎", "answered_by": ""},
     ]}, ensure_ascii=False))
     kind, questions = _run(monkeypatch, llm, user_message="停修有什麼限制？", answer="一學期只能停修 1 科……")
-    assert (kind, questions) == ("follow_ups", ["停修會影響獎學金嗎", "停修可以取消嗎"])
+    assert (kind, questions) == ("follow_ups", ["停修會影響獎學金嗎？", "停修可以取消嗎？"])
 
 
 def test_follow_ups_fall_back_to_examples_when_every_candidate_is_already_answered(monkeypatch):
@@ -264,3 +264,11 @@ def test_english_questions_ask_for_english_options():
     prompt = suggestions._build_suggestion_prompt("Is the library open on Sunday?", "Yes.", "", ["校園法規"], False)
     assert prompt.rstrip().endswith("使用者用英文發問，選項、問題全部用英文寫。")
     assert "全部用英文" not in suggestions._build_suggestion_prompt("圖書館星期日有開嗎？", "有。", "", [], False)
+
+
+def test_follow_ups_missing_a_question_mark_get_one(monkeypatch):
+    llm = _FakeLLM('{"kind": "follow_ups", "options": ["這個月有放假嗎", "幫我查我有沒有被當的課", "期中考是什麼時候？"]}')
+    kind, questions = _run(monkeypatch, llm, user_message="寒假什麼時候開始？", answer={"kind": "campus_calendar"},
+                           called_tools=("get_campus_calendar",))
+    assert kind == "follow_ups"
+    assert questions == ["這個月有放假嗎？", "幫我查我有沒有被當的課", "期中考是什麼時候？"]
