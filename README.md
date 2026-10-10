@@ -58,6 +58,8 @@
 backend/                      後端（Python）
 ├── main.py                   FastAPI 伺服器：API、把 data/ 掛在 /files
 ├── paths.py                  data/、storage/ 這些資料夾的位置
+├── security.py               只接受本機的請求、擋跨站請求、安全標頭
+├── language.py               判斷問題是不是英文（英文問就用英文回答）
 ├── logging_config.py
 ├── agent/                    對話代理
 │   ├── supervisor_agent.py   判斷要用哪個功能、串流回答
