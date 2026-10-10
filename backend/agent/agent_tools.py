@@ -19,6 +19,7 @@
 import asyncio
 import secrets
 import time
+from datetime import date
 from typing import Any, Literal, Optional
 
 from langchain_core.tools import tool
@@ -56,6 +57,7 @@ from backend.analysis.academic_calendar import (
 )
 from backend.analysis.academic_tools import analyze_academic_progress, fetch_academic_records
 from backend.analysis.agenda import build_agenda
+from backend.analysis.calendar_export import term_for_export
 from backend.analysis.scholarship_tools import DeclaredStatus, recommend_scholarships
 
 CalendarPeriod = Literal["today", "tomorrow", "this_week", "next_week", "next_30_days", "this_month", "next_month"]
@@ -317,6 +319,28 @@ def _format_my_registration(item: dict[str, str]) -> str:
     return "\n".join(lines)
 
 
+async def fetch_schedule_and_registrations(session: NCUSession) -> tuple[Optional[list], Optional[list]]:
+    """我的行程、匯出行事曆用：抓課表跟活動報名紀錄，哪一份抓不到就是 None（另一份照樣用）。"""
+    schedule = registrations = None
+    try:
+        schedule = await get_schedule(session)
+    except Exception as e:
+        print(f"[Agent] 課表抓取失敗：{e}")
+    try:
+        registrations = (await session.get_my_activity_registrations()).get("registrations", [])
+    except Exception as e:
+        print(f"[Agent] 報名紀錄抓取失敗：{e}")
+    return schedule, registrations
+
+
+async def load_calendar_safely() -> list:
+    try:
+        return await asyncio.to_thread(load_calendar)
+    except Exception as e:
+        print(f"[Agent] 讀取校曆失敗：{e}")
+        return []
+
+
 def build_tools(username: str, password: str, history_str: str = "無"):
     """組出這一輪對話可以用的完整工具清單。
 
@@ -565,26 +589,34 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         if session is None:
             return {"content": NO_CREDENTIALS_MSG}
 
-        schedule = registrations = None
-        try:
-            schedule = await get_schedule(session)
-        except Exception as e:
-            print(f"[Agent] 我的行程：課表抓取失敗：{e}")
-        try:
-            registrations = (await session.get_my_activity_registrations()).get("registrations", [])
-        except Exception as e:
-            print(f"[Agent] 我的行程：報名紀錄抓取失敗：{e}")
+        schedule, registrations = await fetch_schedule_and_registrations(session)
         if schedule is None and registrations is None:
             await reset_session(username)
             return {"content": "課表跟活動報名紀錄都抓不到，可能是登入狀態失效了，請重新登入再試一次。"}
 
-        try:
-            events = await asyncio.to_thread(load_calendar)
-        except Exception as e:
-            print(f"[Agent] 我的行程：讀取校曆失敗：{e}")
-            events = []
+        events = await load_calendar_safely()
         first, last = period_range(period)
         return {"content": build_agenda(first, last, events, schedule, registrations, f"我的行程：{_period_title(period)}")}
+
+    @tool
+    async def export_calendar_file() -> dict:
+        """提供可以匯入 Google 日曆、Outlook、手機行事曆的 .ics 檔（畫面上會出現下載按鈕）。
+        有登入的話包含這學期每週的課（放假、停課的日子會跳過）、已報名的活動跟整年的校曆，沒登入只有校曆。
+
+        使用時機：使用者想把課表、校曆或活動「加進／匯入／同步到」自己的行事曆，例如「課表可以匯入
+        Google 日曆嗎」「幫我把校曆加到手機行事曆」「匯出行事曆」。只是想看課表、行程或校曆的內容，
+        請用 get_my_schedule、get_my_agenda、get_campus_calendar。不需要任何參數。
+        """
+        events = await load_calendar_safely()
+        term = term_for_export(events, date.today())
+        return {"content": {
+            "kind": "calendar_export",
+            "title": "匯出到行事曆",
+            "logged_in": bool(username),
+            "calendar_events": sum(1 for e in events if e.for_students),
+            "term": [format_day(term[0]), format_day(term[1])] if term else None,
+            "source": calendar_source(),
+        }}
 
     @tool
     async def search_campus_activities(keyword: str) -> dict:
@@ -912,6 +944,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         get_my_registered_activities,
         get_my_agenda,
         get_campus_calendar,
+        export_calendar_file,
         preview_activity_registration,
         preview_activity_cancellation,
         search_campus_regulations,

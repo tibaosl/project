@@ -1,5 +1,6 @@
 import Icon, { MetaLine } from "./Icon";
 import { EVENT_KINDS } from "./CampusCalendar";
+import CalendarExportButton from "./CalendarExportButton";
 
 function startOf(time) {
   const match = /(\d{1,2}):(\d{2})/.exec(time || "");
@@ -70,6 +71,7 @@ export default function PersonalAgenda({ data }) {
           <span>{note}</span>
         </p>
       ))}
+      <CalendarExportButton />
     </div>
   );
 }

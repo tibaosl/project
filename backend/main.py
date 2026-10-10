@@ -12,9 +12,9 @@ from contextlib import asynccontextmanager
 import uvicorn
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from backend.agent.supervisor_agent import run_ncuxplore_agent, run_ncuxplore_agent_stream
 from backend.ncu.action_tools import NCUSession
@@ -26,11 +26,15 @@ from backend.agent.agent_tools import (
     revoke_session_token,
     has_active_tokens,
     reset_session,
+    get_or_create_session,
+    fetch_schedule_and_registrations,
+    load_calendar_safely,
 )
 from backend.ncu import oauth_portal
 from backend.agent.suggestions import pick_starter_questions
 from backend import paths
 from backend.analysis.academic_calendar import load_calendar
+from backend.analysis.calendar_export import build_ics, export_summary
 from backend.logging_config import make_print_logger
 from backend.rag import academic_agent
 from backend.security import LocalOnlyMiddleware
@@ -312,6 +316,51 @@ async def starter_suggestions(req: SuggestionRequest):
     """
     logged_in = bool(req.token and resolve_session_token(req.token))
     return {"questions": pick_starter_questions(logged_in, exclude=frozenset(req.exclude))}
+
+
+class CalendarExportRequest(BaseModel):
+    token: str = ""
+
+
+@app.post("/api/calendar/export")
+async def export_calendar(req: CalendarExportRequest):
+    """下載行事曆檔（.ics）：整年的校曆，有登入再加上這學期的課跟已報名的活動（calendar_export.build_ics）。
+
+    跟 /api/suggestions 一樣用 POST 帶 token，不放在網址上。回應標頭 X-Calendar-Contents 列出實際
+    包含了哪些內容（calendar、classes、activities），課表或報名紀錄一時抓不到時前端才說得清楚。
+    """
+    schedule = registrations = None
+    if req.token:
+        username = resolve_session_token(req.token)
+        session = await get_or_create_session(username, "") if username else None
+        if session is None:
+            return JSONResponse({"detail": "登入狀態已經失效，請重新登入後再匯出。"}, status_code=401)
+        schedule, registrations = await fetch_schedule_and_registrations(session)
+        if schedule is None and registrations is None:
+            await reset_session(username)
+            return JSONResponse({"detail": "課表跟活動報名紀錄都抓不到，可能是登入狀態失效了，請重新登入再試一次。"}, status_code=502)
+
+    events = await load_calendar_safely()
+    if not events and not schedule and not registrations:
+        return JSONResponse({"detail": "找不到校曆，目前沒有可以匯出的內容。"}, status_code=404)
+
+    summary = export_summary(events, schedule, registrations)
+    included = {
+        "calendar": summary["calendar_events"],
+        "classes": summary["term"] and summary["courses"],  # 寒假時校曆上還沒有下學期，就沒有課可以排
+        "activities": summary["activities"],
+    }
+    contents = [name for name, count in included.items() if count]
+    filename = "我的中央大學行事曆.ics" if {"classes", "activities"} & set(contents) else "中央大學校曆.ics"
+    return Response(
+        build_ics(events, schedule, registrations),
+        media_type="text/calendar; charset=utf-8",
+        headers={
+            "Content-Disposition": f"attachment; filename=ncu-calendar.ics; filename*=UTF-8''{quote(filename)}",
+            "Cache-Control": "no-store",
+            "X-Calendar-Contents": ",".join(contents),
+        },
+    )
 
 
 @app.post("/api/chat/stream")

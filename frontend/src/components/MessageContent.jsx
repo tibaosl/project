@@ -9,13 +9,14 @@ import AcademicAnalysis from "./AcademicAnalysis";
 import ScholarshipList from "./ScholarshipList";
 import CampusCalendar from "./CampusCalendar";
 import PersonalAgenda from "./PersonalAgenda";
+import CalendarExport from "./CalendarExport";
 
 /**
  * 依內容形狀分派渲染方式，對應後端各個工具回傳的 content：
  * - 字串 → 當 Markdown 顯示（法規回答、選課結果、活動搜尋列表...）
  * - {kind: "hours_dashboard" | "academic_analysis" | "scholarship_recommendations"
  *    | "activity_recommendations" | "activity_tag_search" | "activity_detail"
- *    | "activity_confirmation" | "campus_calendar" | "personal_agenda", ...} → 各自的卡片元件
+ *    | "activity_confirmation" | "campus_calendar" | "personal_agenda" | "calendar_export", ...} → 各自的卡片元件
  * - 課表的陣列（每筆有 day/period/time/details）→ 課表格線
  *
  * 跟舊版 ui.py 的 render_agent_reply() 是同一套邏輯，只是從 Streamlit
@@ -95,6 +96,8 @@ export default function MessageContent({ content }) {
         return <CampusCalendar data={content} />;
       case "personal_agenda":
         return <PersonalAgenda data={content} />;
+      case "calendar_export":
+        return <CalendarExport data={content} />;
       default:
         return <pre style={{ fontSize: 12, whiteSpace: "pre-wrap" }}>{JSON.stringify(content, null, 2)}</pre>;
     }

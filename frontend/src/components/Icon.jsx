@@ -116,6 +116,12 @@ const SHAPES = {
       <path d="M19.3 3.6v4.1h-4.1" />
     </>
   ),
+  download: (
+    <>
+      <path d="M12 3.8v11M7.5 10.3 12 14.8l4.5-4.5" />
+      <path d="M4.5 15.5v2.7a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2.7" />
+    </>
+  ),
 };
 
 export const ICON_NAMES = Object.keys(SHAPES);
