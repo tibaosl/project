@@ -23,6 +23,14 @@ PASS_SCORE = {"學士班": 60.0}
 DEFAULT_GRADUATE_PASS_SCORE = 70.0
 
 TERM_TITLE_RE = re.compile(r"第\s*(\d+)\s*學年度第\s*(\d)\s*學期")
+
+# 109 年 9 月起的百分制轉等第積分（教務處註冊組〈成績表說明〉參、一、（二）），由高往低找第一個符合的下限
+GRADE_POINTS = (
+    (90, "A+", 4.3), (85, "A", 4.0), (80, "A-", 3.7), (77, "B+", 3.3), (73, "B", 3.0), (70, "B-", 2.7),
+    (67, "C+", 2.3), (63, "C", 2.0), (60, "C-", 1.7), (50, "D", 1.0), (1, "E", 0.0), (0, "X", 0.0),
+)
+# 研究生的學位論文不算 GPA（同一份說明的備註 3）
+THESIS_RE = re.compile(r"^(碩士|博士)?(學位)?論文$")
 FAILED_SCORE_KEYWORDS = ("停修", "不及格", "未通過", "棄修")
 
 
@@ -294,6 +302,57 @@ def _course_passed(course: dict) -> bool:
     return "通過" in course["score_text"] and "未通過" not in course["score_text"]
 
 
+def grade_point(score: float) -> tuple[str, float]:
+    """百分制成績 → (等第, 等第積分)。成績以整數表示，先四捨五入。"""
+    rounded = int(score + 0.5)
+    return next((letter, point) for low, letter, point in GRADE_POINTS if rounded >= low)
+
+
+def _counts_toward_average(course: dict, student_program: str) -> bool:
+    """算累計學業平均跟 GPA 的課：有百分制成績的課，含不及格、重修、暑修，
+    不含通過/不通過、停修（沒有分數）、境外修課、自主學習微課程，研究生不含學士班課程跟學位論文。"""
+    if course["score"] is None or not course["credits"]:
+        return False
+    if "境外" in course["remark"] or "自主學習" in course["name"]:
+        return False
+    if student_program and student_program != "學士班":
+        return course["program"] != "學士班" and not THESIS_RE.match(course["name"])
+    return True
+
+
+def compute_gpa(transcript: dict) -> Optional[dict]:
+    """照學校公式算的 GPA（4.3 制）：(每科學分 × 等第積分) 的總和 ÷ 學分總和。
+
+    iNCU 只給百分制的平均，GPA 是自己算的。同一批課也算一次累計平均，跟 iNCU 的累計平均比對，
+    對得上才代表挑的課跟學校的算法一樣（matches_school_average），對不上前端會標「僅供參考」。
+    """
+    program = transcript.get("program", "")
+    total_credits = total_points = total_scores = 0.0
+    semesters = []
+    for sem in transcript["semesters"]:
+        credits = points = 0.0
+        for course in sem["courses"]:
+            if not _counts_toward_average(course, program):
+                continue
+            credits += course["credits"]
+            points += course["credits"] * grade_point(course["score"])[1]
+            total_scores += course["credits"] * course["score"]
+        if credits:
+            semesters.append({"term": sem["term"], "gpa": round(points / credits + 1e-9, 2)})
+            total_credits += credits
+            total_points += points
+    if not total_credits:
+        return None
+    average = round(total_scores / total_credits + 1e-9, 2)
+    reported = transcript.get("cumulative_average")
+    return {
+        "gpa": round(total_points / total_credits + 1e-9, 2),
+        "credits": int(total_credits),
+        "semesters": semesters,
+        "matches_school_average": reported is None or abs(average - reported) <= 0.01,
+    }
+
+
 def _remaining(rule: dict) -> tuple[int, int]:
     return (
         max(0, rule["required_credits"] - rule["earned_credits"]),
@@ -415,12 +474,15 @@ def analyze_academic_progress(
                 credits_by_type[course["course_type"]] = credits_by_type.get(course["course_type"], 0) + course["credits"]
 
     semester_ranks = transcript["ranks"].get("semester", {})
+    gpa = compute_gpa(transcript)
+    semester_gpa = {s["term"]: s["gpa"] for s in gpa["semesters"]} if gpa else {}
     semesters = []
     for sem in transcript["semesters"]:
         rank = semester_ranks.get(sem["term"], {})
         semesters.append({
             "term": sem["term"],
             "label": sem["label"],
+            "gpa": semester_gpa.get(sem["term"]),
             "average": sem["summary"].get("average", rank.get("average")),
             "earned_credits": sem["summary"].get("earned_credits"),
             "class_rank": rank.get("class_rank"),
@@ -466,6 +528,9 @@ def analyze_academic_progress(
         },
         "gpa": {
             "cumulative_average": transcript["cumulative_average"],
+            "gpa": gpa["gpa"] if gpa else None,
+            "gpa_credits": gpa["credits"] if gpa else None,
+            "gpa_matches_school_average": gpa["matches_school_average"] if gpa else None,
             "latest_change": trend,
             "semesters": semesters,
             "cumulative_ranks": cumulative_ranks,

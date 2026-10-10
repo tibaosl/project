@@ -7,6 +7,8 @@ from html import escape
 
 from backend.analysis.academic_tools import (
     analyze_academic_progress,
+    compute_gpa,
+    grade_point,
     parse_graduation_report_html,
     parse_transcript_html,
 )
@@ -266,3 +268,50 @@ def test_analysis_without_graduation_report_falls_back_to_transcript():
     assert a["credits"]["earned"] == 20
     assert a["credits"]["required"] is None
     assert a["graduation_categories"] == []
+
+
+def test_grade_points_follow_the_official_table():
+    # 教務處註冊組〈成績表說明〉109 年 9 月起的對照表，每一級的上下限都測
+    table = {
+        100: ("A+", 4.3), 90: ("A+", 4.3), 89: ("A", 4.0), 85: ("A", 4.0), 84: ("A-", 3.7), 80: ("A-", 3.7),
+        79: ("B+", 3.3), 77: ("B+", 3.3), 76: ("B", 3.0), 73: ("B", 3.0), 72: ("B-", 2.7), 70: ("B-", 2.7),
+        69: ("C+", 2.3), 67: ("C+", 2.3), 66: ("C", 2.0), 63: ("C", 2.0), 62: ("C-", 1.7), 60: ("C-", 1.7),
+        59: ("D", 1.0), 50: ("D", 1.0), 49: ("E", 0.0), 1: ("E", 0.0), 0: ("X", 0.0),
+    }
+    assert {score: grade_point(score) for score in table} == table
+    assert grade_point(89.5) == ("A+", 4.3)  # 成績以整數表示，先四捨五入
+
+
+def test_gpa_uses_the_same_courses_as_the_cumulative_average():
+    transcript = parse_transcript_html(TRANSCRIPT_HTML)
+    gpa = compute_gpa(transcript)
+    # 72（B-）、45（E）、88（A）、50（D）：停修、修課中、通過制、0 學分的不算
+    assert gpa["credits"] == 11
+    assert gpa["gpa"] == 1.74  # (3×2.7 + 3×0 + 2×4.0 + 3×1.0) / 11
+    assert gpa["semesters"] == [{"term": "1132", "gpa": 1.38}, {"term": "1141", "gpa": 2.7}]
+    # 假資料的累計平均是隨便寫的，跟算出來的 61.55 對不上
+    assert gpa["matches_school_average"] is False
+    transcript["cumulative_average"] = 61.55
+    assert compute_gpa(transcript)["matches_school_average"] is True
+
+
+def test_graduate_gpa_leaves_out_undergraduate_courses_and_the_thesis():
+    transcript = {
+        "program": "碩士班",
+        "cumulative_average": 90.0,
+        "semesters": [{"term": "1141", "courses": [
+            {"name": "機器學習", "program": "碩士班", "credits": 3, "score": 90.0, "remark": ""},
+            {"name": "微積分", "program": "學士班", "credits": 3, "score": 60.0, "remark": ""},
+            {"name": "碩士論文", "program": "碩士班", "credits": 6, "score": 70.0, "remark": ""},
+            {"name": "海外研究", "program": "碩士班", "credits": 3, "score": 75.0, "remark": "境外"},
+        ]}],
+    }
+    gpa = compute_gpa(transcript)
+    assert (gpa["gpa"], gpa["credits"], gpa["matches_school_average"]) == (4.3, 3, True)
+
+
+def test_analysis_includes_gpa_for_each_semester():
+    a = analyze_academic_progress(parse_transcript_html(TRANSCRIPT_HTML), None)
+    assert (a["gpa"]["gpa"], a["gpa"]["gpa_credits"], a["gpa"]["gpa_matches_school_average"]) == (1.74, 11, False)
+    assert [s["gpa"] for s in a["gpa"]["semesters"]] == [1.38, 2.7]
+    assert compute_gpa({"program": "學士班", "cumulative_average": None, "semesters": []}) is None
