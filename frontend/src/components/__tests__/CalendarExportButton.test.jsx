@@ -22,8 +22,10 @@ describe("登入後的下載行事曆按鈕", () => {
 
     render(<CalendarExportButton />);
     fireEvent.click(screen.getByRole("button", { name: /下載課表跟校曆/ }));
+    expect(screen.getByRole("status")).toHaveTextContent("半分鐘左右");  // 抓課表比較久，先說明
 
-    expect(await screen.findByRole("status")).toHaveTextContent("內容有校曆、已報名的活動。（這次沒有排進課表");
+    expect(await screen.findByText(/內容有校曆、已報名的活動。（這次沒有排進課表/)).toBeInTheDocument();
+    expect(screen.queryByText(/半分鐘左右/)).not.toBeInTheDocument();
     expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({ token: "session-token" });
   });
 });

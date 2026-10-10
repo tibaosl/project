@@ -30,6 +30,11 @@ export default function CalendarExportButton() {
         <Icon name="download" />
         <span>{busy ? "正在整理..." : loggedIn ? "下載課表跟校曆（.ics）" : "下載校曆（.ics）"}</span>
       </button>
+      {busy && loggedIn && (
+        <p className="ncux-card-meta calendar-export-message" role="status">
+          要先到學校系統抓課表跟報名紀錄，有時候要半分鐘左右。
+        </p>
+      )}
       {state.message && (
         <p
           className={`ncux-card-meta calendar-export-message${state.status === "error" ? " is-error" : ""}`}
