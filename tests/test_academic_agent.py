@@ -16,6 +16,17 @@ def _doc(doc_id, title, text="", superseded_by=""):
                               card=card, superseded_by=superseded_by)
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _forget_question_vectors():
+    """問題的向量會記在模組裡（初篩跟挑文件共用），每個測試的假向量不一樣，要清掉。"""
+    agent._question_vector_cache.clear()
+    yield
+    agent._question_vector_cache.clear()
+
+
 CATALOG = [_doc("D01", "學雜費收費標準", "學士班資電學院學費 17,490 元"), _doc("D02", "學生證遺失補發申請作業"),
            _doc("D03", "舊版表單", superseded_by="D02")]
 
@@ -90,6 +101,47 @@ def test_router_cards_list_only_the_first_few_answerable_questions(monkeypatch):
     request = fake.calls[0]["messages"][1]["content"]
     assert "可回答：請假問題1？／請假問題2？／請假問題3？／請假問題4？（另有 2 題）" in request
     assert "請假問題5" not in request
+
+
+def test_router_cards_show_the_answerable_questions_closest_to_the_question(monkeypatch):
+    # 常見問答一份有幾十題，相關的那題排在後面也要讓模型看到
+    doc = _doc("D20", "宿舍常見問題")
+    doc.card["answers"] = ["住宿服務組辦公室在哪裡？", "宿舍床墊尺寸是多少？", "宿舍可以帶除濕機嗎？",
+                           "寢室設備故障怎麼報修？", "宿舍會代收包裹嗎？"]
+    fake = _use_fakes(monkeypatch, _plan(decision="not_found"))
+    monkeypatch.setattr(agent, "ROUTER_ANSWERS_PER_CARD", 2)
+    agent.plan_query("包裹寄到學校，誰會代收？", "", CATALOG + [doc], [doc])
+    request = fake.calls[0]["messages"][1]["content"]
+    assert "可回答：宿舍會代收包裹嗎？／住宿服務組辦公室在哪裡？（另有 3 題）" in request
+
+
+def test_pick_answers_keeps_the_card_order_without_matches():
+    answers = ["第一題？", "第二題？", "第三題？"]
+    assert agent.pick_answers(answers, 2) == ["第一題？", "第二題？"]
+    assert agent.pick_answers(answers, 2, {"包裹": 3.0}) == ["第一題？", "第二題？"]
+    assert agent.pick_answers(answers, 5, {"包裹": 3.0}) == answers
+
+
+def test_router_cards_pick_answerable_questions_by_meaning(monkeypatch):
+    # 「學士服」跟「學位袍」沒有共同的字，靠每一題的向量才挑得到
+    import numpy as np
+
+    doc = _doc("D20", "課外活動組常見問題")
+    doc.card["answers"] = ["社團辦公室在哪裡？", "器材要去哪裡借？", "可以向課外組租借學位袍嗎？"]
+    doc.answer_embeddings = np.array([_vector(1)[:2], _vector(0, 1)[:2], _vector(1, 1)[:2]], dtype=np.float32)
+    doc.answer_embeddings /= np.linalg.norm(doc.answer_embeddings, axis=1, keepdims=True)
+    _fake_embeddings(monkeypatch, {"學士服": _vector(1, 1)})
+    fake = _use_fakes(monkeypatch, _plan(decision="not_found"))
+    monkeypatch.setattr(agent, "ROUTER_ANSWERS_PER_CARD", 1)
+    agent.plan_query("畢業典禮的學士服去哪裡借？", "", CATALOG + [doc], [doc])
+    assert "可回答：可以向課外組租借學位袍嗎？（另有 2 題）" in fake.calls[0]["messages"][1]["content"]
+
+
+def test_pick_answers_follows_similarities_when_given():
+    import numpy as np
+
+    answers = ["第一題？", "第二題？", "第三題？"]
+    assert agent.pick_answers(answers, 2, None, np.array([0.1, 0.9, 0.5])) == ["第二題？", "第三題？"]
 
 
 def test_router_can_pick_the_latest_version_outside_the_candidates(monkeypatch):
@@ -242,6 +294,8 @@ def _retrieval_catalog():
         _doc("D06", "114學年度課程地圖", "必修科目一覽。"),
     ]
     docs[4].superseded_by = "D06"
+    for doc in docs:
+        doc.card["scope"] = "某系"  # 全校性的文件初篩一定會保留幾份，這裡測的是一般的排名
     for doc, vector in zip(docs, [_vector(1), _vector(0, 1), _vector(0, 0, 1), _vector(0, 0, 0, 1),
                                   _vector(0, 1, 1), _vector(0, 0, 0, 1)]):
         doc.embedding = vector
@@ -302,6 +356,7 @@ def test_department_mentions_pull_that_departments_documents_into_the_candidates
     for i, folder in enumerate(["化學學系", "物理學系", "教務處", "教務處註冊組"], 1):
         doc = _doc(f"D0{i}", "碩士班修業辦法" if "系" in folder else f"其他文件{i}")
         doc.file_name = f"{folder}/{doc.card['title']}.pdf"
+        doc.card["scope"] = folder if "系" in folder else "全校"
         doc.embedding = _vector(1) if folder == "化學學系" else _vector(0, 1)
         docs.append(doc)
     _fake_embeddings(monkeypatch, {"": _vector(1)})
@@ -309,6 +364,40 @@ def test_department_mentions_pull_that_departments_documents_into_the_candidates
     assert "物理學系/碩士班修業辦法.pdf" in [d.file_name for d in found]
     assert agent.unit_folders("我是物理系的", docs) == {"物理學系"}
     assert agent.unit_folders("中文版成績單", docs) == set()  # 兩個字的「中文」不算系所
+
+
+def test_school_wide_rules_stay_in_the_candidates_among_many_department_rules(monkeypatch):
+    # 各系都有「碩士班修業辦法」，向量跟關鍵字都比學則像問題，學則還是要進候選（沒說系所時要靠它回答）
+    docs = []
+    for i, folder in enumerate(["化學學系", "物理學系", "數學系", "地球科學學系"], 1):
+        doc = _doc(f"D0{i}", "碩士班修業年限與畢業學分")
+        doc.file_name = f"{folder}/{doc.card['title']}.pdf"
+        doc.card["scope"] = folder
+        doc.embedding = _vector(1)
+        docs.append(doc)
+    rules = _doc("D05", "學則", "碩士班修業年限以一至四年為限。")
+    rules.embedding = _vector(0, 1)
+    docs.append(rules)
+    _fake_embeddings(monkeypatch, {"": _vector(1)})
+    found = agent.retrieve_candidates("碩士班修業年限最多幾年", "", docs, limit=3)
+    assert "學則.pdf" in [d.file_name for d in found]
+
+    monkeypatch.setattr(agent, "CAMPUS_RESERVE", 0)
+    assert "學則.pdf" not in [d.file_name for d in agent.retrieve_candidates("碩士班修業年限最多幾年", "", docs, limit=3)]
+
+
+def test_documents_with_one_matching_answerable_question_join_the_candidates(monkeypatch):
+    # 整張卡片的向量不像問題，但卡片上有一題很像（例如學則的「研究生修業年限」）
+    import numpy as np
+
+    catalog = _retrieval_catalog()
+    for doc in catalog:
+        doc.card["scope"] = "某系"
+        doc.answer_embeddings = np.array([_vector(0, 1)[:2]], dtype=np.float32)
+    catalog[3].answer_embeddings = np.array([_vector(1)[:2], _vector(0, 1)[:2]], dtype=np.float32)
+    _fake_embeddings(monkeypatch, {"": _vector(1)})
+    found = agent.retrieve_candidates("沒有共同字詞的問題", "", catalog, limit=2)
+    assert "D04" in [d.doc_id for d in found]
 
 
 def _clean(chunks):
