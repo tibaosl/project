@@ -57,7 +57,9 @@ CACHE_DIR = paths.STORAGE_DIR / "rag"
 DOC_CONVERTED_CACHE_DIR = CACHE_DIR / "doc_converted"
 
 # 解析或卡片的邏輯改了就把版本號加一，舊快取會自動失效。
-PARSER_VERSION = "2"
+# 3：表格往下合併的儲存格每一欄都補回上面的值（以前只補第一欄），PDF 分得出往下還是往右合併。
+# 4：第一欄以外補回的值加註「（與上列合併）」，跨列的小計不會被當成每一列各有一份。
+PARSER_VERSION = "4"
 CARD_VERSION = "2"
 
 # .odt、.doc 用 LibreOffice 轉成 .docx 再讀，.md 是爬蟲把網頁內容存下來的（crawler.py）。
@@ -68,6 +70,8 @@ CARD_MODEL = os.getenv("RAG_CARD_MODEL", "gpt-5.4")
 # 卡片的向量給 academic_agent.py 初篩用（文件太多，目錄沒辦法整份交給挑文件的模型）
 EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-large")
 EMBEDDING_DIMENSIONS = 1024
+# 卡片每一題「可回答問題」的向量（見 attach_answer_embeddings）。題目很短，256 維就夠，兩萬多題約 24 MB。
+ANSWER_EMBEDDING_DIMENSIONS = 256
 
 # 卡片只需要看懂文件在講什麼，太長的文件截斷前面這麼多字就夠了。
 CARD_INPUT_MAX_CHARS = 24000
@@ -133,10 +137,20 @@ def _join_cell_lines(text: str) -> str:
     return merged.replace("|", "｜")
 
 
+# 往下合併的儲存格補回每一列時，太長的內容（例如跨好幾列的備註）改寫「（同上）」，不要重複很多次
+MERGED_CELL_REPEAT_CHARS = 30
+MERGED_CELL_NOTE = "（與上列合併）"
+
+
 def rows_to_markdown(rows: list[list[Optional[str]]]) -> str:
-    """表格列轉 Markdown。None 代表合併儲存格：第一欄往下合併的（例如
-    「本籍生」跨好幾列）把上一列的值補回來，每一列才看得懂自己在講誰；
-    其他欄位的合併就留空，避免把橫跨整列的標題重複很多次。
+    """表格列轉 Markdown。None 代表往下合併的儲存格（PDF 見 _pdf_table_rows、Word 見 _docx_table_rows，
+    橫向合併呼叫端已經換成空字串），把上一列同一欄的值補回來：
+
+    - 第一欄是列的標籤（例如「本籍生」跨好幾列），直接補值，每一列才看得懂自己在講誰。
+    - 其他欄補值並註明「（與上列合併）」。合併儲存格有兩種意思：圖書館借閱規則的「借閱日數 30」從博士班
+      合併到碩士班、大學部，是每一列都 30 天（不補的話碩士班那列是空的，模型會說文件沒寫）；共同必修的
+      「通識課程 14 學分」跨「核心必修」「選修科目」兩列，是兩列合起來 14 學分（直接補值的話模型會加成 28）。
+      加註跟原本的表格一樣看得出是同一格，交給模型依上下文判斷。
     """
     if all(sum(1 for c in row if c and c.strip()) <= 1 for row in rows):
         # 每一列最多一格有字的「表格」多半是版面外框（注意事項、公告框），
@@ -144,14 +158,23 @@ def rows_to_markdown(rows: list[list[Optional[str]]]) -> str:
         return "\n".join(line.strip() for row in rows for c in row if c for line in c.split("\n") if line.strip())
 
     cleaned: list[list[str]] = []
-    previous_first = ""
+    above: list[str] = []  # 上一列每一欄的值（往下合併時補回來用）
     for row in rows:
         cells = [_join_cell_lines(c) if c is not None else None for c in row]
-        if cells and cells[0] is None:
-            cells[0] = previous_first
-        elif cells:
-            previous_first = cells[0]
-        cells = [c or "" for c in cells]
+        for i, cell in enumerate(cells):
+            if cell is None:
+                value = above[i] if i < len(above) else ""
+                if not value or i == 0:
+                    cells[i] = value
+                elif len(value) > MERGED_CELL_REPEAT_CHARS:
+                    cells[i] = "（同上）"
+                else:
+                    cells[i] = value + MERGED_CELL_NOTE
+        if len(above) < len(cells):
+            above += [""] * (len(cells) - len(above))
+        for i, cell in enumerate(cells):
+            if row[i] is not None:
+                above[i] = cell
         if any(cells):
             cleaned.append(cells)
 
@@ -208,6 +231,27 @@ def _continues_sentence(previous: str, following: str) -> bool:
     )
 
 
+def _pdf_table_rows(table) -> list[list[Optional[str]]]:
+    """PyMuPDF 把被合併儲存格蓋住的格子都給 None，不分往下還是往右合併。用格子的位置分辨：
+    同一欄上面最近的那一格往下延伸到這一列的，是往下合併（保留 None，rows_to_markdown 會補上面的值），
+    其他的是被左邊的格子橫向蓋住（換成空字串，不重複橫跨整列的標題）。"""
+    rows = table.extract()
+    try:
+        boxes = [row.cells for row in table.rows]
+        row_boxes = [row.bbox for row in table.rows]
+    except Exception:
+        return rows
+    for r, row in enumerate(rows[:len(boxes)]):
+        middle = (row_boxes[r][1] + row_boxes[r][3]) / 2
+        for c, value in enumerate(row):
+            if value is not None or c == 0:
+                continue  # 第一欄左邊沒有格子，只可能是往下合併
+            above = next((boxes[k][c] for k in range(r - 1, -1, -1) if c < len(boxes[k]) and boxes[k][c] is not None), None)
+            if above is None or above[3] < middle:
+                row[c] = ""
+    return rows
+
+
 def _pdf_page_markdown(page) -> str:
     """表格轉 Markdown，表格外的文字區塊照原樣保留，兩者依頁面位置排序。"""
     try:
@@ -219,7 +263,7 @@ def _pdf_page_markdown(page) -> str:
     items: list[tuple[float, float, str, bool]] = []  # (y, x, 內容, 是不是表格)
     table_rects = []
     for table in tables:
-        markdown = rows_to_markdown(table.extract())
+        markdown = rows_to_markdown(_pdf_table_rows(table))
         if markdown:
             items.append((table.bbox[1], table.bbox[0], markdown, True))
             table_rects.append(fitz.Rect(table.bbox))
@@ -282,7 +326,18 @@ def _vision_transcribe(page, text_layer: str) -> str:
 VISION_MAX_PAGES = int(os.getenv("RAG_VISION_MAX_PAGES", "30"))
 
 
-def parse_pdf(path: Path) -> tuple[str, int]:
+_PAGE_MARK_RE = re.compile(r"〔第 (\d+) 頁〕\n")
+
+
+def split_pages(text: str) -> dict[int, str]:
+    """parse_pdf 的輸出拆回每一頁（頁碼 → 內容）。"""
+    parts = _PAGE_MARK_RE.split(text)
+    return {int(parts[i]): parts[i + 1].rstrip("\n") for i in range(1, len(parts) - 1, 2)}
+
+
+def parse_pdf(path: Path, previous_pages: Optional[dict[int, str]] = None) -> tuple[str, int]:
+    """previous_pages 是同一個檔案舊版解析的結果（見 parse_file）：要用圖片轉錄的頁面直接沿用，
+    改了表格之類的解析邏輯、PARSER_VERSION 加一時，不用把上百頁海報重新送去轉錄。"""
     pages = []
     vision_pages = 0
     with fitz.open(path) as pdf:
@@ -290,11 +345,14 @@ def parse_pdf(path: Path) -> tuple[str, int]:
             text = _pdf_page_markdown(page)
             if _page_needs_vision(page, text, path.name) and vision_pages < VISION_MAX_PAGES:
                 vision_pages += 1
-                print(f"[PDF] {path.name} 第 {page.number + 1} 頁是海報/圖片或文字層亂碼，改用圖片輔助轉錄")
-                try:
-                    text = _vision_transcribe(page, page.get_text("text", sort=True))
-                except Exception as e:
-                    print(f"[PDF] {path.name} 第 {page.number + 1} 頁圖片轉錄失敗，保留原本的文字層：{e}")
+                if previous_pages and page.number + 1 in previous_pages:
+                    text = previous_pages[page.number + 1]
+                else:
+                    print(f"[PDF] {path.name} 第 {page.number + 1} 頁是海報/圖片或文字層亂碼，改用圖片輔助轉錄")
+                    try:
+                        text = _vision_transcribe(page, page.get_text("text", sort=True))
+                    except Exception as e:
+                        print(f"[PDF] {path.name} 第 {page.number + 1} 頁圖片轉錄失敗，保留原本的文字層：{e}")
             pages.append(f"〔第 {page.number + 1} 頁〕\n{normalize_text(text)}")
         page_count = pdf.page_count
     return "\n\n".join(pages), page_count
@@ -497,7 +555,7 @@ def parse_file(path: Path) -> Optional[ParsedDocument]:
     suffix = path.suffix.lower()
     try:
         if suffix == ".pdf":
-            text, page_count = parse_pdf(path)
+            text, page_count = parse_pdf(path, split_pages(cached["text"]) if cached and cached.get("text") else None)
         elif suffix == ".docx":
             text, page_count = parse_docx(path)
         elif suffix in (".doc", ".odt"):
@@ -632,6 +690,8 @@ class CatalogDocument:
     superseded_by: str = ""
     # 卡片的向量（長度 1），初篩用。算不出來（例如沒網路）是 None，初篩就只靠關鍵字
     embedding: Optional[np.ndarray] = None
+    # 卡片每一題「可回答問題」的向量（一題一列，ANSWER_EMBEDDING_DIMENSIONS 維），算不出來是 None
+    answer_embeddings: Optional[np.ndarray] = None
 
     @property
     def folder(self) -> str:
@@ -648,16 +708,58 @@ def card_text(doc: CatalogDocument) -> str:
     return f"{card['title']}\n{meta}\n{card['summary']}\n" + "\n".join(card["answers"])
 
 
-def embed_texts(texts: list[str]) -> np.ndarray:
+def embed_texts(texts: list[str], dimensions: int = EMBEDDING_DIMENSIONS) -> np.ndarray:
     """OpenAI 的向量，每一列都正規化成長度 1（內積就是 cosine 相似度）。"""
     vectors = []
     for start in range(0, len(texts), 128):
         response = _openai().embeddings.create(
-            model=EMBEDDING_MODEL, input=texts[start:start + 128], dimensions=EMBEDDING_DIMENSIONS,
+            model=EMBEDDING_MODEL, input=texts[start:start + 128], dimensions=dimensions,
         )
         vectors.extend(item.embedding for item in response.data)
     matrix = np.asarray(vectors, dtype=np.float32)
     return matrix / np.clip(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-9, None)
+
+
+def shorten_vectors(vectors: np.ndarray, dimensions: int) -> np.ndarray:
+    """text-embedding-3 的向量取前面幾維再正規化，跟直接要那麼多維的結果一樣，問題的向量不用再算一次。"""
+    short = vectors[..., :dimensions]
+    return short / np.clip(np.linalg.norm(short, axis=-1, keepdims=True), 1e-9, None)
+
+
+def attach_answer_embeddings(catalog: list[CatalogDocument]) -> None:
+    """替每張卡片的每一題「可回答問題」算向量（doc.answer_embeddings，一題一列）。
+
+    挑文件時拿來挑出跟使用者問題最像的幾題顯示（常見問答一份三、四十題，相關的那題常在後面，
+    說法也常跟使用者不一樣，例如問「學士服」、卡片寫「學位袍」），初篩時也多一份「哪份文件有一題
+    跟問題很像」的排名。快取在一個 .npz（key 是題目文字的 hash），題目沒變就不重算。
+    """
+    cache_path = CACHE_DIR / "embeddings" / f"{EMBEDDING_MODEL}-answers-{ANSWER_EMBEDDING_DIMENSIONS}.npz"
+    keyed = [[hashlib.sha256(a.encode("utf-8")).hexdigest() for a in doc.card["answers"]] for doc in catalog]
+    cache: dict[str, np.ndarray] = {}
+    try:
+        with np.load(cache_path) as stored:
+            cache = dict(zip(stored["keys"].tolist(), stored["vectors"]))
+    except (OSError, ValueError, KeyError):
+        pass
+    texts = {key: answer for doc, keys in zip(catalog, keyed) for key, answer in zip(keys, doc.card["answers"])}
+    missing = [key for key in texts if key not in cache]
+    if missing:
+        try:
+            batches = [missing[i:i + 512] for i in range(0, len(missing), 512)]
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = pool.map(lambda keys: embed_texts([texts[k] for k in keys], ANSWER_EMBEDDING_DIMENSIONS), batches)
+                for keys, vectors in zip(batches, results):
+                    cache.update(zip(keys, vectors))
+            current = {key: cache[key] for key in texts}
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = _temp_path(cache_path, ".tmp.npz")
+            np.savez(tmp, keys=np.array(list(current)), vectors=np.stack(list(current.values())))
+            replace_file(tmp, cache_path)
+        except Exception as e:
+            print(f"[文件向量] 有 {len(missing)} 題可回答問題的向量算不出來，挑題目先只用關鍵字：{e}")
+    for doc, keys in zip(catalog, keyed):
+        vectors = [cache.get(key) for key in keys]
+        doc.answer_embeddings = np.stack(vectors) if keys and all(v is not None for v in vectors) else None
 
 
 def attach_embeddings(catalog: list[CatalogDocument]) -> None:
@@ -767,6 +869,7 @@ def load_catalog(max_workers: int = 8, processes: int = 0) -> list[CatalogDocume
         ))
     mark_superseded_versions(catalog)
     attach_embeddings(catalog)
+    attach_answer_embeddings(catalog)
     return catalog
 
 

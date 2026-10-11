@@ -3,7 +3,8 @@
 每個問題通常只有兩次 LLM 呼叫：
 0. 初篩（不呼叫 LLM）：文件有上千份，目錄沒辦法整份交給模型，先用卡片向量跟關鍵字各排一次名、
    合併之後取前 ROUTER_CANDIDATES 份（見 retrieve_candidates），問題本身跟加上對話紀錄各算一次；
-   提到系所時，那個系所跟學院資料夾裡的文件再另外排一次。
+   提到系所時，那個系所跟學院資料夾裡的文件再另外排一次，最相關的幾份全校性文件一定保留，
+   卡片上有一題「可回答問題」跟問題很像的文件也另外排一次（題目的向量見 rag_documents.attach_answer_embeddings）。
 1. 挑文件：把使用者的問題、對話歷史、初篩出來的「目錄卡片」一起交給模型，
    請它把問題改寫成完整的一句話，判斷要回答、反問還是查無資料，並挑出最多
    MAX_DOCUMENTS 份相關文件。判斷成查無資料、但關鍵字比對找得到候選文件時，
@@ -58,12 +59,17 @@ MAX_DOCUMENTS = 4
 # 初篩留給挑文件模型看的卡片數。文件有上千份，整份目錄交給模型太慢也太貴，先用卡片向量跟
 # 關鍵字各排一次名、用 RRF 合併，取前面這麼多份（見 retrieve_candidates）。
 ROUTER_CANDIDATES = int(os.getenv("RAG_ROUTER_CANDIDATES", "60"))
-# 卡片的「可回答問題」每張約 12 題，佔了挑文件 prompt 六成的 token，每張只列前面這麼多題（0 是全部列出）。
-# 2026-10 比過：全部、前 6／4／3 題，開發題跟保留題都全對（挑跟問題最相關的幾題也沒有比較好），
-# 完全不列的話保留題錯 2 題。列 4 題時每次挑文件約 2.2 萬 token，全部列出約 3.8 萬。
+# 卡片的「可回答問題」每張約 12 題，佔了挑文件 prompt 六成的 token，每張只列這麼多題（0 是全部列出）。
+# 2026-10 比過：全部、前 6／4／3 題，開發題跟保留題都全對，完全不列的話保留題錯 2 題。
+# 列 4 題時每次挑文件約 2.2 萬 token，全部列出約 3.8 萬。
+# 列哪幾題依跟問題的相關程度挑（見 pick_answers）：常見問答一份有三、四十題，只列前 4 題的話，
+# 「宿舍會代收包裹嗎」「研究生前學期不及格能不能申請獎助學金」排在後面，模型看不到就不會挑。
 ROUTER_ANSWERS_PER_CARD = int(os.getenv("RAG_ROUTER_ANSWERS", "4"))
 RRF_K = 60
 UNIT_BOOST = os.getenv("RAG_UNIT_BOOST", "1") != "0"
+# 初篩一定保留的全校性文件份數（見 retrieve_candidates），0 是不保留
+CAMPUS_RESERVE = int(os.getenv("RAG_CAMPUS_RESERVE", "5"))
+ANSWER_RANKING = os.getenv("RAG_ANSWER_RANKING", "1") != "0"
 # 關鍵字二次確認的門檻：用評估題目看過，真的相關的文件分數大多在 10 以上，只因為
 # 「申請」「學生」這類常見字而比對到的在 8 以下（例如問宿舍、停車證）。
 MIN_KEYWORD_SCORE = 8.0
@@ -125,8 +131,36 @@ def department_directory() -> str:
     return "\n".join(f"- {college}：{'、'.join(items)}" for college, items in by_college.items())
 
 
-def format_catalog(catalog: list[rag_documents.CatalogDocument], answers_limit: int = 0) -> str:
-    """answers_limit 大於 0 時，每張卡片的「可回答問題」只列前面這麼多題，並註明省略了幾題。"""
+def pick_answers(answers: list[str], limit: int, weights: Optional[dict] = None,
+                 similarities: Optional[np.ndarray] = None) -> list[str]:
+    """從卡片的「可回答問題」挑 limit 題，最相關的放前面。有每一題跟問題的向量相似度就照它排
+    （抓得到換句話說，例如「學士服」對「學位袍」），沒有的話依跟問題共有的字詞排（越少見的詞權重越高，
+    見 question_weights）。都沒有線索時照卡片原本的順序取前面幾題。"""
+    if len(answers) <= limit:
+        return answers
+    if similarities is not None and len(similarities) == len(answers):
+        return [answers[i] for i in np.argsort(-similarities, kind="stable")[:limit]]
+    if not weights:
+        return answers[:limit]
+    scores = [sum(weights.get(g, 0.0) for g in _bigrams(rag_documents.normalize_text(a))) for a in answers]
+    order = sorted(range(len(answers)), key=lambda i: -scores[i])  # sorted 是穩定排序，同分照原本順序
+    return [answers[i] for i in order[:limit]]
+
+
+def question_weights(text: str, index: "SearchIndex") -> dict:
+    """問題裡每個字元二元組的 IDF，給 pick_answers 用（「申請」「可以」這類到處都有的詞權重很低）。"""
+    weights = {}
+    for gram in _bigrams(rag_documents.normalize_text(text)):
+        hits = index.postings.get(gram)
+        if hits is not None:
+            weights[gram] = math.log((index.size + 1) / (len(hits) + 1))
+    return weights
+
+
+def format_catalog(catalog: list[rag_documents.CatalogDocument], answers_limit: int = 0,
+                   weights: Optional[dict] = None, query_vectors: Optional[np.ndarray] = None) -> str:
+    """answers_limit 大於 0 時，每張卡片的「可回答問題」只列這麼多題（依 query_vectors 或 weights
+    挑跟問題最相關的，見 pick_answers），並註明省略了幾題。"""
     lines = []
     for doc in catalog:
         card = doc.card
@@ -143,7 +177,12 @@ def format_catalog(catalog: list[rag_documents.CatalogDocument], answers_limit: 
         lines.append(f"[{doc.doc_id}] {card['title']}{old}\n{meta}\n摘要：{card['summary']}")
         answers = card["answers"]
         if answers_limit and len(answers) > answers_limit:
-            lines.append("可回答：" + "／".join(answers[:answers_limit]) + f"（另有 {len(answers) - answers_limit} 題）")
+            similarities = None
+            if query_vectors is not None and doc.answer_embeddings is not None:
+                short = rag_documents.shorten_vectors(query_vectors, doc.answer_embeddings.shape[1])
+                similarities = (doc.answer_embeddings @ short.T).max(axis=1)  # 問題、對話紀錄取比較像的那個
+            shown = pick_answers(answers, answers_limit, weights, similarities)
+            lines.append("可回答：" + "／".join(shown) + f"（另有 {len(answers) - answers_limit} 題）")
         elif answers:
             lines.append("可回答：" + "／".join(answers))
         lines.append("")
@@ -181,6 +220,9 @@ ROUTER_INSTRUCTIONS = """你是中央大學校園法規問答系統的「文件�
      而使用者沒說、對話紀錄裡也看不出他屬於哪一種；或是根本看不出在問什麼。
      目錄裡只有一份相關文件時（即使它只適用某個系），用 answer，回答時會說明適用範圍；
      答案只差在身分別、學制等幾種情況時，也用 answer，回答時分情況列出。
+     使用者沒說系所時，全校性文件（例如學則）只訂了最低標準、實際要求由各系所自訂的事（例如畢業學分），
+     用 clarify 問是哪個系所，不要拿全校的最低標準當答案；全校一致、各系所不能另訂的規定
+     （例如修業年限、休學年限、請假規則），直接用 answer。
      clarify_question 用一句話反問使用者需要補充什麼，不要反問不影響答案的細節。
    decision 不是 answer 時 documents 留空。
 4. question 跟 clarify_question 用使用者的語言寫，中文一律用繁體中文。
@@ -213,6 +255,9 @@ class SearchIndex:
     postings: dict[str, np.ndarray]  # 值是 catalog 的索引
     size: int
     vectors: Optional[np.ndarray]  # 沒有任何向量時是 None；個別算不出來的文件是零向量
+    # 所有卡片的「可回答問題」向量疊在一起（一題一列），answer_owner 是每一題屬於 catalog 的第幾份；沒有向量時是 None
+    answer_vectors: Optional[np.ndarray] = None
+    answer_owner: Optional[np.ndarray] = None
 
 
 _index_cache: dict = {"catalog": None, "index": None}
@@ -237,8 +282,13 @@ def search_index(catalog: list[rag_documents.CatalogDocument]) -> SearchIndex:
                 for i, doc in enumerate(catalog):
                     if doc.embedding is not None:
                         vectors[i] = doc.embedding
+            answer_docs = [i for i, doc in enumerate(catalog) if doc.answer_embeddings is not None]
+            answer_vectors = answer_owner = None
+            if answer_docs:
+                answer_vectors = np.concatenate([catalog[i].answer_embeddings for i in answer_docs])
+                answer_owner = np.concatenate([np.full(len(catalog[i].answer_embeddings), i) for i in answer_docs])
             arrays = {gram: np.array(ids, dtype=np.int32) for gram, ids in postings.items()}
-            _index_cache.update(catalog=catalog, index=SearchIndex(arrays, len(catalog), vectors))
+            _index_cache.update(catalog=catalog, index=SearchIndex(arrays, len(catalog), vectors, answer_vectors, answer_owner))
         return _index_cache["index"]
 
 
@@ -300,6 +350,37 @@ def unit_folders(text: str, catalog: list[rag_documents.CatalogDocument]) -> set
     return {folder for folder in folders for name, names in units.items() if folder in names or name in folder}
 
 
+_question_vector_cache: dict[str, np.ndarray] = {}
+_question_vector_lock = threading.Lock()
+
+
+def question_vectors(texts: list[str]) -> np.ndarray:
+    """問題（跟對話紀錄）的向量。同一個問題初篩跟挑文件都要用，記住最近算過的，不重複呼叫 API。"""
+    with _question_vector_lock:
+        missing = [t for t in dict.fromkeys(texts) if t not in _question_vector_cache]
+    if missing:
+        vectors = rag_documents.embed_texts(missing)
+        with _question_vector_lock:
+            if len(_question_vector_cache) > 256:
+                _question_vector_cache.clear()
+            _question_vector_cache.update(zip(missing, vectors))
+    with _question_vector_lock:
+        return np.stack([_question_vector_cache[t] for t in texts])
+
+
+def is_school_wide(doc: rag_documents.CatalogDocument) -> bool:
+    """卡片寫的適用範圍是全校（「全校」「全校學生」），不是某個學院、系所的文件。"""
+    return "全校" in doc.card.get("scope", "")
+
+
+def _fused_order(orders: list[np.ndarray], size: int) -> np.ndarray:
+    """幾份名單（每份都是 0..size-1 的排列）用 RRF 合併成一份，回傳合併後的順序。"""
+    fused = np.zeros(size)
+    for order in orders:
+        fused[order] += 1.0 / (RRF_K + np.arange(len(order)))
+    return np.argsort(-fused, kind="stable")
+
+
 def retrieve_candidates(
     query_str: str, history_str: str, catalog: list[rag_documents.CatalogDocument], limit: int = ROUTER_CANDIDATES,
 ) -> list:
@@ -320,8 +401,17 @@ def retrieve_candidates(
     similarity = None
     if index.vectors is not None:
         try:
-            similarity = index.vectors @ rag_documents.embed_texts(texts).T
+            query_vectors = question_vectors(texts)
+            similarity = index.vectors @ query_vectors.T
             rankings.extend(np.argsort(-similarity[:, j], kind="stable") for j in range(similarity.shape[1]))
+            if ANSWER_RANKING and index.answer_vectors is not None:
+                # 卡片上有一題跟問題很像的文件另外排一次名（整張卡片的向量會被其他題目稀釋）
+                short = rag_documents.shorten_vectors(query_vectors, index.answer_vectors.shape[1])
+                for column in (index.answer_vectors @ short.T).T:
+                    best = np.full(len(catalog), -np.inf)
+                    np.maximum.at(best, index.answer_owner, column)
+                    order = np.argsort(-best, kind="stable")
+                    rankings.append(order[np.isfinite(best[order])])
         except Exception as e:  # 向量服務連不上就只用關鍵字，不要整個查詢失敗
             print(f"[Academic Agent] 問題的向量算不出來，初篩只用關鍵字：{e}")
     keyword = [keyword_scores(text, index) for text in texts]
@@ -341,6 +431,16 @@ def retrieve_candidates(
         top = order[: limit * 2]
         fused[top] += 1.0 / (RRF_K + np.arange(len(top)))
     chosen = [catalog[i] for i in np.argsort(-fused, kind="stable")[:limit] if fused[i] > 0]
+    # 全校性的文件（學則、各處室的辦法跟常見問答）保留最相關的幾份：「碩士班最多讀幾年」這種問題，
+    # 各系所的修業辦法用字都一樣、數量又多，學則在整體排名掉到兩百名外，沒說系所時反而沒有文件可以回答。
+    # 在全校性文件裡用向量跟關鍵字的名次合併排序，沒進候選的補在最後面。2026-10 試過把這份名次直接併進
+    # 上面的 RRF，全校文件會被排到最前面，問「企管系多益幾分」時模型只挑語言中心的全校文件、漏了管院碩士班的規定。
+    campus = np.array([i for i, doc in enumerate(catalog) if is_school_wide(doc)], dtype=int)
+    if CAMPUS_RESERVE and len(campus):
+        campus_order = campus[_fused_order([np.argsort(-scores[campus], kind="stable") for scores in (
+            ([similarity[:, 0]] if similarity is not None else []) + [keyword[0]]
+        )], len(campus))]
+        chosen += [catalog[i] for i in campus_order[:CAMPUS_RESERVE] if catalog[i] not in chosen]
     by_id = {doc.doc_id: doc for doc in catalog}
     for doc in list(chosen):
         latest = by_id.get(doc.superseded_by)
@@ -380,9 +480,19 @@ def plan_query(
     開發題挑對文件的比例從九成一掉到八成一。
     """
     instructions = ROUTER_INSTRUCTIONS.format(max_documents=MAX_DOCUMENTS, departments=department_directory())
+    weights = question_weights(f"{query_str} {history_str[-800:]}", search_index(catalog))
+    query_vectors = None
+    if any(doc.answer_embeddings is not None for doc in candidates):
+        texts = [query_str]
+        if history_str and history_str.strip() != f"[使用者]: {query_str}".strip():
+            texts.append(history_str[-800:])
+        try:
+            query_vectors = question_vectors(texts)  # 初篩時算過，這裡通常直接拿記住的
+        except Exception as e:
+            print(f"[Academic Agent] 問題的向量算不出來，卡片的可回答問題改用關鍵字挑：{e}")
     # 每次都一樣的規則放 system（OpenAI 會快取），每題不同的目錄、日期、問題放 user，問題放最後
     request = (
-        f"文件目錄：\n{format_catalog(candidates, ROUTER_ANSWERS_PER_CARD)}\n"
+        f"文件目錄：\n{format_catalog(candidates, ROUTER_ANSWERS_PER_CARD, weights, query_vectors)}\n"
         f"{today_context()}\n"
         f"對話紀錄（使用者說過的話，以及系統反問或請使用者補充的話，最後一句是這一次的問題）：{history_str or '無'}\n"
         f"這一次的問題：{query_str}"

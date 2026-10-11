@@ -198,15 +198,18 @@ Register-ScheduledTask -TaskName NCUXplore-update-documents -Action $action -Tri
 
 每個問題的流程：
 
-0. **初篩**：文件有一千八百份左右，目錄沒辦法整份交給模型。先用卡片的向量（`text-embedding-3-large`）
-   跟關鍵字各排一次名，合併之後取前 60 份。問題或對話裡提到系所時，那個系所的文件會優先放進來。
+0. **初篩**：文件有一千九百份左右，目錄沒辦法整份交給模型。先用卡片的向量（`text-embedding-3-large`）、
+   卡片上每一題「能回答的問題」的向量跟關鍵字各排一次名，合併之後取前 60 份。問題或對話裡提到系所時，
+   那個系所的文件會另外排一次名。最相關的 5 份全校性文件（學則、各處室的辦法跟常見問答）一定會放進候選，
+   不會被各系所大量同類的文件擠掉。
 1. **挑文件**：把問題、對話歷史跟初篩出來的「目錄卡片」（標題、類型、適用範圍、版本、摘要、
-   能回答的問題）交給模型，挑出最多 4 份文件，或判斷要反問使用者、資料庫裡沒有。
+   能回答的問題）交給模型，挑出最多 4 份文件，或判斷要反問使用者、資料庫裡沒有。每張卡片只列
+   跟問題最像的 4 題「能回答的問題」（依向量相似度挑，常見問答一份有幾十題，相關的那題常在後面）。
    判斷成「沒有」時會用關鍵字比對找候選文件，再確認一次。
 2. **回答**：把挑中文件的全文交給模型回答，標注引用 [1]、[2]。引用編號只用來決定下方要列出哪幾份參考資料，
    送給使用者之前會拿掉，分號也會換成逗號或句號（`academic_agent.AnswerCleaner`）。
 
-文件解析結果、目錄卡片跟卡片向量都快取在 `storage/rag/`（以內容的 hash 當 key，檔案沒變就不會
+文件解析結果、目錄卡片、卡片跟每一題「能回答的問題」的向量都快取在 `storage/rag/`（以內容的 hash 當 key，檔案沒變就不會
 重做）。`data/` 新增或修改檔案後，下一次查詢會自動補做，也可以先手動建好：
 
 ```powershell
@@ -223,6 +226,7 @@ python -m backend.rag.rag_documents   # 解析全部文件、補齊卡片，並�
 ```powershell
 python rag_eval/run_eval.py                        # 開發用題目（rag_eval/questions.json）
 python rag_eval/run_eval.py --file holdout.json    # 保留測試題，不要照著它調 prompt
+python rag_eval/run_eval.py --file questions_campus.json  # 第二份開發題（宿舍、圖書館、獎助學金、校園生活等常見問答）
 python rag_eval/run_eval.py --router-only          # 只測挑文件那一步，快又便宜
 python rag_eval/check_retrieval.py                 # 只看初篩有沒有把標準文件排進前 60 份，不呼叫 LLM
 ```
@@ -231,6 +235,7 @@ python rag_eval/check_retrieval.py                 # 只看初篩有沒有把標
 `RAG_ANSWER_MODEL`（回答，預設 gpt-5.4）、`RAG_CARD_MODEL`（產生卡片，預設 gpt-5.4）、
 `RAG_EMBEDDING_MODEL`（初篩的向量，預設 text-embedding-3-large），初篩留幾份是 `RAG_ROUTER_CANDIDATES`（預設 60），
 每張卡片列幾題「能回答的問題」是 `RAG_ROUTER_ANSWERS`（預設 4，0 是全部列出，挑文件的 token 會多七成）。
+初篩一定保留幾份全校性文件是 `RAG_CAMPUS_RESERVE`（預設 5，0 是不保留），「能回答的問題」那份排名可以用 `RAG_ANSWER_RANKING=0` 關掉，比較效果用。
 
 ### 獎學金推薦
 

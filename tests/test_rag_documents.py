@@ -30,6 +30,61 @@ def test_rows_to_markdown_fills_down_first_column_merges():
     assert lines[3] == "| 本籍生 | 雜費 | 11,170 |"
 
 
+def test_rows_to_markdown_fills_down_merges_in_every_column():
+    # 圖書館借閱規則：博士班那格「30」往下合併到碩士班，不補的話碩士班看起來沒有借期
+    rows = [
+        ["身分別", "借閱總筆數", "借閱日數", "備註"],
+        ["博士班學生", "100", "30", "逾期每日每冊罰五元，逾期三十日以上或累計三百元以上，暫停各項借用權利"],
+        ["碩士班學生", "100", None, None],
+        ["教職員工配偶", "20", "60", ""],
+    ]
+    lines = rd.rows_to_markdown(rows).split("\n")
+    assert lines[3] == "| 碩士班學生 | 100 | 30（與上列合併） | （同上） |"  # 太長的內容不重複，寫「同上」
+    assert lines[4] == "| 教職員工配偶 | 20 | 60 |  |"
+
+
+def test_merged_subtotals_are_marked_instead_of_repeated():
+    # 共同必修：「通識課程 14 學分」跨核心必修、選修科目兩列，是兩列合起來 14，不能看起來像各 14
+    rows = [["科目", "類別", "學分數"], ["通識課程", "核心必修", "14"], [None, "選修科目", None], ["合計", "", "25"]]
+    assert "| 通識課程 | 選修科目 | 14（與上列合併） |" in rd.rows_to_markdown(rows)
+
+
+def test_pdf_tables_tell_downward_merges_from_sideways_ones():
+    from types import SimpleNamespace
+
+    def row(top, bottom, *cells):
+        return SimpleNamespace(bbox=(0, top, 300, bottom), cells=list(cells))
+
+    # 第二列：「借閱日數」那格從第一列往下延伸（往下合併），「說明」被左邊的格子橫向蓋住
+    table = SimpleNamespace(
+        extract=lambda: [["博士班", "30", "限館內"], ["碩士班", None, None]],
+        rows=[row(0, 10, (0, 0, 100, 10), (100, 0, 200, 20), (200, 0, 300, 10)),
+              row(10, 20, (0, 10, 100, 20), None, None)],
+    )
+    assert rd._pdf_table_rows(table) == [["博士班", "30", "限館內"], ["碩士班", None, ""]]
+
+
+def test_reparsing_a_pdf_reuses_earlier_image_transcriptions(tmp_path, monkeypatch):
+    import fitz
+
+    path = tmp_path / "海報.pdf"
+    with fitz.open() as pdf:
+        pdf.new_page().insert_text((72, 72), "poster")
+        pdf.save(path)
+
+    def no_vision(page, text_layer):
+        raise AssertionError("不該重新送去轉錄")
+
+    monkeypatch.setattr(rd, "_page_needs_vision", lambda page, text, name: True)
+    monkeypatch.setattr(rd, "_vision_transcribe", no_vision)
+    text, _ = rd.parse_pdf(path, rd.split_pages("〔第 1 頁〕\n上次轉錄的海報內容"))
+    assert text == "〔第 1 頁〕\n上次轉錄的海報內容"
+
+
+def test_split_pages_reads_back_parsed_pdf_text():
+    assert rd.split_pages("〔第 1 頁〕\n第一頁\n\n〔第 2 頁〕\n第二頁\n第二行") == {1: "第一頁", 2: "第二頁\n第二行"}
+
+
 def test_rows_to_markdown_joins_wrapped_cell_lines():
     rows = [["工、資電學院\n(含資管系)", "Student\nID"], ["a", "b"]]
     header = rd.rows_to_markdown(rows).split("\n")[0]
@@ -54,8 +109,20 @@ def test_docx_merged_cells_are_not_repeated():
 
     markdown = rd.rows_to_markdown(rd._docx_table_rows(table._tbl))
     assert markdown.count("資格考紀錄") == 1
-    # 往下合併的第一欄會補回上一列的值，每一列才看得懂在講哪一科
+    # 往下合併的會補回上一列的值，每一列才看得懂在講哪一科
     assert "| 演算法 | 未通過 |" in markdown
+
+
+def test_docx_downward_merges_fill_every_column():
+    document = python_docx.Document()
+    table = document.add_table(rows=3, cols=2)
+    table.cell(0, 0).text = "博士班"
+    table.cell(1, 0).text = "碩士班"
+    table.cell(2, 0).text = "大學部"
+    table.cell(0, 1).merge(table.cell(1, 1)).text = "30 天"
+    table.cell(2, 1).text = "14 天"
+    markdown = rd.rows_to_markdown(rd._docx_table_rows(table._tbl))
+    assert "| 碩士班 | 30 天（與上列合併） |" in markdown and "| 大學部 | 14 天 |" in markdown
 
 
 def test_parse_docx_keeps_paragraphs_and_tables_in_order(tmp_path):
@@ -172,6 +239,34 @@ def test_failed_embeddings_leave_documents_without_vectors(tmp_path, monkeypatch
     docs = [_catalog_doc("D01", "學則")]
     rd.attach_embeddings(docs)
     assert docs[0].embedding is None
+
+
+def test_answer_embeddings_are_cached_per_question(tmp_path, monkeypatch):
+    import numpy as np
+
+    monkeypatch.setattr(rd, "CACHE_DIR", tmp_path)
+    embedded = []
+
+    def embed(texts, dimensions=4):
+        embedded.extend(texts)
+        return np.ones((len(texts), dimensions), dtype=np.float32) / dimensions ** 0.5
+
+    monkeypatch.setattr(rd, "embed_texts", embed)
+    docs = [_catalog_doc("D01", "學則"), _catalog_doc("D02", "選課辦法")]
+    docs[1].card = {**docs[1].card, "answers": ["可以加選幾學分？", "停修有什麼限制？"]}
+    rd.attach_answer_embeddings(docs)
+    assert docs[1].answer_embeddings.shape == (2, rd.ANSWER_EMBEDDING_DIMENSIONS)
+
+    docs[1].card = {**docs[1].card, "answers": ["可以加選幾學分？", "退選要怎麼辦？"]}
+    rd.attach_answer_embeddings(docs)
+    assert embedded[-1] == "退選要怎麼辦？" and len(embedded) == len(docs[0].card["answers"]) + 3  # 只算新的題目
+
+
+def test_shortened_vectors_are_normalized():
+    import numpy as np
+
+    short = rd.shorten_vectors(np.array([[3.0, 4.0, 12.0]], dtype=np.float32), 2)
+    assert np.allclose(short, [[0.6, 0.8]])
 
 
 def test_concurrent_cache_writes_do_not_collide(tmp_path):

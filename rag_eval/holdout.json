@@ -27,7 +27,7 @@
   {"id": "h_venue_cancel", "question": "教研大樓的場地繳費後如果活動取消，錢可以退嗎？", "expect": "answer",
    "gold": ["教務處課務組/國立中央大學教研大樓教學場域管理細則.pdf"], "facts": ["繳費後取消活動要扣除已繳費用的百分之二十"]},
   {"id": "h_hybrid_leave", "question": "Hybrid 的課如果跟我另一門課撞時間，可以請假嗎？", "expect": "answer",
-   "gold": ["教務處課務組/國立中央大學 Hybrid Class開設與修習要點.pdf", "教務處課務組/Hybrid Class 機制.pdf"], "facts": ["不行，不得以修習另一門課為理由請假", "要選上課時間不重疊的課程"]},
+   "gold": ["教務處課務組/國立中央大學 Hybrid Class開設與修習要點.pdf", "教務處課務組/Hybrid Class 機制.pdf", "教務處/國立中央大學Hybrid Class開設與修習要點.pdf"], "facts": ["不行，不得以修習另一門課為理由請假", "要選上課時間不重疊的課程"]},
   {"id": "h_micro_certificate", "question": "我修完微學程了，證書要去哪裡領？", "expect": "answer",
    "gold": ["教務處課務組/國立中央大學跨領域微學程設置辦法.pdf"], "facts": ["次學期起開學一個月內向課務組領取修畢證明書", "應屆畢業生可在最後一學期成績登錄後提前領取"]},
   {"id": "h_highschool", "question": "高中生可以來中央大學修課嗎？", "expect": "answer",
