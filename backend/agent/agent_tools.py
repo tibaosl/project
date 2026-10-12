@@ -58,6 +58,7 @@ from backend.analysis.academic_calendar import (
 )
 from backend.analysis.academic_tools import analyze_academic_progress, fetch_academic_records
 from backend.analysis.agenda import build_agenda
+from backend.analysis import hour_records
 from backend.analysis.calendar_export import term_for_export
 from backend.analysis.scholarship_tools import DeclaredStatus, recommend_scholarships
 
@@ -465,6 +466,8 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         """查詢使用者「自己」的學習護照時數進度、各類別是否已達畢業門檻（需要登入）。
 
         使用時機：使用者問自己的時數進度、還差多少小時、有沒有達到畢業門檻。
+        問到某個活動的時數核發了沒、哪些活動待核發、某類時數是哪些活動來的，請改用
+        find_my_hour_records（這個工具只有各類別的總數，沒有活動明細）。
         不適用於「時數規定/門檻本身是幾小時」這種制度規則問題——那種請改用
         search_campus_regulations。不需要任何參數。
         """
@@ -483,6 +486,46 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             "categories": dashboard_data["categories"],
         }
         return {"content": envelope}
+
+    @tool
+    async def find_my_hour_records(
+        keyword: str = "",
+        date: str = "",
+        category: str = "",
+        status: Literal["全部", "待核發", "已核發", "還沒有時數"] = "全部",
+    ) -> dict:
+        """查詢使用者「自己」參加過的活動的學習護照時數紀錄：哪個活動、哪一類時數、幾小時、
+        核發了沒（需要登入）。
+
+        使用時機：使用者問某個活動的時數核發了沒、怎麼還沒拿到時數、哪些活動的時數待核發、
+        某一類時數（例如國際視野）是哪些活動來的。問整體進度、還差幾小時請用 get_my_hours_dashboard。
+
+        Args:
+            keyword: 活動名稱裡的字，例如「新生電影節」。不要放日期跟類別。
+            date: 活動日期，使用者有講才填，例如「9/23」。
+            category: 時數類別，例如「國際視野」「人文藝術」「服務學習」「生活知能」「大一週會」。
+            status: 「待核發」是主辦單位登錄了還在等核發，「已核發」是已經拿到，
+                「還沒有時數」是主辦單位還沒登錄時數。使用者沒指定就用「全部」。
+        """
+        try:
+            session = await _ensure_session()
+            if session is None:
+                return {"content": NO_CREDENTIALS_MSG}
+            dashboard_data = await session.get_hours_dashboard()
+        except Exception as e:
+            await reset_session(username)
+            return {"content": f"系統執行時發生錯誤：{e}"}
+
+        activities = dashboard_data.get("activities", [])
+        registrations = None
+        # 還沒有時數的活動，再讀「我的報名」頁的簽到簽退一起回答（沒簽退跟主辦單位還沒登錄，
+        # 使用者要做的事不一樣）。讀不到就只回答時數頁的資訊
+        if hour_records.needs_checkin(hour_records.find_activities(activities, keyword, date, category, status)):
+            try:
+                registrations = (await session.get_my_activity_registrations()).get("registrations")
+            except Exception as e:
+                print(f"[Agent] 讀報名紀錄的簽到簽退失敗，只用時數頁回答：{e}")
+        return {"content": hour_records.answer(activities, keyword, date, category, status, registrations)}
 
     @tool
     async def get_my_academic_analysis(
@@ -553,7 +596,8 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         使用時機：使用者問「我報名了什麼活動」「我有報名過什麼」「查一下我的
         報名紀錄」這類想看自己報名狀況的問題。跟 search_campus_activities／
         recommend_activities_for_my_deficiencies 的差別：這個查的是「已經報名
-        過」的紀錄，不是查有什麼活動可以報名。不需要任何參數。
+        過」的紀錄，不是查有什麼活動可以報名。問參加過的活動時數核發了沒，請用
+        find_my_hour_records。不需要任何參數。
         """
         try:
             session = await _ensure_session()
@@ -782,6 +826,8 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         使用時機：使用者自己講出一個具體的時數類別/標籤名稱（例如「自我探索與生涯規劃」
         「校外服務」「人文藝術」「國際視野」），問有沒有活動提供這種時數，
         例如「有沒有自我探索與生涯規劃時數的活動」「哪些活動有校外服務時數」。
+        這個是找「還可以去參加」的活動。使用者問自己「已經拿到或待核發」的時數是哪些活動來的，
+        請用 find_my_hour_records。
 
         Args:
             tag_name: 時數類別的完整名稱，是下面其中一個：自我探索與生涯規劃、其他生活知能、
@@ -992,6 +1038,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         get_my_schedule,
         search_course_catalog,
         get_my_hours_dashboard,
+        find_my_hour_records,
         get_my_academic_analysis,
         recommend_scholarships_for_me,
         search_campus_activities,

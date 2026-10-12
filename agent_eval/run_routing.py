@@ -26,6 +26,8 @@ gpt-5.4-mini 54/54。
 之後把校內餐廳、商店、開放時間這類校園生活資訊也導到 search_campus_regulations（之前「學校有哪些餐廳」
 會直接回答沒有工具），開發題加 3 題、保留題 2 題：75/77 兩次、30/30，新加的都對，錯的是活動名稱太籠統
 就反問的「幫我報名職涯講座」「職涯講座的詳細內容是什麼？」跟偶爾選成查法規的「我的英文畢業門檻過了嗎？」。
+2026-10-13 加了「活動時數紀錄」（find_my_hour_records：某個活動的時數核發了沒、哪些活動待核發），開發題加 4 題、
+保留題加 2 題：80/81、32/32，新加的都對，錯的是「我的英文畢業門檻過了嗎？」。
 """
 
 import argparse
@@ -81,6 +83,10 @@ CASES = [
     ("我報名了哪些活動？", [], {"get_my_registered_activities"}),
     ("最近有什麼講座？", [], {"search_campus_activities"}), ("有沒有志工相關的活動？", [], {"search_campus_activities"}),
     ("有沒有國際視野時數的活動？", [], {"find_activities_by_hour_category"}),
+    ("我有參加了9/23的新生電影節，他是還沒核發我的時數嗎", [], {"find_my_hour_records"}),
+    ("我國際視野待核發的是什麼活動", [], {"find_my_hour_records"}),
+    ("我有哪些活動的時數還在待核發？", [], {"find_my_hour_records"}),
+    ("我的人文藝術時數是從哪些活動拿到的？", [], {"find_my_hour_records"}),
     ("哪些活動有人文藝術時數？", [], {"find_activities_by_hour_category"}),
     ("推薦我可以補時數的活動", [], {"recommend_activities_for_my_deficiencies"}),
     ("有什麼活動適合我參加？", [], {"recommend_activities_for_my_deficiencies"}),
@@ -113,6 +119,8 @@ HOLDOUT = [
     ("幫我看一下我這學期修了哪些課", [], {"get_my_schedule"}), ("我的 GPA 多少？", [], {"get_my_academic_analysis"}),
     ("我會不會被二一？", [], {"get_my_academic_analysis"}), ("服務學習時數我還差幾小時？", [], {"get_my_hours_dashboard"}),
     ("有沒有生涯規劃時數的活動？", [], {"find_activities_by_hour_category"}),
+    ("上禮拜去的出國說明會時數拿到了沒？", [], {"find_my_hour_records"}),
+    ("為什麼我參加的活動都沒有時數？", [], {"find_my_hour_records"}),
     ("我想報名那個 Python 工作坊", [], {"preview_activity_registration"}),
     ("Python 工作坊我不想去了", [], {"preview_activity_cancellation"}), ("找一下作業系統這門課", [], {"search_course_catalog"}),
     ("學雜費什麼時候要繳？", [], {R, "get_campus_calendar"}), ("休學要怎麼辦？", [], {R}), ("在學證明英文版多少錢？", [], {R}),

@@ -55,6 +55,10 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "我的時數達到畢業門檻了嗎？",
         "我的服務學習時數夠了嗎？",
     )),
+    "find_my_hour_records": FeatureSuggestions("活動時數紀錄", True, (
+        "我有哪些活動的時數還在待核發？",
+        "我的國際視野時數是哪些活動來的？",
+    )),
     "recommend_activities_for_my_deficiencies": FeatureSuggestions("活動推薦", True, (
         "有什麼活動可以幫我補時數？",
         "推薦我適合報名的活動",
