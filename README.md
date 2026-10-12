@@ -227,6 +227,8 @@ python -m backend.rag.rag_documents   # 解析全部文件、補齊卡片，並�
 python rag_eval/run_eval.py                        # 開發用題目（rag_eval/questions.json）
 python rag_eval/run_eval.py --file holdout.json    # 保留測試題，不要照著它調 prompt
 python rag_eval/run_eval.py --file questions_campus.json  # 第二份開發題（宿舍、圖書館、獎助學金、校園生活等常見問答）
+python rag_eval/run_eval.py --file questions_units.json   # 第三份開發題（體育室、計中、國際處、課外組、語言中心等各單位）
+python rag_eval/run_eval.py --file questions_dept.json    # 第四份開發題（各系所的應修科目表、資格考、系上獎學金）
 python rag_eval/run_eval.py --router-only          # 只測挑文件那一步，快又便宜
 python rag_eval/check_retrieval.py                 # 只看初篩有沒有把標準文件排進前 60 份，不呼叫 LLM
 ```

@@ -169,6 +169,28 @@ def test_older_versions_point_to_latest():
     assert [d.superseded_by for d in catalog] == ["D02", "", "D02", ""]
 
 
+def test_cohort_year_reads_the_entry_year():
+    assert rd.cohort_year(_doc("D1", "中國文學系應修科目表（113學年度入學新生適用）")) == 113
+    assert rd.cohort_year(_doc("D1", "會計研究所碩士班研究生修業辦法", version="112學年度(含)以後入學生適用")) == 112
+    assert rd.cohort_year(_doc("D1", "中文系碩士班修業辦法", version="111學年度前(含)入學學生適用")) == 111
+    assert rd.cohort_year(_doc("D1", "電機系大學部應修科目及畢業條件表", version="(113入學適用)")) == 113
+    # 每年換新的表單、通知不是依入學年度分的
+    assert rd.cohort_year(_doc("D1", "115學年度第1學期學士班新生註冊通知")) == 0
+    assert rd.cohort_year(_doc("D1", "113學年度資訊工程學系研究所新生論文指導確認表")) == 0
+    assert rd.cohort_year(_doc("D1", "學雜費收費標準", version="115學年度")) == 0
+
+
+def test_older_cohort_editions_are_told_apart_from_old_versions():
+    # 113 學年入學的應修科目表對 113 學年入學的學生仍然有效
+    tables = [_doc("D01", "中文系應修科目表（113學年度入學新生適用）"), _doc("D02", "中文系應修科目表（114學年度入學新生適用）")]
+    # 同一屆適用的辦法改版，舊的那版就是舊版
+    rules = [_doc("D03", "網學所碩士班修業辦法", version="本辦法適用110學年度起入學學生；111.06.15 教務會議核備"),
+             _doc("D04", "網學所碩士班修業辦法", version="本辦法適用110學年度起入學學生；112.03.15 教務會議核備")]
+    rd.mark_superseded_versions(tables + rules)
+    assert (tables[0].superseded_by, tables[0].cohort_edition) == ("D02", True)
+    assert (rules[0].superseded_by, rules[0].cohort_edition) == ("D04", False)
+
+
 def test_versions_are_not_marked_when_years_are_unknown_or_tied():
     unknown = [_doc("D01", "文學院外文能力鑑定審核申請表"), _doc("D02", "文學院外文能力鑑定審核申請表")]
     tied = [_doc("D03", "離校同意書", version="114.10.15"), _doc("D04", "離校同意書", version="114.10.15")]

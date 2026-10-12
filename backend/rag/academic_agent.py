@@ -173,7 +173,10 @@ def format_catalog(catalog: list[rag_documents.CatalogDocument], answers_limit: 
                 f"檔名：{doc.file_name}",
             ) if part
         )
-        old = f"（舊版，最新版是 [{doc.superseded_by}]）" if doc.superseded_by else ""
+        old = ""
+        if doc.superseded_by:
+            old = (f"（依入學年度適用，較新入學年度的版本是 [{doc.superseded_by}]）" if doc.cohort_edition
+                   else f"（舊版，最新版是 [{doc.superseded_by}]）")
         lines.append(f"[{doc.doc_id}] {card['title']}{old}\n{meta}\n摘要：{card['summary']}")
         answers = card["answers"]
         if answers_limit and len(answers) > answers_limit:
@@ -210,6 +213,9 @@ ROUTER_INSTRUCTIONS = """你是中央大學校園法規問答系統的「文件�
      大學部，兩種學制都挑最相關的文件（在名額內），回答才能分學制說明。
    - 同一種文件有多個年度或版本時，挑最新的（目錄裡標了「舊版」的不要挑，改挑它指向的最新版）；
      使用者指定了年度就挑那個年度；新舊版本依入學年度等條件都可能適用時，兩份都挑。
+   - 標了「依入學年度適用」的不是舊版，是給那一屆入學學生用的版本（例如各系的應修科目表）：
+     使用者說了入學年度就挑那一年的；說了年級就用今天的學年度推算入學年度（例如 115 學年度的大三
+     是 113 學年度入學）；都沒說才挑最新入學年度的那份。
    - 同一個單位有好幾份文件都講到這件事（例如辦法跟它的申請表、說明），版本日期又不一樣時，
      都挑，回答時會以日期較新的為準。
 3. 決定 decision：
@@ -220,10 +226,12 @@ ROUTER_INSTRUCTIONS = """你是中央大學校園法規問答系統的「文件�
      而使用者沒說、對話紀錄裡也看不出他屬於哪一種；或是根本看不出在問什麼。
      目錄裡只有一份相關文件時（即使它只適用某個系），用 answer，回答時會說明適用範圍；
      答案只差在身分別、學制等幾種情況時，也用 answer，回答時分情況列出。
-     使用者沒說系所時，全校性文件（例如學則）只訂了最低標準、實際要求由各系所自訂的事（例如畢業學分），
+     使用者沒說系所時，全校性文件（例如學則）只訂了最低標準、實際要求由各系所自訂的事（例如畢業學分：學則只寫碩士班至少 24 學分，各系所的規定都比這個多），
      用 clarify 問是哪個系所，不要拿全校的最低標準當答案；全校一致、各系所不能另訂的規定
-     （例如修業年限、休學年限、請假規則），直接用 answer。
-     clarify_question 用一句話反問使用者需要補充什麼，不要反問不影響答案的細節。
+     （例如修業年限、休學年限、請假規則），直接用 answer 挑全校性的文件（例如學則），
+     規定依學制不同就分學制回答，不要因為各系所的文件也抄了一遍就反問系所。
+     clarify_question 用一句話反問使用者需要補充什麼（答案依學制不同就問學制，依系所不同才問系所），
+     不要反問不影響答案的細節。
    decision 不是 answer 時 documents 留空。
 4. question 跟 clarify_question 用使用者的語言寫，中文一律用繁體中文。
 
@@ -446,7 +454,52 @@ def retrieve_candidates(
         latest = by_id.get(doc.superseded_by)
         if latest is not None and latest not in chosen:
             chosen.append(latest)
+    # 問題提到入學年度或年級時，挑到的「依入學年度分版本」系列裡那一年的版本也放進來：各年度的應修科目表
+    # 內容幾乎一樣，初篩只會留下其中幾份（2026-10 問「物理系大二」，114 學年度那份沒進候選）
+    years = cohort_years_in(" ".join(texts), loose=True)
+    if years:
+        series: dict[str, list] = {}
+        for doc in catalog:
+            if doc.superseded_by:
+                series.setdefault(doc.superseded_by, []).append(doc)
+        for doc in list(chosen):
+            for sibling in series.get(doc.superseded_by or doc.doc_id, ()):
+                if sibling not in chosen and rag_documents.cohort_year(sibling) in years:
+                    chosen.append(sibling)
     return chosen
+
+
+_GRADES = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7}
+
+
+def cohort_years_in(text: str, now: Optional[datetime] = None, loose: bool = False) -> set[int]:
+    """問題裡的入學年度：直接寫的（113 學年入學、113 級），或用年級推算的（115 學年度的大三是 113 學年度入學）。
+    「大一英文」「大一必修」講的是課，「大二上之前」「大三以後」講的是時間點，都不是使用者的年級。loose 時「113 學年度的應修科目表」這種沒寫入學的也算
+    （只拿來補候選文件，不能告訴模型這是使用者的入學年度：「115 學年度第 1 學期加退選」的 115 不是）。
+    """
+    years = {int(y) for y in re.findall(r"(?<!\d)(1[01]\d)\s*(?:學年度?)?\s*(?:入學|級)", text)}
+    if loose:
+        years |= {int(y) for y in re.findall(r"(?<!\d)(1[01]\d)\s*學年", text)}
+    years |= {int(y) - 1911 for y in re.findall(r"(?:entered|enrolled|admitted)\D{0,12}(20[1-3]\d)", text, re.I)}
+    current = academic_term(now)[0]
+    timing = r"[上下前後起時]|之[前後]|以[前後]|結束|開始|期間"
+    grades = (rf"(?:大|碩|博)([一二三四五六七])(?!英文|國文|外文|體育|必修|課程|的(?:課|體育|國文|英文|外文|必修)|{timing})"
+              rf"|(?<!升)(?<!升上)(?<!升到)([一二三四五六七])年級(?!{timing})")
+    # 用年級推算的只算使用者講自己的（「我是物理系大二」），「大一的體適能測驗」「資工碩一新生的確認表」
+    # 「抵免多少學分可以升上二年級」是在問一般規定，告訴模型「使用者是 115 學年度入學」反而會寫進回答
+    if loose or re.search(r"我(?:是|現在|目前|今年|讀|念)", text):
+        years |= {current - _GRADES[a or b] + 1 for a, b in re.findall(grades, text)}
+    return years
+
+
+def cohort_hint(query_str: str, history_str: str) -> str:
+    """給模型看的「使用者的入學年度」，挑文件的模型自己從年級推算常常算錯或沒算（2026-10 問「物理系大二」
+    一半挑到 113 學年度的應修科目表）。"""
+    years = cohort_years_in(f"{history_str} {query_str}")
+    if not years:
+        return ""
+    return (f"使用者的入學年度（依問題裡寫的入學年度或年級，用今天的學年度推算，規定依入學年度不同時才用得到）："
+            f"{'、'.join(str(y) for y in sorted(years))} 學年度\n")
 
 
 # 文件大多是中文，挑文件的步驟常把英文問題改寫成中文，回答模型看到中文的「整理後的問題」
@@ -454,18 +507,23 @@ def retrieve_candidates(
 _has_han = has_han
 
 
-def today_context(now: Optional[datetime] = None) -> str:
-    """今天的日期跟學年度學期。校曆這類文件收進來之後，「這學期加退選」「今年畢業典禮」
-    要知道今天是哪一學期才答得出來（不然只能反問）。第 1 學期是 8 月到隔年 1 月。
-    """
+def academic_term(now: Optional[datetime] = None) -> tuple[int, int]:
+    """(學年度, 學期)，第 1 學期是 8 月到隔年 1 月。"""
     now = now or datetime.now()
     roc_year = now.year - 1911
     if now.month >= 8:
-        academic_year, term = roc_year, 1
-    elif now.month == 1:
-        academic_year, term = roc_year - 1, 1
-    else:
-        academic_year, term = roc_year - 1, 2
+        return roc_year, 1
+    if now.month == 1:
+        return roc_year - 1, 1
+    return roc_year - 1, 2
+
+
+def today_context(now: Optional[datetime] = None) -> str:
+    """今天的日期跟學年度學期。校曆這類文件收進來之後，「這學期加退選」「今年畢業典禮」
+    要知道今天是哪一學期才答得出來（不然只能反問）。
+    """
+    now = now or datetime.now()
+    academic_year, term = academic_term(now)
     return f"今天是 {now.year} 年 {now.month} 月 {now.day} 日（{academic_year} 學年度第 {term} 學期）"
 
 
@@ -494,6 +552,7 @@ def plan_query(
     request = (
         f"文件目錄：\n{format_catalog(candidates, ROUTER_ANSWERS_PER_CARD, weights, query_vectors)}\n"
         f"{today_context()}\n"
+        f"{cohort_hint(query_str, history_str)}"
         f"對話紀錄（使用者說過的話，以及系統反問或請使用者補充的話，最後一句是這一次的問題）：{history_str or '無'}\n"
         f"這一次的問題：{query_str}"
     )
@@ -629,12 +688,16 @@ def build_answer_request(plan: dict, query_str: str, history_str: str) -> str:
     blocks = []
     for i, doc in enumerate(plan["documents"], 1):
         card = doc.card
+        edition = ""
+        if doc.superseded_by:
+            edition = ("依入學年度適用（另有給較新入學年度的版本）" if doc.cohort_edition
+                       else "舊版（系統裡有更新的版本）")
         meta = "｜".join(part for part in (
             card["doc_type"],
             f"範圍：{card['scope']}" if card["scope"] else "",
             f"版本：{card['version']}" if card["version"] else "",
             f"檔名：{doc.file_name}",
-            "舊版（系統裡有更新的版本）" if doc.superseded_by else "",
+            edition,
         ) if part)
         blocks.append(f"[{i}] {card['title']}（{meta}）\n{fit_document(doc.text, plan['question'])}")
 
@@ -644,6 +707,7 @@ def build_answer_request(plan: dict, query_str: str, history_str: str) -> str:
     )
     return (
         f"{today_context()}\n"
+        f"{cohort_hint(query_str, history_str)}"
         f"對話紀錄（使用者說過的話，以及系統反問或請使用者補充的話）：{history_str or '無'}\n"
         f"使用者這一次的問題：{query_str}\n"
         f"整理後的完整問題：{plan['question']}\n"
