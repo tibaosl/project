@@ -101,20 +101,31 @@ def _needs_nfkc(cp: int) -> bool:
     )
 
 
+class _NormalizeTable(dict):
+    """normalize_text 用的 str.translate 對照表：每種字元第一次遇到時算出要換成什麼，之後直接查表。
+    原本一個字一個字用 Python 迴圈處理，全部文件 550 萬字要 5.5 秒（後端啟動時建初篩索引的大半時間，
+    剛啟動就登入時會跟登入搶執行時間）。"""
+
+    def __missing__(self, cp: int):
+        ch = chr(cp)
+        if _needs_nfkc(cp):
+            value = unicodedata.normalize("NFKC", ch)
+        elif ch == "\u3000":
+            value = " "
+        elif 0xE000 <= cp <= 0xF8FF or ch in "\u200b\ufeff" or (cp < 32 and ch not in "\n\t"):
+            value = None  # 私用區（造字）跟控制字元印出來都是亂碼，直接丟掉
+        else:
+            value = cp
+        self[cp] = value
+        return value
+
+
+_NORMALIZE_TABLE = _NormalizeTable()
+
+
 def normalize_text(text: str) -> str:
     """只轉「長得一樣、編碼不同」的字，中文標點（，：（）等）維持原樣。"""
-    out = []
-    for ch in text or "":
-        cp = ord(ch)
-        if _needs_nfkc(cp):
-            out.append(unicodedata.normalize("NFKC", ch))
-        elif ch == "\u3000":
-            out.append(" ")
-        elif 0xE000 <= cp <= 0xF8FF or ch in "\u200b\ufeff" or (cp < 32 and ch not in "\n\t"):
-            continue  # 私用區（造字）跟控制字元印出來都是亂碼，直接丟掉
-        else:
-            out.append(ch)
-    text = "".join(out)
+    text = (text or "").translate(_NORMALIZE_TABLE)
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()

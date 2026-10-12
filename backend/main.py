@@ -130,29 +130,21 @@ async def oauth_callback():
 
 # Chrome 設定檔同一時間只能被一個 Chrome 使用，登入流程一次只跑一個。
 _chrome_login_lock = asyncio.Lock()
+# 登入在背景 task 裡跑（使用者中途關掉網頁也會跑完、把 Chrome 關好），留著參考免得被回收
+_chrome_login_tasks: set = set()
 
 
-@app.post("/api/login/chrome")
-async def login_with_chrome():
-    """一次完成「確認身分」跟「啟用課表/時數/學業分析等功能」，我們的網站全程不經手密碼：
+def _sse(event: dict) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
-    1. 在跑後端的這台電腦開一個真正的 Chrome，使用者自己登入 Portal（有人機
-       驗證就自己勾）。Playwright 內建瀏覽器常常連真人都過不了驗證，一般 Chrome 沒這問題。
-    2. 同一個 Chrome 接著走 Portal 官方 OAuth，已經登入所以不用再輸入帳密；
-       拿導回的 code 跟官方 API 換身分——帳號以官方 API 為準，不是使用者自己填的。
-    3. Chrome 裡的登入狀態接到背景爬蟲，之後的查詢都用它。
 
-    ⚠️ Chrome 視窗開在「跑後端的電腦」上，只適用於在自己電腦跑 run.py 的情況。
-    這個請求會一直等到使用者在 Chrome 完成登入（最多約 3 分鐘）才回應。
-    """
-    if _chrome_login_lock.locked():
-        return {"status": "error", "message": "已經有一個 Chrome 登入視窗在進行中，請先在那個視窗完成登入。"}
-
+async def _run_chrome_login(report) -> dict:
+    """完成 Chrome 登入，回傳要給前端的最後一個事件（result 或 error）。report(文字) 回報進度。"""
     async with _chrome_login_lock:
         session = NCUSession(username="", password="")
         try:
             authorization_url = oauth_portal.build_authorization_url()
-            redirect_url = await session.start_via_chrome(authorization_url, oauth_portal.REDIRECT_URI)
+            redirect_url = await session.start_via_chrome(authorization_url, oauth_portal.REDIRECT_URI, report=report)
 
             query = parse_qs(urlparse(redirect_url).query)
             code = query.get("code", [""])[0]
@@ -165,7 +157,7 @@ async def login_with_chrome():
         except Exception as e:
             await session.close()
             print(f"[main API] Chrome 登入失敗：{e}")
-            return {"status": "error", "message": f"登入失敗：{e}"}
+            return {"type": "error", "message": f"登入失敗：{e}"}
 
         username = identity["identifier"]
         session.username = username
@@ -175,11 +167,56 @@ async def login_with_chrome():
     start_prewarm(username, session)
     print(f"[main API] {username}（{identity.get('chinese_name') or '未知姓名'}）透過 Chrome 登入成功。")
     return {
-        "status": "success",
+        "type": "result",
         "token": token,
         "username": username,
         "chinese_name": identity.get("chinese_name", ""),
     }
+
+
+@app.post("/api/login/chrome")
+async def login_with_chrome():
+    """一次完成「確認身分」跟「啟用課表/時數/學業分析等功能」，我們的網站全程不經手密碼：
+
+    1. 在跑後端的這台電腦開一個真正的 Chrome 登入 Portal。Portal「記住我」記得帳號時在看不到的
+       視窗自動登入，要使用者自己輸入密碼或過人機驗證時才開看得到的視窗。Playwright 內建瀏覽器
+       常常連真人都過不了驗證，一般 Chrome 沒這問題。
+    2. 同一個 Chrome 接著走 Portal 官方 OAuth，已經登入所以不用再輸入帳密；
+       拿導回的 code 跟官方 API 換身分——帳號以官方 API 為準，不是使用者自己填的。
+    3. Chrome 裡的登入狀態接到背景爬蟲，之後的查詢都用它。
+
+    回應是 SSE 串流，邊做邊回報進度（記得帳號時約 5 秒，要自己登入的話最多約 3 分鐘）：
+      {type: "status", text}   目前在做什麼，登入頁顯示給使用者看
+      {type: "result", token, username, chinese_name}
+      {type: "error", message}
+
+    ⚠️ Chrome 視窗開在「跑後端的電腦」上，只適用於在自己電腦跑 run.py 的情況。
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+
+    if _chrome_login_lock.locked():
+        queue.put_nowait({"type": "error", "message": "已經有一個登入在進行中，請先在那個 Chrome 視窗完成登入。"})
+        queue.put_nowait(None)
+    else:
+        async def run():
+            try:
+                final = await _run_chrome_login(lambda text: queue.put_nowait({"type": "status", "text": text}))
+            except Exception as e:
+                final = {"type": "error", "message": f"登入失敗：{e}"}
+            queue.put_nowait(final)
+            queue.put_nowait(None)
+
+        task = asyncio.create_task(run())
+        _chrome_login_tasks.add(task)
+        task.add_done_callback(_chrome_login_tasks.discard)
+
+    async def events():
+        while (event := await queue.get()) is not None:
+            yield _sse(event)
+
+    return StreamingResponse(
+        events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
 
 
 class LogoutRequest(BaseModel):

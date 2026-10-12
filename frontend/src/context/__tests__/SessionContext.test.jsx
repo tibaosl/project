@@ -7,6 +7,7 @@ import { SessionProvider, useSession } from "../SessionContext";
 function Probe() {
   const { session, isLoggedIn, login, loginWithChrome, logout, newConversation } = useSession();
   const [lastResult, setLastResult] = useState(null);
+  const [statuses, setStatuses] = useState([]);
   return (
     <div>
       <div data-testid="logged-in">{String(isLoggedIn)}</div>
@@ -19,10 +20,28 @@ function Probe() {
       <button onClick={async () => setLastResult(await login("test_user", ""))}>login-username-only</button>
       <button onClick={async () => setLastResult(await login("", "test_pass"))}>login-password-only</button>
       <button onClick={async () => setLastResult(await loginWithChrome())}>login-with-chrome</button>
+      <button onClick={() => loginWithChrome((text) => setStatuses((prev) => [...prev, text]))}>
+        login-with-chrome-progress
+      </button>
+      <div data-testid="statuses">{statuses.join("|")}</div>
       <button onClick={logout}>logout</button>
       <button onClick={newConversation}>new-conversation</button>
     </div>
   );
+}
+
+// /api/login/chrome 的回應是 SSE 串流（邊做邊回報進度）
+function sseResponse(events) {
+  const text = events.map((event) => `data: ${JSON.stringify(event)}
+
+`).join("");
+  const body = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(text));
+      controller.close();
+    },
+  });
+  return { ok: true, body };
 }
 
 describe("SessionContext", () => {
@@ -156,10 +175,12 @@ describe("SessionContext", () => {
   });
 
   it("Chrome 登入成功後存下後端回傳的帳號、姓名跟 token，不會有密碼", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: "success", token: "chrome-token-456", username: "113000000", chinese_name: "王小明" }),
-    });
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      sseResponse([
+        { type: "status", text: "正在背景登入 Portal" },
+        { type: "result", token: "chrome-token-456", username: "113000000", chinese_name: "王小明" },
+      ])
+    );
 
     const user = userEvent.setup();
     render(
@@ -182,11 +203,37 @@ describe("SessionContext", () => {
     expect(stored.password).toBeUndefined();
   });
 
-  it("Chrome 登入失敗（逾時、取消）時維持未登入，並回傳錯誤訊息", async () => {
-    vi.spyOn(global, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: "error", message: "登入失敗：3 分鐘內沒有在 Chrome 視窗完成登入。" }),
+  it("Chrome 登入的進度依序交給 onStatus，登入頁才能顯示目前在做什麼", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      sseResponse([
+        { type: "status", text: "正在背景登入 Portal" },
+        { type: "status", text: "已登入 Portal，正在確認身分" },
+        { type: "result", token: "chrome-token-456", username: "113000000", chinese_name: "王小明" },
+      ])
+    );
+
+    const user = userEvent.setup();
+    render(
+      <SessionProvider>
+        <Probe />
+      </SessionProvider>
+    );
+
+    await user.click(screen.getByText("login-with-chrome-progress"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("logged-in")).toHaveTextContent("true");
     });
+    expect(screen.getByTestId("statuses")).toHaveTextContent("正在背景登入 Portal|已登入 Portal，正在確認身分");
+  });
+
+  it("Chrome 登入失敗（逾時、取消）時維持未登入，並回傳錯誤訊息", async () => {
+    vi.spyOn(global, "fetch").mockResolvedValue(
+      sseResponse([
+        { type: "status", text: "正在背景登入 Portal" },
+        { type: "error", message: "登入失敗：3 分鐘內沒有在 Chrome 視窗完成登入。" },
+      ])
+    );
 
     const user = userEvent.setup();
     render(
