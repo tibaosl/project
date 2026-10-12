@@ -47,6 +47,7 @@ TOOL_STATUS = {
     "export_calendar_file": "正在準備行事曆檔...",
     "search_course_catalog": "正在搜尋課程...",
     "get_my_hours_dashboard": "正在讀取你的學習護照時數...",
+    "find_my_hour_records": "正在查你的活動時數紀錄...",
     "get_my_academic_analysis": "正在分析你的成績跟畢業學分...",
     "recommend_scholarships_for_me": "正在比對你可以申請的獎學金...",
     "get_my_registered_activities": "正在讀取你的活動報名紀錄...",

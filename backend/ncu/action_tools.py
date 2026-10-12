@@ -20,6 +20,7 @@ from playwright.async_api import (
 from playwright_stealth import Stealth
 
 from backend.ncu.activity_tools import get_activity_detail
+from backend.ncu.hour_activities import HOUR_ACTIVITY_ROWS_JS, parse_activity_rows
 from backend.logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -1509,6 +1510,7 @@ class NCUSession:
             - milestones：該大類別的三個等級門檻（畢業門檻/銀質獎/金質獎）
         - graduated：四大類別是否都已達畢業門檻
         - hour_records：解析出來的學習護照時數紀錄清單
+        - activities：活動總表的每一個活動跟它的時數、核發狀態（hour_activities.parse_activity_rows）
         - raw_tables：原始表格 cell 資料，供例外狀況時對照除錯
         """
 
@@ -1649,6 +1651,7 @@ class NCUSession:
             "categories": categories,
             "graduated": graduated,
             "hour_records": hour_records,
+            "activities": parse_activity_rows(await page.evaluate(HOUR_ACTIVITY_ROWS_JS)),
             "raw_tables": raw_tables,
         }
 

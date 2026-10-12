@@ -35,6 +35,8 @@
   但還要確認清寒、原住民這類身分條件的。使用者在對話裡說明身分（例如「我是低收入戶」）就會重新比對
   （`scholarship_tools.py`，見下面「獎學金推薦」）。
 * **學習護照時數進度查詢**：對照畢業門檻，算出各類別還差多少小時。
+* **活動時數紀錄**：問某個活動的時數核發了沒、哪些活動待核發、某類時數是哪些活動來的。
+  時數欄還是空的活動會一併查報名紀錄的簽到簽退，分得出是主辦單位還沒登錄，還是沒簽退。
 * **我的行程**：把課表、已報名的活動跟校曆整理成每天的行程（「我這週有什麼行程」「明天要上什麼課」），
   放假、補假、停課的日子不列課並標出原因，寒暑假不列課，好幾天的受理期間在最後一天提醒
   （`backend/analysis/agenda.py`）。
@@ -69,6 +71,7 @@ backend/                      後端（Python）
 ├── ncu/                      連學校的系統
 │   ├── action_tools.py       Portal 登入、iNCU 頁面（課表、時數、報名紀錄）、活動報名、選課
 │   ├── activity_tools.py     公開的活動查詢
+│   ├── hour_activities.py    讀時數頁的活動總表（每個活動的時數跟核發狀態）
 │   ├── oauth_portal.py       Portal 官方 OAuth
 │   └── secure_requests.py    連學校網站時的憑證驗證
 ├── analysis/                 用自己的資料跟學校公開資料整理的資訊
@@ -76,6 +79,7 @@ backend/                      後端（Python）
 │   ├── scholarship_tools.py  獎學金推薦
 │   ├── academic_calendar.py  解析校曆
 │   ├── agenda.py             我的行程（課表、活動、校曆）
+│   ├── hour_records.py       活動時數紀錄的查詢跟回答
 │   └── calendar_export.py    匯出行事曆檔（.ics）
 └── rag/                      校園法規問答
     ├── academic_agent.py     挑文件、讀全文回答
