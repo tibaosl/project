@@ -688,6 +688,8 @@ class CatalogDocument:
     duplicates: list[str] = field(default_factory=list)
     # 同一份文件有更新的年度版本時，填最新版的 doc_id（例如 112～115 學年度的專題確認表）。
     superseded_by: str = ""
+    # 舊的是給較早入學年度的版本（各系應修科目表），對當年入學的學生仍然有效，不是作廢的舊版
+    cohort_edition: bool = False
     # 卡片的向量（長度 1），初篩用。算不出來（例如沒網路）是 None，初篩就只靠關鍵字
     embedding: Optional[np.ndarray] = None
     # 卡片每一題「可回答問題」的向量（一題一列，ANSWER_EMBEDDING_DIMENSIONS 維），算不出來是 None
@@ -802,6 +804,17 @@ def _version_year(doc: "CatalogDocument") -> int:
     return max(years, default=0)
 
 
+# 依入學年度分版本的文件（各系應修科目表、修業辦法）：舊年度那份對當年入學的學生仍然有效，不是作廢的舊版。
+# 2026-10 評估「113 學年入學的中文系畢業要修幾學分」，113 學年的表被標成舊版，挑文件時常改挑 114 學年的。
+_COHORT_RE = re.compile(r"(?<!\d)(\d{2,3})\s*(?:學年度?)?[\s（()）含以前後起之]*(?:入學|新生)")
+
+
+def cohort_year(doc: "CatalogDocument") -> int:
+    """版本或標題裡「113學年度入學新生適用」這類寫法的入學年度，沒有就回傳 0。"""
+    match = _COHORT_RE.search(f"{doc.card['version']} {doc.card['title']}")
+    return int(match.group(1)) if match else 0
+
+
 def mark_superseded_versions(catalog: list["CatalogDocument"]) -> None:
     """同系列文件裡年度最新的那份以外，都標上 superseded_by。年度一樣或看不出年度就不標，
     交給挑文件的模型自己看內容判斷。適用範圍不同的不算同一系列：各系的「碩士班修業規定」
@@ -822,6 +835,9 @@ def mark_superseded_versions(catalog: list["CatalogDocument"]) -> None:
         for doc in docs:
             if doc is not latest:
                 doc.superseded_by = latest.doc_id
+                # 給不同入學年度的才算，同一屆適用的辦法改版（兩版都寫 110 學年度起入學）舊的那版還是舊版
+                old, new = cohort_year(doc), cohort_year(latest)
+                doc.cohort_edition = bool(old and new and old != new)
 
 
 def parse_files(paths: list[Path], processes: int = 0) -> list[ParsedDocument]:

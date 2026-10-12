@@ -91,6 +91,21 @@ def test_router_prompt_lists_candidates_and_marks_old_versions(monkeypatch):
     assert "資訊電機學院" in system  # 系所對照表有放進去
 
 
+def test_older_cohort_editions_are_not_called_old_versions(monkeypatch):
+    # 113 學年入學的應修科目表對 113 學年入學的學生仍然有效，標成「舊版」挑文件時會被換成 114 學年的
+    old = _doc("D11", "中文系應修科目表（113學年度入學新生適用）", superseded_by="D12")
+    old.cohort_edition = True
+    new = _doc("D12", "中文系應修科目表（114學年度入學新生適用）")
+    fake = _use_fakes(monkeypatch, [_plan(documents=["D11"]), _plan(documents=["D11"])])
+    agent.plan_query("113 學年入學的中文系畢業學分", "", [old, new], [old, new])
+    request = fake.calls[0]["messages"][1]["content"]
+    assert "[D11] 中文系應修科目表（113學年度入學新生適用）（依入學年度適用，較新入學年度的版本是 [D12]）" in request
+    assert "舊版" not in request
+
+    answer_request = agent.build_answer_request(_plan(documents=[old]) | {"documents": [old]}, "問題", "")
+    assert "依入學年度適用" in answer_request and "舊版" not in answer_request
+
+
 def test_router_cards_list_only_the_first_few_answerable_questions(monkeypatch):
     # 「可回答問題」佔了挑文件 prompt 大部分的 token，每張卡片只列前幾題
     doc = _doc("D20", "學生請假規則")
@@ -332,6 +347,43 @@ def test_retrieval_adds_the_latest_version_of_old_candidates(monkeypatch):
     _fake_embeddings(monkeypatch, {"課程地圖": _vector(0, 1, 1)})
     found = agent.retrieve_candidates("113學年度課程地圖", "", catalog, limit=1)
     assert [d.doc_id for d in found] == ["D05", "D06"]
+
+
+def test_cohort_years_come_from_entry_years_and_grades():
+    from datetime import datetime
+
+    now = datetime(2026, 10, 12)  # 115 學年度第 1 學期
+    assert agent.cohort_years_in("我是 113 學年入學的中文系", now) == {113}
+    assert agent.cohort_years_in("客家系 114 級", now) == {114}
+    assert agent.cohort_years_in("我是物理系大二", now) == {114}
+    assert agent.cohort_years_in("碩一新生", now) == {115}
+    assert agent.cohort_years_in("現在三年級", now) == {113}
+    assert agent.cohort_years_in("I entered NCU in 2024", now) == {113}
+    # 講的是課或某一學期，不是使用者的入學年度
+    assert agent.cohort_years_in("大一英文可以免修嗎", now) == set()
+    assert agent.cohort_years_in("115學年度第1學期加退選", now) == set()
+    assert agent.cohort_years_in("115學年度第1學期加退選", now, loose=True) == {115}
+
+
+def test_retrieval_adds_the_cohort_edition_for_the_users_grade(monkeypatch):
+    # 各年度的應修科目表內容幾乎一樣，初篩只會留下其中幾份；問題提到年級時，那一屆的版本要補進來
+    tables = [_doc(f"D{n}", f"物理系應修科目表（{year}學年度入學新生適用）") for n, year in ((1, 113), (2, 114), (3, 115))]
+    other = _doc("D9", "宿舍管理辦法")
+    for doc, vector in zip(tables + [other], [_vector(1), _vector(0, 1), _vector(0, 0, 1), _vector(0, 0, 0, 1)]):
+        doc.embedding = vector
+        doc.card["scope"] = "物理學系"
+    for doc in tables[:2]:
+        doc.superseded_by, doc.cohort_edition = "D3", True
+    _fake_embeddings(monkeypatch, {"物理": _vector(1)})
+    monkeypatch.setattr(agent, "academic_term", lambda now=None: (115, 1))
+
+    found = agent.retrieve_candidates("我是物理系大二，畢業要幾學分", "", tables + [other], limit=1)
+    assert [d.doc_id for d in found] == ["D1", "D3", "D2"]  # 初篩、最新版、大二那一屆（114 學年度入學）
+
+    fake = _use_fakes(monkeypatch, _plan(documents=["D2"]))
+    agent.plan_query("我是物理系大二，畢業要幾學分", "", tables, tables)
+    assert "使用者的入學年度" in fake.calls[0]["messages"][1]["content"]
+    assert "114 學年度" in fake.calls[0]["messages"][1]["content"]
 
 
 def test_retrieval_falls_back_to_keywords_when_embeddings_fail(monkeypatch):

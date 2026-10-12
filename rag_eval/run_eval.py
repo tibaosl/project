@@ -11,6 +11,8 @@
 
 questions.json 是開發時一邊看一邊調整用的，questions_campus.json 是 2026-10-12 另外出的第二份
 （偏宿舍、圖書館、獎助學金、校園生活這類常見問答，第一次跑時找到 FAQ 挑不到、合併儲存格的問題），
+questions_units.json（體育室、計中、國際處、課外組等前兩份沒測到的單位）跟 questions_dept.json
+（各系所的應修科目表、資格考、系上獎學金，第一次跑時找到各入學年度的應修科目表被當成舊版的問題）是第三、四份，
 holdout.json 是保留測試題，
 平常不要照著它調 prompt，只在改完之後跑一次確認沒有只對 questions.json 過度擬合。
 
