@@ -75,20 +75,34 @@ LOGIN_CHROME_PROFILE = SESSION_STATE_DIR / "chrome_profile"
 SKIP_GOOGLE_FONTS_ARG = "--host-resolver-rules=MAP fonts.googleapis.com ~NOTFOUND, MAP fonts.gstatic.com ~NOTFOUND"
 
 
-async def _launch_login_chrome(pw: Playwright, chrome: str) -> Browser:
+# 不需要使用者動手的登入（「記住我」自動登入、本來就是登入狀態）用看不到的 Chrome 視窗跑：
+# 一樣是真正的 Chrome（headless 的 Chrome 指紋不同，比較容易被人機驗證擋），只是開在螢幕外面。
+# 螢幕外的視窗會被當成被遮住、降低執行速度，所以一起關掉背景節流。
+HIDDEN_CHROME_ARGS = [
+    "--window-position=-32000,-32000",
+    "--disable-backgrounding-occluded-windows",
+    "--disable-renderer-backgrounding",
+    "--disable-background-timer-throttling",
+]
+# 要使用者自己登入時開在螢幕上（明確指定位置：Chrome 會記住上次關閉時的位置，也就是螢幕外）
+VISIBLE_CHROME_ARGS = ["--window-position=80,60", "--window-size=1100,860"]
+
+
+async def _launch_login_chrome(pw: Playwright, chrome: str, hidden: bool = False) -> tuple[Browser, subprocess.Popen]:
     port = _free_local_port()
     LOGIN_CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
-    subprocess.Popen([
+    process = subprocess.Popen([
         chrome,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={LOGIN_CHROME_PROFILE}",
         "--no-first-run",
         "--no-default-browser-check",
         SKIP_GOOGLE_FONTS_ARG,
+        *(HIDDEN_CHROME_ARGS if hidden else VISIBLE_CHROME_ARGS),
     ])
     for _ in range(30):
         try:
-            return await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}")
+            return await pw.chromium.connect_over_cdp(f"http://127.0.0.1:{port}"), process
         except Exception:
             await asyncio.sleep(0.5)
     raise RuntimeError(
@@ -97,15 +111,18 @@ async def _launch_login_chrome(pw: Playwright, chrome: str) -> Browser:
 
 
 @asynccontextmanager
-async def _login_chrome_page(chrome: str):
+async def _login_chrome_page(chrome: str, hidden: bool = False):
     """開登入用的真正 Chrome（專案專屬設定檔，不碰使用者平常的 Chrome），接管它的分頁。
+    hidden 時視窗開在螢幕外，使用者看不到。
 
     設定檔會留著，Portal「記住我」的 cookie（29 天）就存在裡面，下次打開就是
     已記住帳號的登入畫面。用完一定要讓 Chrome 正常關閉：強制結束程序的話，
-    剛寫入的 cookie 可能還沒存進硬碟，下次就不記得了。
+    剛寫入的 cookie 可能還沒存進硬碟，下次就不記得了。也要等程序真的結束：
+    看不到的視窗登入不了、緊接著開看得到的視窗時，舊的還沒關完，新開的 Chrome
+    會把視窗交給舊的程序就結束，連不上除錯埠。
     """
     async with async_playwright() as pw:
-        browser = await _launch_login_chrome(pw, chrome)
+        browser, process = await _launch_login_chrome(pw, chrome, hidden)
         try:
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else await context.new_page()
@@ -117,6 +134,10 @@ async def _login_chrome_page(chrome: str):
                 cdp = await browser.new_browser_cdp_session()
                 await cdp.send("Browser.close")
             except Exception:
+                pass
+            try:
+                await asyncio.to_thread(process.wait, 15)
+            except subprocess.TimeoutExpired:
                 pass
 
 # 學習護照系統畫面上的四大類別，各自底下的細項子類別「畢業門檻」需要的時數
@@ -452,10 +473,24 @@ class NCUSession:
         if chrome is None:
             return None
 
-        async with _login_chrome_page(chrome) as (context, page):
-            await self._wait_for_chrome_portal_login(page)
-            print("[Action Agent] 已從 Chrome 取得登入狀態，準備轉入背景執行...")
-            return await context.storage_state(), await page.evaluate("navigator.userAgent")
+        # 有密碼表示是背景帳密登入被驗證擋下才來這裡，一定要使用者動手，直接開看得到的視窗
+        result = await self._portal_login_in_chrome(chrome, try_hidden=not self.password)
+        print("[Action Agent] 已從 Chrome 取得登入狀態，準備轉入背景執行...")
+        return result
+
+    async def _portal_login_in_chrome(self, chrome: str, try_hidden: bool = True):
+        """在登入用的 Chrome 登入 Portal，回傳 (login_state, user_agent)。
+
+        先開看不到的視窗：已經是登入狀態、或「記住我」按一下就登入的話，使用者完全不會
+        看到 Chrome。要使用者自己輸入帳密或過驗證時，才關掉它、改開看得到的視窗。
+        """
+        for hidden in ((True, False) if try_hidden else (False,)):
+            async with _login_chrome_page(chrome, hidden=hidden) as (context, page):
+                if not await self._wait_for_chrome_portal_login(page, allow_manual=not hidden):
+                    print("[Action Agent] 需要你自己登入 Portal，改開看得到的 Chrome 視窗...")
+                    continue
+                return await context.storage_state(), await page.evaluate("navigator.userAgent")
+        raise RuntimeError("Portal 登入失敗：Chrome 視窗沒有完成登入。")
 
     async def start_via_chrome(self, authorization_url: str, redirect_uri: str) -> str:
         """不經過我們的網站輸入密碼：使用者在真正的 Chrome 裡自己登入 Portal，
@@ -476,10 +511,7 @@ class NCUSession:
             self.playwright
         )
         try:
-            async with _login_chrome_page(chrome) as (context, page):
-                await self._wait_for_chrome_portal_login(page)
-                login_state = await context.storage_state()
-                user_agent = await page.evaluate("navigator.userAgent")
+            login_state, user_agent = await self._portal_login_in_chrome(chrome)
 
             self.browser = await self.playwright.chromium.launch(headless=True, args=[SKIP_GOOGLE_FONTS_ARG])
             if not await self._open_background_portal(login_state, user_agent):
@@ -500,7 +532,9 @@ class NCUSession:
         print("[Action Agent] Portal session 建立完成（Chrome 登入）。")
         return redirect_url
 
-    async def _wait_for_chrome_portal_login(self, page: Page):
+    async def _wait_for_chrome_portal_login(self, page: Page, allow_manual: bool = True) -> bool:
+        """等 Chrome 裡的 Portal 登入完成，回傳 True。allow_manual=False（看不到的視窗）時，
+        遇到要使用者自己輸入帳密或過驗證的情況回傳 False，由呼叫端改開看得到的視窗。"""
         username_box = page.get_by_role("textbox", name="帳號")
         password_box = page.get_by_role("textbox", name="密碼")
         home_marker = page.get_by_text("學生服務", exact=False).first
@@ -508,7 +542,17 @@ class NCUSession:
         await page.wait_for_load_state("networkidle")
         if await home_marker.is_visible():
             print("[Action Agent] 登入用的 Chrome 還是登入狀態，不需要重新登入。")
-            return
+            return True
+
+        if not allow_manual:
+            if not await self._click_remembered_login(page, password_box):
+                return False
+            print("[Action Agent] Portal 記得這個帳號（「記住我」），已在背景自動按下登入。")
+            login_button = page.get_by_role("button", name="登入 Portal")
+            if await self._wait_for_login_outcome(page, home_marker, login_button) != "home":
+                return False
+            await page.wait_for_load_state("networkidle")
+            return True
 
         if self.password:
             try:
@@ -534,6 +578,7 @@ class NCUSession:
         ):
             raise RuntimeError("Portal 登入失敗：3 分鐘內沒有在 Chrome 視窗完成登入。")
         await page.wait_for_load_state("networkidle")
+        return True
 
     async def _click_remembered_login(self, page: Page, password_box) -> bool:
         """Portal「記住我」生效時，登入頁只剩帳號跟登入按鈕、沒有密碼欄；沒有驗證就直接按。"""

@@ -83,12 +83,12 @@ export default function Login() {
         )}
 
         <button type="button" className="login-submit" onClick={handleChromeLogin} disabled={busy}>
-          {isWaitingChrome ? "等待你在 Chrome 視窗登入..." : "使用中央大學 Portal 帳號登入"}
+          {isWaitingChrome ? "登入中..." : "使用中央大學 Portal 帳號登入"}
         </button>
         <p className="login-oauth-note">
           {isWaitingChrome
-            ? "請到 Chrome 視窗登入 Portal（有驗證就勾選「我不是機器人」），登入完成後會自動回到這裡。「記住我」會先幫你勾好，29 天內不用再輸入密碼。"
-            : "會開一個 Chrome 視窗讓你在 Portal 官方頁面登入，我們完全不會看到你的密碼。登入一次就能使用課表、時數、學業分析等功能。"}
+            ? "正在背景登入 Portal，記得你的帳號時幾秒內就會完成。如果跳出 Chrome 視窗，請在那裡登入（有驗證就勾選「我不是機器人」），完成後會自動回到這裡。「記住我」會先幫你勾好，29 天內不用再輸入密碼。"
+            : "在 Portal 官方頁面登入，我們完全不會看到你的密碼。記得你的帳號時直接在背景完成，需要輸入密碼時才會開 Chrome 視窗。登入一次就能使用課表、時數、學業分析等功能。"}
         </p>
 
         {!showManualForm ? (

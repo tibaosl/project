@@ -25,8 +25,9 @@ export async function requestLogin(username, password) {
 }
 
 /**
- * 呼叫 /api/login/chrome：後端會在這台電腦開 Chrome 讓使用者自己登入 Portal，
- * 這個請求會一直等到使用者在 Chrome 完成登入（最多約 3 分鐘）才回來。
+ * 呼叫 /api/login/chrome：後端會在這台電腦用 Chrome 登入 Portal，記得帳號時在看不到的視窗
+ * 背景完成，要使用者自己輸入密碼時才開看得到的視窗。要自己登入的話，這個請求會一直等到
+ * 使用者在 Chrome 完成登入（最多約 3 分鐘）才回來。
  * 回傳 { token, username, chineseName }。
  */
 export async function requestChromeLogin() {

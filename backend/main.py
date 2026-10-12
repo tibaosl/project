@@ -136,8 +136,9 @@ _chrome_login_lock = asyncio.Lock()
 async def login_with_chrome():
     """一次完成「確認身分」跟「啟用課表/時數/學業分析等功能」，我們的網站全程不經手密碼：
 
-    1. 在跑後端的這台電腦開一個真正的 Chrome，使用者自己登入 Portal（有人機
-       驗證就自己勾）。Playwright 內建瀏覽器常常連真人都過不了驗證，一般 Chrome 沒這問題。
+    1. 在跑後端的這台電腦開一個真正的 Chrome 登入 Portal。Portal「記住我」記得帳號時在看不到的
+       視窗自動登入，要使用者自己輸入密碼或過人機驗證時才開看得到的視窗。Playwright 內建瀏覽器
+       常常連真人都過不了驗證，一般 Chrome 沒這問題。
     2. 同一個 Chrome 接著走 Portal 官方 OAuth，已經登入所以不用再輸入帳密；
        拿導回的 code 跟官方 API 換身分——帳號以官方 API 為準，不是使用者自己填的。
     3. Chrome 裡的登入狀態接到背景爬蟲，之後的查詢都用它。
