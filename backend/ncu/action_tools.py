@@ -86,12 +86,26 @@ HIDDEN_CHROME_ARGS = [
 ]
 # 要使用者自己登入時開在螢幕上（明確指定位置：Chrome 會記住上次關閉時的位置，也就是螢幕外）
 VISIBLE_CHROME_ARGS = ["--window-position=80,60", "--window-size=1100,860"]
+# Portal OAuth 同意畫面的按鈕：我們的導回網址不是學校官方網站，按鈕寫「堅決前往」。用「包含」比對，其他是 _handle_oauth_consent_if_present 也認的寫法
+OAUTH_CONSENT_BUTTON = re.compile("前往|同意|授權|允許|確認|Authorize|Allow|Accept|Continue")
+
+
+# 上一個登入用 Chrome 的程序。同一個設定檔同時只能有一個 Chrome：舊的還沒關完就開新的，新開的
+# Chrome 會把視窗交給舊的程序就結束，連不上除錯埠（看不到的視窗登入不了、緊接著開看得到的視窗時會遇到）。
+# 關的時候不等，下次要開才等它結束，登入成功時就不用多等這零點幾秒。
+_previous_login_chrome: Optional[subprocess.Popen] = None
 
 
 async def _launch_login_chrome(pw: Playwright, chrome: str, hidden: bool = False) -> tuple[Browser, subprocess.Popen]:
+    global _previous_login_chrome
+    if _previous_login_chrome is not None and _previous_login_chrome.poll() is None:
+        try:
+            await asyncio.to_thread(_previous_login_chrome.wait, 15)
+        except subprocess.TimeoutExpired:
+            pass
     port = _free_local_port()
     LOGIN_CHROME_PROFILE.mkdir(parents=True, exist_ok=True)
-    process = subprocess.Popen([
+    process = _previous_login_chrome = subprocess.Popen([
         chrome,
         f"--remote-debugging-port={port}",
         f"--user-data-dir={LOGIN_CHROME_PROFILE}",
@@ -117,12 +131,10 @@ async def _login_chrome_page(chrome: str, hidden: bool = False):
 
     設定檔會留著，Portal「記住我」的 cookie（29 天）就存在裡面，下次打開就是
     已記住帳號的登入畫面。用完一定要讓 Chrome 正常關閉：強制結束程序的話，
-    剛寫入的 cookie 可能還沒存進硬碟，下次就不記得了。也要等程序真的結束：
-    看不到的視窗登入不了、緊接著開看得到的視窗時，舊的還沒關完，新開的 Chrome
-    會把視窗交給舊的程序就結束，連不上除錯埠。
+    剛寫入的 cookie 可能還沒存進硬碟，下次就不記得了。
     """
     async with async_playwright() as pw:
-        browser, process = await _launch_login_chrome(pw, chrome, hidden)
+        browser, _process = await _launch_login_chrome(pw, chrome, hidden)
         try:
             context = browser.contexts[0]
             page = context.pages[0] if context.pages else await context.new_page()
@@ -134,10 +146,6 @@ async def _login_chrome_page(chrome: str, hidden: bool = False):
                 cdp = await browser.new_browser_cdp_session()
                 await cdp.send("Browser.close")
             except Exception:
-                pass
-            try:
-                await asyncio.to_thread(process.wait, 15)
-            except subprocess.TimeoutExpired:
                 pass
 
 # 學習護照系統畫面上的四大類別，各自底下的細項子類別「畢業門檻」需要的時數
@@ -474,58 +482,86 @@ class NCUSession:
             return None
 
         # 有密碼表示是背景帳密登入被驗證擋下才來這裡，一定要使用者動手，直接開看得到的視窗
-        result = await self._portal_login_in_chrome(chrome, try_hidden=not self.password)
+        login_state, user_agent, _ = await self._portal_login_in_chrome(chrome, try_hidden=not self.password)
         print("[Action Agent] 已從 Chrome 取得登入狀態，準備轉入背景執行...")
-        return result
+        return login_state, user_agent
 
-    async def _portal_login_in_chrome(self, chrome: str, try_hidden: bool = True):
-        """在登入用的 Chrome 登入 Portal，回傳 (login_state, user_agent)。
+    async def _portal_login_in_chrome(
+        self, chrome: str, try_hidden: bool = True, report=None, after_login=None,
+    ):
+        """在登入用的 Chrome 登入 Portal，回傳 (login_state, user_agent, after_login 的結果)。
 
         先開看不到的視窗：已經是登入狀態、或「記住我」按一下就登入的話，使用者完全不會
         看到 Chrome。要使用者自己輸入帳密或過驗證時，才關掉它、改開看得到的視窗。
+        report(文字) 回報進度給使用者看。after_login(context, page, login_state, user_agent)
+        在 Chrome 關掉之前執行，可以接著用這個已經登入的 Chrome 做事（例如 OAuth 授權）。
         """
+        report = report or (lambda _text: None)
         for hidden in ((True, False) if try_hidden else (False,)):
+            if not hidden:
+                report("需要你自己登入：請在跳出的 Chrome 視窗登入 Portal（有驗證就勾選「我不是機器人」），"
+                       "完成後會自動回到這裡。「記住我」已經幫你勾好，29 天內不用再輸入密碼")
             async with _login_chrome_page(chrome, hidden=hidden) as (context, page):
                 if not await self._wait_for_chrome_portal_login(page, allow_manual=not hidden):
                     print("[Action Agent] 需要你自己登入 Portal，改開看得到的 Chrome 視窗...")
                     continue
-                return await context.storage_state(), await page.evaluate("navigator.userAgent")
+                login_state = await context.storage_state()
+                user_agent = await page.evaluate("navigator.userAgent")
+                extra = await after_login(context, page, login_state, user_agent) if after_login else None
+                return login_state, user_agent, extra
         raise RuntimeError("Portal 登入失敗：Chrome 視窗沒有完成登入。")
 
-    async def start_via_chrome(self, authorization_url: str, redirect_uri: str) -> str:
-        """不經過我們的網站輸入密碼：使用者在真正的 Chrome 裡自己登入 Portal，
-        登入狀態接到背景爬蟲後，在背景跑我們的 OAuth 授權（已登入所以不用再打帳密）。
+    async def start_via_chrome(self, authorization_url: str, redirect_uri: str, report=None) -> str:
+        """不經過我們的網站輸入密碼：在真正的 Chrome 裡登入 Portal（記得帳號就在看不到的視窗
+        自動完成，要使用者動手才開看得到的），接著在同一個已經登入的 Chrome 跑我們的 OAuth 授權，
+        同時把登入狀態接到背景爬蟲。report(文字) 回報進度給使用者看。
 
-        登入狀態一拿到就可以關掉 Chrome，使用者不用看著視窗跳去授權頁。
+        2026-10 量過：原本是 Chrome 登入、關掉、開背景瀏覽器、再到背景跑授權，一步一步來，
+        從按登入到拿到授權碼約 8 秒。背景瀏覽器跟 Chrome 一起開、授權跟接登入狀態同時做之後快了一半。
 
         回傳 Portal 導回 `redirect_uri` 的完整網址（含 code/state），由呼叫端
         拿去跟官方 API 換身分——帳號是官方 API 說了算，不是使用者自己填的，
         所以這裡的 self.username 在呼叫端換到身分之前是空的。
         """
+        report = report or (lambda _text: None)
         chrome = _find_chrome()
         if chrome is None:
             raise RuntimeError("找不到 Google Chrome，請先安裝 Chrome，或改用帳號密碼手動登入。")
 
-        self.playwright = await async_playwright().start()
-        Stealth(navigator_languages_override=("zh-TW", "zh")).hook_playwright_context(
-            self.playwright
-        )
-        try:
-            login_state, user_agent = await self._portal_login_in_chrome(chrome)
+        report("正在背景登入 Portal")
 
-            self.browser = await self.playwright.chromium.launch(headless=True, args=[SKIP_GOOGLE_FONTS_ARG])
-            if not await self._open_background_portal(login_state, user_agent):
+        async def launch_background_browser():
+            self.playwright = await async_playwright().start()
+            Stealth(navigator_languages_override=("zh-TW", "zh")).hook_playwright_context(
+                self.playwright
+            )
+            return await self.playwright.chromium.launch(headless=True, args=[SKIP_GOOGLE_FONTS_ARG])
+
+        # 背景瀏覽器跟登入用的 Chrome 互不相干，一起開
+        launching = asyncio.create_task(launch_background_browser())
+
+        async def authorize_and_hand_over(context, page, login_state, user_agent):
+            report("已登入 Portal，正在確認身分")
+            self.browser = await launching
+            redirect_url, handed_over = await asyncio.gather(
+                self._authorize_in_browser(context, page, authorization_url, redirect_uri),
+                self._open_background_portal(login_state, user_agent),
+            )
+            if not handed_over:
                 raise RuntimeError("Cookie 傳遞失敗，背景瀏覽器被踢回 Portal 登入頁面！")
+            return redirect_url
 
-            auth_page = await self.context.new_page()
-            try:
-                redirect_url = await self._authorize_in_browser(
-                    self.context, auth_page, authorization_url, redirect_uri
-                )
-            finally:
-                await auth_page.close()
+        try:
+            _, _, redirect_url = await self._portal_login_in_chrome(
+                chrome, report=report, after_login=authorize_and_hand_over
+            )
             self._logged_in = True
         except Exception:
+            if self.browser is None:
+                try:
+                    self.browser = await launching  # 讓 close() 一起收掉，不要留下沒人關的背景瀏覽器
+                except Exception:
+                    pass
             await self.close()
             raise
 
@@ -538,8 +574,13 @@ class NCUSession:
         username_box = page.get_by_role("textbox", name="帳號")
         password_box = page.get_by_role("textbox", name="密碼")
         home_marker = page.get_by_text("學生服務", exact=False).first
+        login_button = page.get_by_role("button", name="登入 Portal")
 
-        await page.wait_for_load_state("networkidle")
+        # 首頁或登入頁的東西一出現就往下走，不等整頁網路靜止（Portal 首頁要多等快一秒）
+        try:
+            await home_marker.or_(login_button).or_(username_box).first.wait_for(timeout=30000)
+        except PlaywrightTimeoutError:
+            pass
         if await home_marker.is_visible():
             print("[Action Agent] 登入用的 Chrome 還是登入狀態，不需要重新登入。")
             return True
@@ -548,7 +589,6 @@ class NCUSession:
             if not await self._click_remembered_login(page, password_box):
                 return False
             print("[Action Agent] Portal 記得這個帳號（「記住我」），已在背景自動按下登入。")
-            login_button = page.get_by_role("button", name="登入 Portal")
             if await self._wait_for_login_outcome(page, home_marker, login_button) != "home":
                 return False
             await page.wait_for_load_state("networkidle")
@@ -620,19 +660,36 @@ class NCUSession:
         context.on("request", _on_request)
         try:
             try:
-                await page.goto(authorization_url)
+                await page.goto(authorization_url, wait_until="domcontentloaded")
             except Exception:
                 if not captured.done():
                     raise
 
-            for _ in range(60):
+            # 同意畫面的按鈕一出現就按。iNCU 用的 _handle_oauth_consent_if_present 會先等整頁網路靜止、
+            # 按完再等一次，登入時多花兩秒多。按了 2 秒還停在同意畫面（例如按鈕的程式還沒載入）就再按一次。
+            clicked_at = None
+            for tick in range(150):
                 if captured.done():
                     return captured.result()
-                await self._handle_oauth_consent_if_present(page)
-                await page.wait_for_timeout(500)
+                if "oauth2/authorization" in page.url and (clicked_at is None or tick - clicked_at >= 10):
+                    if await self._click_oauth_consent(page):
+                        clicked_at = tick
+                await page.wait_for_timeout(200)
             raise RuntimeError("Portal OAuth 授權逾時：30 秒內沒有導回 NCUXplore。")
         finally:
             context.remove_listener("request", _on_request)
+
+    async def _click_oauth_consent(self, page: Page) -> bool:
+        """按下 Portal OAuth 同意畫面的按鈕（目前是「堅決前往」），沒看到按鈕回傳 False。"""
+        for role in ("button", "link"):
+            target = page.get_by_role(role, name=OAUTH_CONSENT_BUTTON).first
+            try:
+                if await target.is_visible():
+                    await target.click()
+                    return True
+            except Exception:
+                pass
+        return False
 
     async def _captcha_challenge_present(self, page: Page) -> bool:
         """檢查頁面上是否出現需要使用者手動處理的人機驗證挑戰。

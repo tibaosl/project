@@ -87,7 +87,7 @@ class FakePage:
 
 def test_remembered_login_never_shows_a_window(monkeypatch):
     opened = _fake_chrome(monkeypatch, needs_manual=False)
-    state, user_agent = asyncio.run(NCUSession("", "")._portal_login_in_chrome("chrome.exe"))
+    state, user_agent, _ = asyncio.run(NCUSession("", "")._portal_login_in_chrome("chrome.exe"))
     assert opened == [True]
     assert state["cookies"] and user_agent
 
@@ -110,7 +110,8 @@ def test_hidden_chrome_is_placed_off_screen(monkeypatch):
     launched = []
 
     class FakeProcess:
-        pass
+        def poll(self):
+            return 0  # 已經結束，下次開不用等
 
     def fake_popen(args):
         launched.append(args)
@@ -132,3 +133,66 @@ def test_hidden_chrome_is_placed_off_screen(monkeypatch):
     assert "--disable-backgrounding-occluded-windows" in launched[0]
     # 看得到的視窗要明確放回螢幕上：Chrome 會記住上次關閉時的位置（螢幕外）
     assert "--window-position=80,60" in launched[1]
+
+
+def _chrome_login_events(monkeypatch, start):
+    """用假的 NCUSession 呼叫 /api/login/chrome，回傳串流裡的事件跟用過的 session。"""
+    import json
+    import os
+
+    os.environ.setdefault("OPENAI_API_KEY", "test-key-not-used")  # 匯入 main 時建立模型物件要有值
+    from fastapi.testclient import TestClient
+
+    from backend import main
+
+    sessions = []
+
+    class FakeSession:
+        def __init__(self, username, password):
+            self.username, self.closed = username, False
+            sessions.append(self)
+
+        start_via_chrome = start
+
+        async def close(self):
+            self.closed = True
+
+    async def identity(code):
+        return {"identifier": "113000000", "chinese_name": "王小明"}
+
+    async def adopt(username, session):
+        pass
+
+    monkeypatch.setattr(main, "NCUSession", FakeSession)
+    monkeypatch.setattr(main.oauth_portal, "build_authorization_url", lambda: "https://portal.example/auth")
+    monkeypatch.setattr(main.oauth_portal, "consume_state", lambda state: state == "s1")
+    monkeypatch.setattr(main.oauth_portal, "exchange_code_for_identity", identity)
+    monkeypatch.setattr(main, "adopt_session", adopt)
+    monkeypatch.setattr(main, "start_prewarm", lambda username, session: None)
+
+    response = TestClient(main.app, base_url="http://127.0.0.1:8000").post("/api/login/chrome")
+    events = [json.loads(chunk[5:]) for chunk in response.text.split("\n\n") if chunk.startswith("data:")]
+    return events, sessions
+
+
+def test_chrome_login_streams_progress_then_the_token(monkeypatch):
+    # 登入要等好幾秒，邊做邊回報目前在做什麼，登入頁才不會只顯示一句話空等
+    async def start(self, authorization_url, redirect_uri, report=None):
+        report("正在背景登入 Portal")
+        report("已登入 Portal，正在確認身分")
+        return f"{redirect_uri}?code=abc&state=s1"
+
+    events, _ = _chrome_login_events(monkeypatch, start)
+    assert [e["text"] for e in events if e["type"] == "status"] == ["正在背景登入 Portal", "已登入 Portal，正在確認身分"]
+    assert events[-1]["type"] == "result"
+    assert (events[-1]["username"], events[-1]["chinese_name"]) == ("113000000", "王小明")
+    assert events[-1]["token"]
+
+
+def test_chrome_login_failure_ends_the_stream_with_an_error(monkeypatch):
+    async def start(self, authorization_url, redirect_uri, report=None):
+        raise RuntimeError("3 分鐘內沒有在 Chrome 視窗完成登入。")
+
+    events, sessions = _chrome_login_events(monkeypatch, start)
+    assert events == [{"type": "error", "message": "登入失敗：3 分鐘內沒有在 Chrome 視窗完成登入。"}]
+    assert sessions[0].closed

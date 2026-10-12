@@ -74,11 +74,11 @@ export function SessionProvider({ children }) {
     }
   }, []);
 
-  // 在 Chrome 視窗裡登入 Portal，身分驗證跟課表/時數/學業分析功能一次到位，
-  // 我們的網站不經手密碼（見 main.py 的 /api/login/chrome）。
-  const loginWithChrome = useCallback(async () => {
+  // 用 Chrome 登入 Portal，身分驗證跟課表/時數/學業分析功能一次到位，
+  // 我們的網站不經手密碼（見 main.py 的 /api/login/chrome）。onStatus 收到登入進度的說明。
+  const loginWithChrome = useCallback(async (onStatus) => {
     try {
-      const { token, username, chineseName } = await requestChromeLogin();
+      const { token, username, chineseName } = await requestChromeLogin(onStatus);
       const next = { username, token, chineseName, threadId: makeThreadId() };
       setSession(next);
       persistSession(next);

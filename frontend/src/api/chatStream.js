@@ -43,7 +43,17 @@ export async function streamChat({ userMessage, username, token, threadId }, onE
     throw new HttpStatusError(response.status);
   }
 
-  const reader = response.body.getReader();
+  await readEventStream(response.body, onEvent);
+}
+
+/**
+ * 逐一解析 `data: {...}
+
+` 格式的事件交給 onEvent，串流結束才回來。
+ * /api/chat/stream 跟 /api/login/chrome 共用。
+ */
+export async function readEventStream(body, onEvent) {
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 

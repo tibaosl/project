@@ -12,6 +12,7 @@ export default function Login() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showManualForm, setShowManualForm] = useState(false);
   const [isWaitingChrome, setIsWaitingChrome] = useState(false);
+  const [chromeStatus, setChromeStatus] = useState("");
   const { login, loginWithChrome } = useSession();
   const navigate = useNavigate();
   const busy = isSubmitting || isWaitingChrome;
@@ -28,8 +29,9 @@ export default function Login() {
 
   async function handleChromeLogin() {
     setError("");
+    setChromeStatus("");
     setIsWaitingChrome(true);
-    const result = await loginWithChrome();
+    const result = await loginWithChrome(setChromeStatus);
     setIsWaitingChrome(false);
 
     if (result.ok) {
@@ -85,9 +87,9 @@ export default function Login() {
         <button type="button" className="login-submit" onClick={handleChromeLogin} disabled={busy}>
           {isWaitingChrome ? "登入中..." : "使用中央大學 Portal 帳號登入"}
         </button>
-        <p className="login-oauth-note">
+        <p className="login-oauth-note" aria-live="polite">
           {isWaitingChrome
-            ? "正在背景登入 Portal，記得你的帳號時幾秒內就會完成。如果跳出 Chrome 視窗，請在那裡登入（有驗證就勾選「我不是機器人」），完成後會自動回到這裡。「記住我」會先幫你勾好，29 天內不用再輸入密碼。"
+            ? `${chromeStatus || "正在背景登入 Portal"}...`
             : "在 Portal 官方頁面登入，我們完全不會看到你的密碼。記得你的帳號時直接在背景完成，需要輸入密碼時才會開 Chrome 視窗。登入一次就能使用課表、時數、學業分析等功能。"}
         </p>
 
