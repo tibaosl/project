@@ -356,11 +356,17 @@ def test_cohort_years_come_from_entry_years_and_grades():
     assert agent.cohort_years_in("我是 113 學年入學的中文系", now) == {113}
     assert agent.cohort_years_in("客家系 114 級", now) == {114}
     assert agent.cohort_years_in("我是物理系大二", now) == {114}
-    assert agent.cohort_years_in("碩一新生", now) == {115}
-    assert agent.cohort_years_in("現在三年級", now) == {113}
+    assert agent.cohort_years_in("我是碩一新生", now) == {115}
+    assert agent.cohort_years_in("我現在三年級", now) == {113}
     assert agent.cohort_years_in("I entered NCU in 2024", now) == {113}
-    # 講的是課或某一學期，不是使用者的入學年度
-    assert agent.cohort_years_in("大一英文可以免修嗎", now) == set()
+    # 講的是課、時間點、一般規定，不是使用者自己的年級
+    assert agent.cohort_years_in("我想問大一英文可以免修嗎", now) == set()
+    assert agent.cohort_years_in("我是轉學生，大一的體育課可以抵免嗎", now) == set()
+    assert agent.cohort_years_in("我是工學院的，如果大二上之前就通過外文門檻，有獎勵嗎", now) == set()
+    assert agent.cohort_years_in("我是轉學生，抵免多少學分可以升上二年級", now) == set()
+    assert agent.cohort_years_in("資工碩一新生的指導教授確認表要交給誰", now) == set()
+    # 只拿來補候選文件時寬鬆一點
+    assert agent.cohort_years_in("資工碩一新生的指導教授確認表要交給誰", now, loose=True) == {115}
     assert agent.cohort_years_in("115學年度第1學期加退選", now) == set()
     assert agent.cohort_years_in("115學年度第1學期加退選", now, loose=True) == {115}
 

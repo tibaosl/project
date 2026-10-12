@@ -474,7 +474,7 @@ _GRADES = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7}
 
 def cohort_years_in(text: str, now: Optional[datetime] = None, loose: bool = False) -> set[int]:
     """問題裡的入學年度：直接寫的（113 學年入學、113 級），或用年級推算的（115 學年度的大三是 113 學年度入學）。
-    「大一英文」「大一必修」講的是課，不是使用者的年級。loose 時「113 學年度的應修科目表」這種沒寫入學的也算
+    「大一英文」「大一必修」講的是課，「大二上之前」「大三以後」講的是時間點，都不是使用者的年級。loose 時「113 學年度的應修科目表」這種沒寫入學的也算
     （只拿來補候選文件，不能告訴模型這是使用者的入學年度：「115 學年度第 1 學期加退選」的 115 不是）。
     """
     years = {int(y) for y in re.findall(r"(?<!\d)(1[01]\d)\s*(?:學年度?)?\s*(?:入學|級)", text)}
@@ -482,9 +482,13 @@ def cohort_years_in(text: str, now: Optional[datetime] = None, loose: bool = Fal
         years |= {int(y) for y in re.findall(r"(?<!\d)(1[01]\d)\s*學年", text)}
     years |= {int(y) - 1911 for y in re.findall(r"(?:entered|enrolled|admitted)\D{0,12}(20[1-3]\d)", text, re.I)}
     current = academic_term(now)[0]
-    grades = r"(?:大|碩|博)([一二三四五六七])(?!英文|國文|外文|體育|必修|的課|課程)|([一二三四五六七])年級"
-    for grade in re.findall(grades, text):
-        years.add(current - _GRADES[grade[0] or grade[1]] + 1)
+    timing = r"[上下前後起時]|之[前後]|以[前後]|結束|開始|期間"
+    grades = (rf"(?:大|碩|博)([一二三四五六七])(?!英文|國文|外文|體育|必修|課程|的(?:課|體育|國文|英文|外文|必修)|{timing})"
+              rf"|(?<!升)(?<!升上)(?<!升到)([一二三四五六七])年級(?!{timing})")
+    # 用年級推算的只算使用者講自己的（「我是物理系大二」），「大一的體適能測驗」「資工碩一新生的確認表」
+    # 「抵免多少學分可以升上二年級」是在問一般規定，告訴模型「使用者是 115 學年度入學」反而會寫進回答
+    if loose or re.search(r"我(?:是|現在|目前|今年|讀|念)", text):
+        years |= {current - _GRADES[a or b] + 1 for a, b in re.findall(grades, text)}
     return years
 
 
