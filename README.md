@@ -68,6 +68,7 @@ backend/                      後端（Python）
 ├── paths.py                  data/、storage/ 這些資料夾的位置
 ├── security.py               只接受本機的請求、擋跨站請求、安全標頭
 ├── language.py               判斷問題是不是英文（英文問就用英文回答）
+├── usage_log.py              OpenAI 用量紀錄跟統計
 ├── logging_config.py
 ├── agent/                    對話代理
 │   ├── supervisor_agent.py   判斷要用哪個功能、串流回答
@@ -183,7 +184,8 @@ python -m backend.rag.crawler             # 抓到 data/<來源>/，例如 data/
 
 `python -m backend.rag.update_documents` 會依序重抓學校網站、幫新增或改版的文件補卡片跟向量、整理新增或改版的
 獎學金文件的申請資格，紀錄存在 `storage/update_logs/`（只留最近 12 份）。卡片先建好，網站開著的話
-下一次查詢載入新目錄只要幾秒。平常一週只有幾份到幾十份文件要產生卡片，費用很低。某個網站剛好掛掉的話，連續兩次連不上之後這一輪就先跳過它
+下一次查詢載入新目錄只要幾秒。平常一週只有幾份到幾十份文件要產生卡片，費用很低，紀錄的最後一行是這次的
+OpenAI 用量。某個網站剛好掛掉的話，連續兩次連不上之後這一輪就先跳過它
 （原本抓到的檔案照舊保留），不會讓整個更新卡住。
 
 跑網站的這台電腦用 Windows 工作排程器每週日 03:00 執行一次（工作名稱 `NCUXplore-update-documents`），
@@ -272,6 +274,26 @@ python -m backend.analysis.scholarship_tools --list   # 列出整理好的每一
 改了整理資格的 prompt 或欄位要把 `scholarship_tools.py` 的 `SCHOLARSHIP_VERSION` 加一，舊快取才會失效。
 整理用的模型是 `SCHOLARSHIP_MODEL`（預設 gpt-5.4）。限制：成績單上沒有操行成績，操行門檻只會提醒使用者
 自己確認；成績單只有學期排名，「前一學年排名」用上下學期的排名判斷，兩學期一個在門檻內、一個不在時會列成要確認。
+
+## OpenAI 用量
+
+每次呼叫 OpenAI（選工具、挑文件、回答、建議問題、向量、文件卡片、整理獎學金、評估的評分）都會記一筆
+token 數跟估計金額，存在 `storage/usage/`（一個月一個 `.jsonl`）。紀錄裡沒有問題或回答的內容。
+
+```powershell
+python -m backend.usage_log                 # 最近 7 天：合計、依來源、依用途、每天、每次提問平均花多少
+python -m backend.usage_log --days 30
+python -m backend.usage_log --month 2026-10
+```
+
+* 金額是用 `usage_log.py` 的 `PRICES`（OpenAI 官網的公開單價）估的，OpenAI 調價要改那裡，實際帳單以
+  OpenAI 後台為準。沒有單價的模型會另外列出，不算進金額。
+* 來源分成網站、法規評估、選工具評估、每週更新文件等。網站跟法規評估的每一題會標同一個提問編號，
+  統計會分開算「法規問答」跟其他功能每題平均花多少（2026-10 實測法規問答一題約 US$0.09，
+  其中挑文件約六成，查校曆這類只經過選工具的約 US$0.005）。
+* `rag_eval/run_eval.py`、`agent_eval/run_routing.py` 跑完最後一行會印這次評估的用量。
+* 新增呼叫 OpenAI 的地方要記錄用量：SDK 的回應用 `usage_log.record_response`，LangChain 的訊息用
+  `usage_log.record_message`，串流要加 `stream_options={"include_usage": True}`。
 
 ## 測試
 

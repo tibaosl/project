@@ -8,6 +8,7 @@ from backend.ncu.activity_tools import (
     find_activities_by_hour_tag,
     is_confirmation,
 )
+from backend import usage_log
 from backend.rag import academic_agent
 from backend.agent.suggestions import extract_question_to_user, generate_suggestions
 from dotenv import load_dotenv
@@ -336,6 +337,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
 
     for _ in range(MAX_TOOL_ROUNDS):
         ai_msg = await llm_with_tools.ainvoke(messages)
+        usage_log.record_message("選工具", ai_msg, getattr(llm_smart, "model_name", ""))
 
         if not ai_msg.tool_calls:
             # 使用者不喜歡分號。不在 prompt 裡要求：法規回答的 prompt 加了「不要用分號」之後，

@@ -323,7 +323,7 @@ def _fake_embeddings(monkeypatch, by_keyword):
 
     sent = []
 
-    def embed(texts):
+    def embed(texts, purpose=""):
         sent.extend(texts)
         return np.stack([next((v for k, v in by_keyword.items() if k in t), _vector(1, 1, 1, 1)) for t in texts])
 
@@ -395,7 +395,7 @@ def test_retrieval_adds_the_cohort_edition_for_the_users_grade(monkeypatch):
 def test_retrieval_falls_back_to_keywords_when_embeddings_fail(monkeypatch):
     catalog = _retrieval_catalog()
 
-    def broken(texts):
+    def broken(texts, purpose=""):
         raise RuntimeError("沒有網路")
 
     monkeypatch.setattr(rd, "embed_texts", broken)

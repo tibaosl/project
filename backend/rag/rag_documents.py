@@ -45,7 +45,7 @@ from docx.oxml.ns import qn
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from backend import paths
+from backend import paths, usage_log
 from backend.logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -328,6 +328,7 @@ def _vision_transcribe(page, text_layer: str) -> str:
             ],
         }],
     )
+    usage_log.record_response("圖片轉錄", response, VISION_MODEL)
     result = (response.choices[0].message.content or "").strip()
     result = re.sub(r"^```(?:markdown)?\s*|\s*```$", "", result)
     return result
@@ -661,6 +662,7 @@ def build_card(doc: ParsedDocument) -> dict:
         messages=[{"role": "user", "content": CARD_PROMPT.format(file_name=doc.file_name, text=text)}],
         response_format={"type": "json_schema", "json_schema": {"name": "document_card", "schema": CARD_SCHEMA, "strict": True}},
     )
+    usage_log.record_response("文件卡片", response, CARD_MODEL)
     return json.loads(response.choices[0].message.content)
 
 
@@ -721,13 +723,14 @@ def card_text(doc: CatalogDocument) -> str:
     return f"{card['title']}\n{meta}\n{card['summary']}\n" + "\n".join(card["answers"])
 
 
-def embed_texts(texts: list[str], dimensions: int = EMBEDDING_DIMENSIONS) -> np.ndarray:
-    """OpenAI 的向量，每一列都正規化成長度 1（內積就是 cosine 相似度）。"""
+def embed_texts(texts: list[str], dimensions: int = EMBEDDING_DIMENSIONS, purpose: str = "向量") -> np.ndarray:
+    """OpenAI 的向量，每一列都正規化成長度 1（內積就是 cosine 相似度）。purpose 是用量紀錄上的用途。"""
     vectors = []
     for start in range(0, len(texts), 128):
         response = _openai().embeddings.create(
             model=EMBEDDING_MODEL, input=texts[start:start + 128], dimensions=dimensions,
         )
+        usage_log.record_response(purpose, response, EMBEDDING_MODEL)
         vectors.extend(item.embedding for item in response.data)
     matrix = np.asarray(vectors, dtype=np.float32)
     return matrix / np.clip(np.linalg.norm(matrix, axis=1, keepdims=True), 1e-9, None)
@@ -760,7 +763,10 @@ def attach_answer_embeddings(catalog: list[CatalogDocument]) -> None:
         try:
             batches = [missing[i:i + 512] for i in range(0, len(missing), 512)]
             with ThreadPoolExecutor(max_workers=8) as pool:
-                results = pool.map(lambda keys: embed_texts([texts[k] for k in keys], ANSWER_EMBEDDING_DIMENSIONS), batches)
+                results = pool.map(
+                    lambda keys: embed_texts([texts[k] for k in keys], ANSWER_EMBEDDING_DIMENSIONS, purpose="可回答問題向量"),
+                    batches,
+                )
                 for keys, vectors in zip(batches, results):
                     cache.update(zip(keys, vectors))
             current = {key: cache[key] for key in texts}
@@ -788,7 +794,7 @@ def attach_embeddings(catalog: list[CatalogDocument]) -> None:
     missing = [i for i, key in enumerate(keys) if key not in cache]
     if missing:
         try:
-            for i, vector in zip(missing, embed_texts([card_text(catalog[i]) for i in missing])):
+            for i, vector in zip(missing, embed_texts([card_text(catalog[i]) for i in missing], purpose="卡片向量")):
                 cache[keys[i]] = vector
             current = {key: cache[key] for key in dict.fromkeys(keys)}
             cache_path.parent.mkdir(parents=True, exist_ok=True)

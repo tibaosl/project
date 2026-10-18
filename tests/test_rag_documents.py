@@ -236,7 +236,7 @@ def test_card_embeddings_are_cached_by_card_content(tmp_path, monkeypatch):
     monkeypatch.setattr(rd, "CACHE_DIR", tmp_path)
     embedded = []
 
-    def embed(texts):
+    def embed(texts, purpose=""):
         embedded.extend(texts)
         return np.ones((len(texts), 4), dtype=np.float32) / 2
 
@@ -253,7 +253,7 @@ def test_card_embeddings_are_cached_by_card_content(tmp_path, monkeypatch):
 
 
 def test_failed_embeddings_leave_documents_without_vectors(tmp_path, monkeypatch):
-    def broken(texts):
+    def broken(texts, purpose=""):
         raise RuntimeError("沒有網路")
 
     monkeypatch.setattr(rd, "CACHE_DIR", tmp_path)
@@ -269,7 +269,7 @@ def test_answer_embeddings_are_cached_per_question(tmp_path, monkeypatch):
     monkeypatch.setattr(rd, "CACHE_DIR", tmp_path)
     embedded = []
 
-    def embed(texts, dimensions=4):
+    def embed(texts, dimensions=4, purpose=""):
         embedded.extend(texts)
         return np.ones((len(texts), dimensions), dtype=np.float32) / dimensions ** 0.5
 
