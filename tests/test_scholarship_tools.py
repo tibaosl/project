@@ -170,7 +170,15 @@ def test_rank_requirement_on_both_semesters_of_last_year():
         s.Semester("1141", "114-1", 84.0, 20, "5/52", "", []),
         s.Semester("1142", "114-2", 80.0, 22, "15/52", "", []),
     ])
-    assert s.evaluate(item, second_semester_too_low)[0] == "ineligible"
+    status, checks, _ = s.evaluate(item, second_semester_too_low)
+    # 15/52 是前 28.8%，差門檻不到 10 個百分點：只差成績，排名沒辦法試算，只寫目前排名跟門檻
+    assert status == "near"
+    assert checks[-1]["hint"] == "目前排名前 28.8%，門檻前 20%。排名要看同學的成績，沒辦法試算"
+    far_behind = _profile(semesters=[
+        s.Semester("1141", "114-1", 84.0, 20, "5/52", "", []),
+        s.Semester("1142", "114-2", 80.0, 22, "30/52", "", []),
+    ])
+    assert s.evaluate(item, far_behind)[0] == "ineligible"
 
 
 def test_unit_and_grade_mismatch_are_ineligible():
@@ -194,12 +202,14 @@ def test_year_average_is_weighted_by_credits():
     # (84.0 * 20 + 86.5 * 22) / 42 = 85.31
     assert status == "eligible"
     assert "114 學年平均 85 分以上（你：85.31）" in checks[0]["label"]
-    assert s.evaluate(_indexed(grades={"basis": "前一學年", "min_average": 86}), _profile())[0] == "ineligible"
+    assert s.evaluate(_indexed(grades={"basis": "前一學年", "min_average": 86}), _profile())[0] == "near"
+    assert s.evaluate(_indexed(grades={"basis": "前一學年", "min_average": 91}), _profile())[0] == "ineligible"
 
 
 def test_last_semester_basis_uses_latest_semester():
     assert s.evaluate(_indexed(grades={"basis": "前一學期", "min_average": 86}), _profile())[0] == "eligible"
-    assert s.evaluate(_indexed(grades={"basis": "未說明", "min_average": 87}), _profile())[0] == "ineligible"
+    assert s.evaluate(_indexed(grades={"basis": "未說明", "min_average": 87}), _profile())[0] == "near"
+    assert s.evaluate(_indexed(grades={"basis": "未說明", "min_average": 92}), _profile())[0] == "ineligible"
 
 
 def test_missing_grades_make_it_maybe_not_eligible():
@@ -212,7 +222,8 @@ def test_book_award_top_five_percent_and_top_n():
     top_two = _profile(semesters=[s.Semester("1142", "114-2", 90.0, 20, "2/52", "", [])])
     third = _profile(semesters=[s.Semester("1142", "114-2", 89.0, 20, "3/52", "", [])])
     assert s.evaluate(book_award, top_two)[0] == "eligible"
-    assert s.evaluate(book_award, third)[0] == "ineligible"  # 3/52 = 5.8%
+    assert s.evaluate(book_award, third)[0] == "near"  # 3/52 = 5.8%，差一點
+    assert s.evaluate(book_award, _profile())[0] == "ineligible"  # 7/52 = 13.5%，超過門檻的兩倍
 
     top_three = _indexed(rank={"basis": "未說明", "scope": "班", "percent": 0, "top": 3})
     assert s.evaluate(top_three, third)[0] == "eligible"
@@ -260,6 +271,119 @@ def test_scholarship_without_any_requirement_is_not_eligible_for_everyone():
     status, _, pending = s.evaluate(_indexed(name="某基金會獎學金"), _profile())
     assert status == "maybe"
     assert pending[0]["kind"] == "其他"
+
+
+# ============================================================
+# 只差成績
+# ============================================================
+def test_near_miss_on_last_semester_average_says_how_much_is_missing():
+    item = _indexed(groups=[{"degree": "學士班", "min_grade": 2, "max_grade": 0}],
+                    grades={"basis": "前一學期", "min_average": 88})
+    status, checks, pending = s.evaluate(item, _profile())
+    assert status == "near" and pending == []
+    grade = checks[-1]
+    assert (grade["kind"], grade["ok"], grade["gap"]) == ("grades", False, 1.5)
+    assert grade["hint"] == "差 1.50 分。這學期平均考到 88 分以上，下次申請就符合"
+    assert checks[0]["ok"] is True  # 學制、年級本來就符合
+
+
+def test_cumulative_average_near_miss_uses_the_gpa_estimate():
+    item = _indexed(grades={"basis": "歷年", "min_average": 85})
+    # 累計 42 學分平均 83.2，這學期 18 學分：(85 × 60 − 83.2 × 42) / 18 = 89.2
+    profile = _profile(average_credits=42, in_progress_credits=18)
+    status, checks, _ = s.evaluate(item, profile)
+    assert status == "near"
+    assert checks[0]["hint"] == "差 1.80 分。這學期 18 學分平均要考 89.20 分以上，累計平均才會到 85"
+    # 已經修了 120 學分，這學期全考 100 分也拉不到 87：不算差一點
+    assert s.evaluate(_indexed(grades={"basis": "歷年", "min_average": 87}),
+                      _profile(average_credits=120, in_progress_credits=18))[0] == "ineligible"
+    # 不知道這學期修幾學分時只寫差幾分
+    assert s.evaluate(item, _profile())[1][0]["hint"] == "差 1.80 分，累計平均要再提高 1.80 分才符合"
+
+
+def test_last_year_average_near_miss_counts_the_graded_semester_of_this_year():
+    item = _indexed(grades={"basis": "前一學年", "min_average": 86})
+    # 115-2：114 學年平均 85.31 差 0.69 分。下次看 115 學年，115-1 是 80 分（20 學分），這學期 20 學分
+    # 要 (86 × 40 − 80 × 20) / 20 = 92 分
+    semesters = _profile().semesters + [s.Semester("1151", "115-1", 80.0, 20, "", "", [])]
+    status, checks, _ = s.evaluate(item, _profile(semesters=semesters, in_progress_credits=20))
+    assert status == "near"
+    assert checks[0]["hint"] == "差 0.69 分。下次申請看 115 學年的平均，115-1 是 80.00，這學期平均要考 92.00 分以上才符合"
+    # 這學年還沒有成績（上學期）時，寫這學期跟下學期的平均要到多少
+    assert s.evaluate(item, _profile())[1][0]["hint"] == "差 0.69 分。115 學年（這學期跟下學期）平均考到 86 分以上，下次申請就符合"
+
+
+def test_every_semester_requirement_already_missed_this_year_is_not_near():
+    item = _indexed(grades={"basis": "前一學年每學期", "min_average": 85})
+    # 114-1 84 分差 1 分
+    assert s.evaluate(item, _profile())[0] == "near"
+    semesters = _profile().semesters + [s.Semester("1151", "115-1", 80.0, 20, "", "", [])]
+    assert s.evaluate(item, _profile(semesters=semesters))[0] == "ineligible"
+
+
+def test_near_miss_needs_every_other_condition_met():
+    near_grade = {"basis": "前一學期", "min_average": 88}
+    # 系所不符合
+    assert s.evaluate(_indexed(units=["物理學系"], grades=near_grade), _profile())[0] == "ineligible"
+    # 系所判斷不了
+    assert s.evaluate(_indexed(units=["本校女子籃球隊"], grades=near_grade), _profile())[0] == "ineligible"
+    # 還有要確認的身分條件，說明過身分之後才算只差成績
+    needy = _indexed(grades=near_grade, conditions=[{"kind": "經濟弱勢", "text": "清寒"}])
+    assert s.evaluate(needy, _profile())[0] == "ineligible"
+    assert s.evaluate(needy, _profile(), ("經濟弱勢",))[0] == "near"
+    # 有不及格的課（不是平均或排名）
+    failed = _profile(semesters=[s.Semester("1142", "114-2", 86.5, 22, "7/52", "", ["物理"])])
+    assert s.evaluate(_indexed(grades=near_grade, no_failing=True), failed)[0] == "ineligible"
+
+
+def test_rank_near_miss_only_shows_current_rank_and_requirement():
+    top_ten = _indexed(rank={"basis": "前一學期", "scope": "系", "percent": 0, "top": 10})
+    status, checks, _ = s.evaluate(top_ten, _profile())  # 系排名 15/110
+    assert status == "near"
+    assert checks[0]["hint"] == "目前第 15 名，門檻前 10 名。排名要看同學的成績，沒辦法試算"
+
+
+def test_match_scholarships_lists_near_misses_closest_first():
+    index = [
+        _indexed(name="差兩分的獎學金", grades={"basis": "前一學期", "min_average": 88.5}),
+        _indexed(name="差一分的獎學金", grades={"basis": "前一學期", "min_average": 87.5}),
+        _indexed(name="差很多的獎學金", grades={"basis": "前一學期", "min_average": 95}),
+        _indexed(name="符合的獎學金", grades={"basis": "前一學期", "min_average": 80}),
+    ]
+    result = s.match_scholarships(index, _profile(), today=date(2026, 10, 6))
+    assert [e["name"] for e in result["eligible"]] == ["符合的獎學金"]
+    assert [e["name"] for e in result["near"]] == ["差一分的獎學金", "差兩分的獎學金"]
+    assert result["near"][0]["status"] == "near"
+    assert result["excluded_count"] == 1
+
+
+def test_near_miss_tiers_keep_their_own_thresholds():
+    index = [
+        _indexed(name="系書卷獎（第一名）", amount="5000 元", rank={"basis": "前一學期", "scope": "班", "percent": 0, "top": 5}),
+        _indexed(name="系書卷獎（第二名）", amount="3000 元", rank={"basis": "前一學期", "scope": "班", "percent": 0, "top": 6}),
+    ]
+    [card] = s.match_scholarships(index, _profile(), today=date(2026, 10, 6))["near"]  # 班排名 7/52
+    assert card["name"] == "系書卷獎"
+    assert [t["checks"][0]["hint"] for t in card["tiers"]] == [
+        "目前第 7 名，門檻前 5 名。排名要看同學的成績，沒辦法試算",
+        "目前第 7 名，門檻前 6 名。排名要看同學的成績，沒辦法試算",
+    ]
+
+
+def test_build_profile_counts_credits_for_the_cumulative_average_and_this_semester():
+    in_progress = {**_course("作業系統", None), "score_text": "-"}
+    transcript = {
+        "program": "學士班", "cumulative_average": 75.0,
+        "semesters": [
+            {"term": "1142", "label": "114-2", "courses": [_course("物理", 70), _course("化學", 80)],
+             "summary": {"average": 75.0, "attempted_credits": 6}},
+            {"term": "1151", "label": "115-1", "courses": [in_progress, {**_course("演算法", None), "score_text": "停修"}],
+             "summary": {}},
+        ],
+        "ranks": {},
+    }
+    profile = s.build_profile(transcript, today=date(2026, 10, 6))
+    assert (profile.average_credits, profile.in_progress_credits) == (6, 3)
 
 
 # ============================================================
@@ -447,9 +571,9 @@ def test_tiers_of_the_same_scholarship_become_one_card():
     card = next(e for e in result["maybe"] if e["name"] == "工學院提升學生英語能力獎勵")
     # 每個獎項自己的條件跟著獎項，大家都要的留在 pending（pending 是全部條件，前端分組用）
     assert card["tiers"] == [
-        {"name": "多益TOEIC 800分以上", "amount": "NT$ 1500 元", "conditions": ["多益 800"]},
-        {"name": "托福iBT 90分以上", "amount": "NT$ 1500 元", "conditions": ["托福 90"]},
-        {"name": "雅思測驗7.0級以上", "amount": "NT$ 1000 元", "conditions": ["雅思 7"]},
+        {"name": "多益TOEIC 800分以上", "amount": "NT$ 1500 元", "conditions": ["多益 800"], "checks": []},
+        {"name": "托福iBT 90分以上", "amount": "NT$ 1500 元", "conditions": ["托福 90"], "checks": []},
+        {"name": "雅思測驗7.0級以上", "amount": "NT$ 1000 元", "conditions": ["雅思 7"], "checks": []},
     ]
     assert [p["text"] for p in card["pending"]] == ["在學期間通過英檢", "多益 800", "托福 90", "雅思 7"]
     assert all("_family" not in e for e in result["maybe"])

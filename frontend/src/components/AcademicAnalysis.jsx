@@ -1,4 +1,4 @@
-import Icon from "./Icon";
+import Icon, { MetaLine } from "./Icon";
 
 function ProgressBar({ ratio, done }) {
   return (
@@ -207,13 +207,108 @@ function Section({ title, children }) {
   );
 }
 
+/** 成績的區塊附一行試算：這學期還沒有成績的課全拿 A、全拿 B 的累計 GPA，順便讓使用者知道可以問試算。 */
+function EstimateTeaser({ estimate }) {
+  const pick = (grade) => estimate?.scenarios?.find((s) => s.grade === grade);
+  const [a, b] = [pick("A"), pick("B")];
+  if (!a || !b) return null;
+  return (
+    <MetaLine icon="calculator" className="ncux-estimate-teaser">
+      {`${estimate.scope_text}還沒有成績，全拿 A 累計 GPA 會是 ${a.gpa.toFixed(2)}，全拿 B 會是 ${b.gpa.toFixed(2)}。`}
+      {"想試算別的情況可以問我，例如「要考幾分累計 GPA 才到 3.8」。"}
+    </MetaLine>
+  );
+}
+
+function changeCell(change) {
+  if (Math.abs(change) < 0.005) return { text: "不變" };
+  return {
+    text: `${change > 0 ? "▲" : "▼"} ${Math.abs(change).toFixed(2)}`,
+    color: change > 0 ? "var(--ncux-ok-text)" : "var(--ncux-danger-text)",
+  };
+}
+
 /**
- * data：get_my_academic_analysis 工具回傳的 {kind: "academic_analysis", ...}。
+ * GPA 試算（estimate_my_gpa）：上面是回答使用者問題的句子（假設拿某個成績、要到某個目標），
+ * 下面是剩下的課都拿 A+ 到 B- 各會變成多少累計 GPA。estimate 是後端 estimate_gpa 的結果。
+ */
+function GpaEstimate({ estimate }) {
+  if (!estimate) {
+    return (
+      <div className="ncux-banner ncux-banner-warn ncux-with-icon">
+        <Icon name="alert" size={18} />
+        <div>成績單上還沒有算得進 GPA 的成績，沒辦法試算。</div>
+      </div>
+    );
+  }
+  const courses = estimate.remaining_courses ?? [];
+  return (
+    <div>
+      {estimate.answers.length > 0 && (
+        <div className="ncux-banner ncux-banner-info ncux-with-icon">
+          <Icon name="calculator" size={18} />
+          <div>
+            {estimate.answers.map((answer) => (
+              <div key={answer}>{answer}</div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="ncux-card">
+        <div className="ncux-card-title">
+          目前累計 GPA {estimate.current_gpa.toFixed(2)}・累計平均 {formatScore(estimate.current_average)}
+        </div>
+        <div className="ncux-card-meta">
+          4.3 制，照教務處的等第對照表換算，算進 GPA 的有 {estimate.credits} 學分
+        </div>
+        {courses.length > 0 && (
+          <div className="ncux-card-meta">
+            這學期還沒有成績的課：{courses.map((c) => `${c.name} ${c.credits} 學分`).join("、")}
+          </div>
+        )}
+      </div>
+      {estimate.scenarios.length > 0 && (
+        <Section title={`${estimate.scope_text}每科都拿同一個等第的話`}>
+          <Table headers={["每科都拿", "累計 GPA", "跟現在比"]}>
+            {estimate.scenarios.map((s) => {
+              const change = changeCell(s.gpa - estimate.current_gpa);
+              return (
+                <tr key={s.grade}>
+                  <td style={CELL}>{s.label}</td>
+                  <td style={CELL}>{s.gpa.toFixed(2)}</td>
+                  <td style={{ ...CELL, color: change.color }}>{change.text}</td>
+                </tr>
+              );
+            })}
+          </Table>
+        </Section>
+      )}
+      {estimate.notes.map((note) => (
+        <div key={note} className="ncux-card-meta" style={{ marginTop: 6 }}>
+          ※ {note}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * data：get_my_academic_analysis、estimate_my_gpa 工具回傳的 {kind: "academic_analysis", ...}。
  * data.focus 決定顯示哪一塊，只回答使用者問的：credits（學分/畢業缺口）、
- * grades（成績/排名）、overview（全部）。
+ * grades（成績/排名）、overview（全部）、estimate（GPA 試算）。
  */
 export default function AcademicAnalysis({ data }) {
   const focus = data.focus || "overview";
+  if (focus === "estimate") {
+    return (
+      <div>
+        <GpaEstimate estimate={data.estimate} />
+        <div className="ncux-card-meta" style={{ marginTop: 6 }}>
+          ※ 用 iNCU 成績單上的成績試算，假設剩下的課都照成績單上的學分算進 GPA，實際以教務處計算為準。
+        </div>
+      </div>
+    );
+  }
   const showCredits = focus !== "grades";
   const showGrades = focus !== "credits";
   const byType = Object.entries(data.credits.by_course_type || {});
@@ -257,6 +352,7 @@ export default function AcademicAnalysis({ data }) {
               ).toFixed(2)} 分`}
           </div>
           <GpaTable semesters={data.gpa.semesters} />
+          <EstimateTeaser estimate={data.estimate} />
         </Section>
       )}
 

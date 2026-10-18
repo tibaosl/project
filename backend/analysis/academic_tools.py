@@ -6,6 +6,7 @@
 """
 
 import json
+import math
 import re
 from typing import Any, Optional
 
@@ -313,11 +314,30 @@ def _counts_toward_average(course: dict, student_program: str) -> bool:
     不含通過/不通過、停修（沒有分數）、境外修課、自主學習微課程，研究生不含學士班課程跟學位論文。"""
     if course["score"] is None or not course["credits"]:
         return False
-    if "境外" in course["remark"] or "自主學習" in course["name"]:
+    if "境外" in course.get("remark", "") or "自主學習" in course["name"]:
         return False
     if student_program and student_program != "學士班":
         return course["program"] != "學士班" and not THESIS_RE.match(course["name"])
     return True
+
+
+def _awaiting_grade(course: dict, student_program: str) -> bool:
+    """還沒有成績、出成績之後會算進累計平均跟 GPA 的課（這學期修課中的課）。
+    成績欄是「-」或空白才算，停修、通過、抵免這類有寫字的不算。"""
+    if course["score"] is not None or course["score_text"].strip(" -—"):
+        return False
+    return _counts_toward_average({**course, "score": 0.0}, student_program)
+
+
+def courses_awaiting_grades(transcript: dict) -> list[dict]:
+    """成績單上還沒有成績、之後會算進 GPA 的課。通過制的課（例如服務學習）出成績前看不出來，也會算在裡面。"""
+    program = transcript.get("program", "")
+    return [
+        {"term": sem["term"], "label": sem["label"], "name": course["name"], "credits": course["credits"]}
+        for sem in transcript.get("semesters", [])
+        for course in sem["courses"]
+        if _awaiting_grade(course, program)
+    ]
 
 
 def compute_gpa(transcript: dict) -> Optional[dict]:
@@ -325,11 +345,12 @@ def compute_gpa(transcript: dict) -> Optional[dict]:
 
     iNCU 只給百分制的平均，GPA 是自己算的。同一批課也算一次累計平均，跟 iNCU 的累計平均比對，
     對得上才代表挑的課跟學校的算法一樣（matches_school_average），對不上前端會標「僅供參考」。
+    points、scores 是 (學分 × 積分)、(學分 × 分數) 的總和，試算用。
     """
     program = transcript.get("program", "")
     total_credits = total_points = total_scores = 0.0
     semesters = []
-    for sem in transcript["semesters"]:
+    for sem in transcript.get("semesters", []):
         credits = points = 0.0
         for course in sem["courses"]:
             if not _counts_toward_average(course, program):
@@ -350,6 +371,219 @@ def compute_gpa(transcript: dict) -> Optional[dict]:
         "credits": int(total_credits),
         "semesters": semesters,
         "matches_school_average": reported is None or abs(average - reported) <= 0.01,
+        "points": total_points,
+        "scores": total_scores,
+    }
+
+
+# ============================================================
+# GPA 試算：剩下的課都拿某個成績會變多少、要考幾分才到目標
+# ============================================================
+MAX_POINT = GRADE_POINTS[0][2]
+# 試算表列的等第（再低的很少人會想試算，使用者問了會另外算）
+SCENARIO_GRADES = ("A+", "A", "A-", "B+", "B", "B-")
+_LETTER_RANGES = {
+    letter: (low, GRADE_POINTS[i - 1][0] - 1 if i else 100, point)
+    for i, (low, letter, point) in enumerate(GRADE_POINTS)
+}
+_ASSUMED_LETTER_RE = re.compile(r"^([A-Ea-eXx])\s*([+＋\-－]?)$")
+_ASSUMED_SCORE_RE = re.compile(r"^(\d{1,3}(?:\.\d+)?)\s*分?$")
+
+
+def parse_assumed_grade(text: str) -> Optional[dict]:
+    """「A」「a+」「B-」「85」「85 分」→ {"grade", "point", "score"}。等第對應的是一段分數，score 是 None。"""
+    text = re.sub(r"^(?:(?:都|全部|全|每科|拿|考)\s*)+", "", (text or "").strip())
+    letter = _ASSUMED_LETTER_RE.match(text)
+    if letter:
+        sign = {"＋": "+", "－": "-"}.get(letter.group(2), letter.group(2))
+        grade = letter.group(1).upper() + sign
+        if grade in _LETTER_RANGES:
+            return {"grade": grade, "point": _LETTER_RANGES[grade][2], "score": None}
+        return None
+    score = _ASSUMED_SCORE_RE.match(text)
+    if score and float(score.group(1)) <= 100:
+        value = float(score.group(1))
+        grade, point = grade_point(value)
+        return {"grade": grade, "point": point, "score": value}
+    return None
+
+
+def required_score(current: float, credits: float, remaining: float, target: float) -> Optional[float]:
+    """累計 current（credits 學分）要變成 target，剩下 remaining 學分要平均多少。GPA、百分制都適用。"""
+    if remaining <= 0:
+        return None
+    return (target * (credits + remaining) - current * credits) / remaining
+
+
+def round_up(value: float) -> float:
+    """要考幾分這種門檻無條件進位到小數第二位，四捨五入可能差一點點沒達到。"""
+    return math.ceil(value * 100 - 1e-6) / 100
+
+
+def _letter_label(grade: str) -> str:
+    low, high, _ = _LETTER_RANGES[grade]
+    return f"{grade}（{low} 分以上）" if grade == "A+" else f"{grade}（{low}～{high} 分）"
+
+
+def _lowest_letter(point: float) -> Optional[str]:
+    """平均積分要 point 以上時，每科都拿同一個等第的話最低要哪一個（不及格的 D、E 不算）。"""
+    passing = [(low, letter, p) for low, letter, p in GRADE_POINTS if low >= 60]
+    return next((letter for _, letter, p in reversed(passing) if p >= point - 1e-9), None)
+
+
+def _extra_credits(current: float, credits: float, remaining: float, target: float, best: float) -> Optional[int]:
+    """剩下的課全拿最高分也到不了 target 時，之後再修幾學分（也全拿最高分）才到得了。"""
+    if target >= best:
+        return None
+    total = credits + remaining
+    return math.ceil((target * total - current * credits - best * remaining) / (best - target) - 1e-9)
+
+
+def _scope_text(source: str, credits: int) -> str:
+    if source == "until_graduation":
+        return f"到畢業前剩下的 {credits} 學分"
+    if source == "user":
+        return f"接下來 {credits} 學分"
+    return f"這學期 {credits} 學分"
+
+
+def _assumed_answer(assumed: dict, scope: str, gpa_before: float, gpa_after: float,
+                    average_before: Optional[float], average_after: Optional[float]) -> str:
+    if assumed["score"] is not None:
+        text = f"{scope}都考 {assumed['score']:g} 分（{assumed['grade']}，{assumed['point']:.1f}）的話，累計 GPA 會從 {gpa_before:.2f} 變成 {gpa_after:.2f}"
+        if average_before is not None and average_after is not None:
+            text += f"，累計平均從 {average_before:.2f} 變成 {average_after:.2f}"
+        return text + "。"
+    return f"{scope}都拿 {_letter_label(assumed['grade'])}的話，累計 GPA 會從 {gpa_before:.2f} 變成 {gpa_after:.2f}。"
+
+
+def _target_gpa_answer(target: float, scope: str, current: float, credits: float, remaining: float) -> str:
+    if target > MAX_POINT:
+        return f"GPA 最高是 {MAX_POINT}（每科都 A+），沒辦法到 {target:.2f}。"
+    need = required_score(current, credits, remaining, target)
+    if need is None:
+        return f"成績單上看不到還沒有成績的課。跟我說還有幾學分要修（例如「還有 30 學分，GPA 要拿多少才到 {target:.2f}」），我再幫你算。"
+    if need <= 0:
+        return f"目前累計 GPA {current:.2f}，{scope}不管拿幾分，累計 GPA 都會在 {target:.2f} 以上。"
+    if need > MAX_POINT + 1e-9:
+        best = (current * credits + MAX_POINT * remaining) / (credits + remaining)
+        text = f"{scope}全拿 A+（{MAX_POINT}）累計 GPA 也只到 {best:.2f}，到不了 {target:.2f}。"
+        extra = _extra_credits(current, credits, remaining, target, MAX_POINT)
+        if extra is None:
+            return text + f"累計 GPA 要到 {target:.2f}，之前的每一科都要是 A+。"
+        return text + f"之後的課也全拿 A+ 的話，還要再修 {extra} 學分才到得了。"
+    letter = _lowest_letter(need)
+    lead = (
+        f"目前累計 GPA {current:.2f}，已經在 {target:.2f} 以上，要維持的話{scope}的 GPA 要 {round_up(need):.2f} 以上"
+        if current >= target else f"累計 GPA 要到 {target:.2f}，{scope}的 GPA 要 {round_up(need):.2f} 以上"
+    )
+    if letter is None:
+        return lead + "。"
+    if letter == GRADE_POINTS[0][1]:
+        return lead + f"，要每科都拿 {_letter_label(letter)}才到得了。"
+    return lead + f"，大約每科都拿 {_letter_label(letter)}以上就夠。"
+
+
+def _target_average_answer(target: float, scope: str, current: Optional[float], credits: float, remaining: float) -> str:
+    if current is None:
+        return "查不到你的累計平均，沒辦法試算。"
+    if target > 100:
+        return f"平均最高是 100 分，沒辦法到 {target:g} 分。"
+    need = required_score(current, credits, remaining, target)
+    if need is None:
+        return f"成績單上看不到還沒有成績的課。跟我說還有幾學分要修（例如「還有 30 學分，平均要考幾分累計才到 {target:g}」），我再幫你算。"
+    if need <= 0:
+        return f"目前累計平均 {current:.2f}，{scope}不管考幾分，累計平均都會在 {target:g} 以上。"
+    if need > 100 + 1e-9:
+        best = (current * credits + 100 * remaining) / (credits + remaining)
+        text = f"{scope}全考 100 分累計平均也只到 {best:.2f}，到不了 {target:g}。"
+        extra = _extra_credits(current, credits, remaining, target, 100)
+        if extra is None:
+            return text
+        return text + f"之後的課也全考 100 分的話，還要再修 {extra} 學分才到得了。"
+    if current >= target:
+        return f"目前累計平均 {current:.2f}，已經在 {target:g} 以上，要維持的話{scope}平均要考 {round_up(need):.2f} 分以上。"
+    return f"累計平均要到 {target:g}，{scope}平均要考 {round_up(need):.2f} 分以上。"
+
+
+ESTIMATE_SCOPES = ("this_semester", "until_graduation")
+
+
+def estimate_gpa(
+    transcript: dict,
+    graduation: Optional[dict] = None,
+    target_gpa: float = 0,
+    target_average: float = 0,
+    assumed_grade: str = "",
+    remaining: str = "this_semester",
+    credits: int = 0,
+) -> Optional[dict]:
+    """GPA 試算（純計算，不呼叫模型）。剩下的學分預設是這學期還沒有成績的課，remaining="until_graduation"
+    改用畢業資格審查表上還差的學分，credits 是使用者自己說的學分數（優先）。
+
+    answers 是直接回答使用者問題的句子（假設拿某個成績、要到某個目標），scenarios 是剩下的課都拿
+    A+、A、A-…的累計 GPA。查不到任何有成績的課時回傳 None。
+    """
+    gpa = compute_gpa(transcript)
+    if gpa is None:
+        return None
+    awaiting = courses_awaiting_grades(transcript)
+    notes = []
+    if credits and credits > 0:
+        source, remaining_credits = "user", int(credits)
+    elif remaining == "until_graduation" and graduation and graduation.get("total_required"):
+        source = "until_graduation"
+        remaining_credits = max(0, graduation["total_required"] - graduation["total_earned"])
+        notes.append("到畢業還差的學分裡，通過制、不算 GPA 的課也算在內，實際算進 GPA 的學分可能少一點。")
+    else:
+        source, remaining_credits = "this_semester", sum(c["credits"] for c in awaiting)
+        if remaining == "until_graduation":
+            notes.append("畢業資格審查表暫時取不到，先用這學期還沒有成績的課試算。")
+
+    total_credits, points = gpa["credits"], gpa["points"]
+    current_gpa = points / total_credits
+    reported = transcript.get("cumulative_average")
+    current_average = reported if reported is not None else gpa["scores"] / total_credits
+    scope = _scope_text(source, remaining_credits)
+
+    def after(point: float) -> float:
+        return round((points + point * remaining_credits) / (total_credits + remaining_credits) + 1e-9, 2)
+
+    scenarios = [
+        {"grade": grade, "label": _letter_label(grade), "point": _LETTER_RANGES[grade][2],
+         "gpa": after(_LETTER_RANGES[grade][2])}
+        for grade in SCENARIO_GRADES
+    ] if remaining_credits else []
+
+    answers = []
+    assumed = parse_assumed_grade(assumed_grade) if assumed_grade else None
+    if assumed_grade and assumed is None:
+        answers.append(f"看不懂「{assumed_grade}」是哪個成績，可以寫等第（例如 A、B+）或分數（例如 85 分）。")
+    elif assumed and remaining_credits:
+        average_after = None
+        if assumed["score"] is not None:
+            average_after = (current_average * total_credits + assumed["score"] * remaining_credits) / (total_credits + remaining_credits)
+        answers.append(_assumed_answer(assumed, scope, gpa["gpa"], after(assumed["point"]), current_average, average_after))
+    elif assumed:
+        answers.append("成績單上看不到還沒有成績的課。跟我說還有幾學分要修（例如「還有 30 學分都拿 A 的話 GPA 會是多少」），我再幫你算。")
+    if target_gpa:
+        answers.append(_target_gpa_answer(target_gpa, scope, current_gpa, total_credits, remaining_credits))
+    if target_average:
+        answers.append(_target_average_answer(target_average, scope, current_average, total_credits, remaining_credits))
+    if not gpa["matches_school_average"]:
+        notes.append("用來算 GPA 的課跟學校的累計平均對不上，試算結果僅供參考。")
+
+    return {
+        "current_gpa": gpa["gpa"],
+        "current_average": current_average,
+        "credits": total_credits,
+        "remaining_source": source,
+        "remaining_credits": remaining_credits,
+        "remaining_courses": awaiting if source == "this_semester" else [],
+        "scope_text": scope,
+        "scenarios": scenarios,
+        "answers": answers,
+        "notes": notes,
     }
 
 
@@ -457,15 +691,17 @@ def _build_alerts(transcript: dict, graduation: Optional[dict]) -> list[dict]:
     return alerts
 
 
-ANALYSIS_FOCUSES = ("credits", "grades", "overview")
+ANALYSIS_FOCUSES = ("credits", "grades", "overview", "estimate")
 
 
 def analyze_academic_progress(
-    transcript: dict, graduation: Optional[dict], focus: str = "overview"
+    transcript: dict, graduation: Optional[dict], focus: str = "overview", estimate: Optional[dict] = None,
 ) -> dict:
     """整理成前端 AcademicAnalysis 元件吃的資料包。
 
-    focus 決定前端顯示哪一塊：credits（學分/畢業缺口）、grades（成績/排名）、overview（全部）。
+    focus 決定前端顯示哪一塊：credits（學分/畢業缺口）、grades（成績/排名）、overview（全部）、
+    estimate（GPA 試算）。estimate 是 estimate_gpa 的參數（目標 GPA、假設的成績…），沒給就用預設的
+    「這學期還沒有成績的課」試算，成績的區塊會附一行全拿 A、全拿 B 的累計 GPA。
     """
     credits_by_type: dict[str, int] = {}
     for sem in transcript["semesters"]:
@@ -538,4 +774,5 @@ def analyze_academic_progress(
         "graduation_available": graduation is not None,
         "graduation_categories": categories,
         "alerts": _build_alerts(transcript, graduation),
+        "estimate": estimate_gpa(transcript, graduation, **(estimate or {})),
     }

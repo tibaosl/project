@@ -383,3 +383,61 @@ describe("MessageContent 校曆與我的行程", () => {
     expect(screen.getByText("這次沒有抓到活動報名紀錄，所以沒有列出活動。")).toBeInTheDocument();
   });
 });
+
+const estimate = {
+  current_gpa: 3.79,
+  current_average: 86.12,
+  credits: 92,
+  remaining_source: "this_semester",
+  remaining_credits: 18,
+  remaining_courses: [
+    { term: "1151", label: "115-1", name: "作業系統", credits: 3 },
+    { term: "1151", label: "115-1", name: "演算法", credits: 3 },
+  ],
+  scope_text: "這學期 18 學分",
+  scenarios: [
+    { grade: "A+", label: "A+（90 分以上）", point: 4.3, gpa: 3.87 },
+    { grade: "A", label: "A（85～89 分）", point: 4.0, gpa: 3.82 },
+    { grade: "A-", label: "A-（80～84 分）", point: 3.7, gpa: 3.78 },
+    { grade: "B+", label: "B+（77～79 分）", point: 3.3, gpa: 3.71 },
+    { grade: "B", label: "B（73～76 分）", point: 3.0, gpa: 3.66 },
+    { grade: "B-", label: "B-（70～72 分）", point: 2.7, gpa: 3.61 },
+  ],
+  answers: ["累計 GPA 要到 3.80，這學期 18 學分的 GPA 要 3.86 以上，大約每科都拿 A（85～89 分）以上就夠。"],
+  notes: [],
+};
+
+describe("MessageContent GPA 試算", () => {
+  it("estimate：先回答使用者問的，再列這學期每科都拿 A+ 到 B- 的累計 GPA", () => {
+    render(<MessageContent content={{ ...academicAnalysis, focus: "estimate", estimate }} />);
+
+    expect(screen.getByText(/這學期 18 學分的 GPA 要 3.86 以上/)).toBeInTheDocument();
+    expect(screen.getByText("目前累計 GPA 3.79・累計平均 86.12")).toBeInTheDocument();
+    expect(screen.getByText("這學期還沒有成績的課：作業系統 3 學分、演算法 3 學分")).toBeInTheDocument();
+    expect(screen.getByText("這學期 18 學分每科都拿同一個等第的話")).toBeInTheDocument();
+    expect(screen.getByText("A（85～89 分）")).toBeInTheDocument();
+    expect(screen.getByText("▲ 0.08")).toBeInTheDocument();
+    expect(screen.getByText("▼ 0.18")).toBeInTheDocument();
+    // 只回答試算，學分缺口、重修提醒、成績趨勢都不顯示
+    expect(screen.queryByText(/還差 54 學分/)).not.toBeInTheDocument();
+    expect(screen.queryByText("演算法")).not.toBeInTheDocument();
+    expect(screen.queryByText("成績趨勢")).not.toBeInTheDocument();
+  });
+
+  it("estimate：成績單上沒有算得進 GPA 的成績時說明沒辦法試算", () => {
+    render(<MessageContent content={{ ...academicAnalysis, focus: "estimate", estimate: null }} />);
+    expect(screen.getByText("成績單上還沒有算得進 GPA 的成績，沒辦法試算。")).toBeInTheDocument();
+  });
+
+  it("grades：成績趨勢下面附一行這學期全拿 A、全拿 B 的累計 GPA", () => {
+    render(<MessageContent content={{ ...academicAnalysis, focus: "grades", estimate }} />);
+    expect(
+      screen.getByText(/這學期 18 學分還沒有成績，全拿 A 累計 GPA 會是 3.82，全拿 B 會是 3.66。想試算別的情況可以問我/),
+    ).toBeInTheDocument();
+  });
+
+  it("這學期沒有還沒出成績的課時不顯示試算那一行", () => {
+    render(<MessageContent content={{ ...academicAnalysis, focus: "grades", estimate: { ...estimate, scenarios: [] } }} />);
+    expect(screen.queryByText(/全拿 A 累計 GPA/)).not.toBeInTheDocument();
+  });
+});

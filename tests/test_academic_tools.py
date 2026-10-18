@@ -5,10 +5,15 @@
 import json
 from html import escape
 
+import pytest
+
 from backend.analysis.academic_tools import (
     analyze_academic_progress,
     compute_gpa,
+    courses_awaiting_grades,
+    estimate_gpa,
     grade_point,
+    parse_assumed_grade,
     parse_graduation_report_html,
     parse_transcript_html,
 )
@@ -315,3 +320,130 @@ def test_analysis_includes_gpa_for_each_semester():
     assert (a["gpa"]["gpa"], a["gpa"]["gpa_credits"], a["gpa"]["gpa_matches_school_average"]) == (1.74, 11, False)
     assert [s["gpa"] for s in a["gpa"]["semesters"]] == [1.38, 2.7]
     assert compute_gpa({"program": "學士班", "cumulative_average": None, "semesters": []}) is None
+
+
+# ============================================================
+# GPA 試算
+# ============================================================
+def _graded(name, credits, score):
+    return {"course_no": name, "name": name, "credits": credits, "score": score, "score_text": f"{score:.2f}",
+            "program": "學士班", "course_type": "必修", "remark": ""}
+
+
+def _in_progress(name, credits, score_text="-"):
+    return {**_graded(name, credits, 0), "score": None, "score_text": score_text}
+
+
+def _estimate_transcript():
+    """114-1 兩門課：90 分（A+ 4.3）、80 分（A- 3.7），累計 GPA 4.0、平均 85。115-1 還有 6 學分沒有成績。"""
+    return {
+        "program": "學士班",
+        "cumulative_average": 85.0,
+        "semesters": [
+            {"term": "1141", "label": "114-1", "courses": [_graded("微積分", 3, 90.0), _graded("物理", 3, 80.0)],
+             "summary": {"average": 85.0}},
+            {"term": "1151", "label": "115-1", "summary": {}, "courses": [
+                _in_progress("作業系統", 3), _in_progress("演算法", 3),
+                _in_progress("停修的課", 3, "停修"), _in_progress("服務學習", 0),
+            ]},
+        ],
+    }
+
+
+def test_courses_awaiting_grades_are_in_progress_courses_that_count_toward_gpa():
+    assert [c["name"] for c in courses_awaiting_grades(_estimate_transcript())] == ["作業系統", "演算法"]
+    # 測試用的 HTML：成績欄是「-」的修課中
+    assert courses_awaiting_grades(parse_transcript_html(TRANSCRIPT_HTML)) == [
+        {"term": "1141", "label": "114-1", "name": "修課中", "credits": 2}
+    ]
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("A", {"grade": "A", "point": 4.0, "score": None}),
+    ("a+", {"grade": "A+", "point": 4.3, "score": None}),
+    ("全部 B-", {"grade": "B-", "point": 2.7, "score": None}),
+    ("85", {"grade": "A", "point": 4.0, "score": 85.0}),
+    ("76.5 分", {"grade": "B+", "point": 3.3, "score": 76.5}),
+    ("F", None), ("120", None), ("很好", None),
+])
+def test_parse_assumed_grade(text, expected):
+    assert parse_assumed_grade(text) == expected
+
+
+def test_estimate_lists_cumulative_gpa_for_each_grade_this_semester():
+    e = estimate_gpa(_estimate_transcript())
+    assert (e["current_gpa"], e["current_average"], e["credits"]) == (4.0, 85.0, 6)
+    assert (e["remaining_source"], e["remaining_credits"], e["scope_text"]) == ("this_semester", 6, "這學期 6 學分")
+    assert [c["name"] for c in e["remaining_courses"]] == ["作業系統", "演算法"]
+    # (24 + 6 × 積分) / 12
+    assert [(s["grade"], s["gpa"]) for s in e["scenarios"]] == [
+        ("A+", 4.15), ("A", 4.0), ("A-", 3.85), ("B+", 3.65), ("B", 3.5), ("B-", 3.35),
+    ]
+    assert e["scenarios"][1]["label"] == "A（85～89 分）"
+    assert e["answers"] == [] and e["notes"] == []
+
+
+def test_estimate_with_an_assumed_grade():
+    [answer] = estimate_gpa(_estimate_transcript(), assumed_grade="B")["answers"]
+    assert answer == "這學期 6 學分都拿 B（73～76 分）的話，累計 GPA 會從 4.00 變成 3.50。"
+    # 給分數的話累計平均也算得出來：(85 × 6 + 75 × 6) / 12
+    [answer] = estimate_gpa(_estimate_transcript(), assumed_grade="75")["answers"]
+    assert answer == "這學期 6 學分都考 75 分（B，3.0）的話，累計 GPA 會從 4.00 變成 3.50，累計平均從 85.00 變成 80.00。"
+    assert "看不懂「很好」" in estimate_gpa(_estimate_transcript(), assumed_grade="很好")["answers"][0]
+
+
+@pytest.mark.parametrize("target, expected", [
+    # (4.1 × 12 − 24) / 6 = 4.2，只有 A+ 夠
+    (4.1, "累計 GPA 要到 4.10，這學期 6 學分的 GPA 要 4.20 以上，要每科都拿 A+（90 分以上）才到得了。"),
+    # 已經超過目標：(3.5 × 12 − 24) / 6 = 3.0
+    (3.5, "目前累計 GPA 4.00，已經在 3.50 以上，要維持的話這學期 6 學分的 GPA 要 3.00 以上，大約每科都拿 B（73～76 分）以上就夠。"),
+    (1.5, "目前累計 GPA 4.00，這學期 6 學分不管拿幾分，累計 GPA 都會在 1.50 以上。"),
+    # 全拿 A+ 只到 4.15。(24 + 4.3 × 30) / 36 = 4.25：再修 24 學分
+    (4.25, "這學期 6 學分全拿 A+（4.3）累計 GPA 也只到 4.15，到不了 4.25。之後的課也全拿 A+ 的話，還要再修 24 學分才到得了。"),
+    (4.5, "GPA 最高是 4.3（每科都 A+），沒辦法到 4.50。"),
+])
+def test_estimate_target_gpa(target, expected):
+    assert estimate_gpa(_estimate_transcript(), target_gpa=target)["answers"] == [expected]
+
+
+def test_estimate_target_average():
+    # (88 × 12 − 85 × 6) / 6 = 91
+    assert estimate_gpa(_estimate_transcript(), target_average=88)["answers"] == [
+        "累計平均要到 88，這學期 6 學分平均要考 91.00 分以上。"
+    ]
+    assert estimate_gpa(_estimate_transcript(), target_average=95)["answers"] == [
+        "這學期 6 學分全考 100 分累計平均也只到 92.50，到不了 95。之後的課也全考 100 分的話，還要再修 6 學分才到得了。"
+    ]
+
+
+def test_estimate_remaining_credits_from_user_or_graduation_report():
+    e = estimate_gpa(_estimate_transcript(), credits=30, target_gpa=3.9)
+    assert (e["remaining_source"], e["scope_text"], e["remaining_courses"]) == ("user", "接下來 30 學分", [])
+
+    graduation = {"total_required": 128, "total_earned": 100}
+    e = estimate_gpa(_estimate_transcript(), graduation, remaining="until_graduation")
+    assert (e["remaining_credits"], e["scope_text"]) == (28, "到畢業前剩下的 28 學分")
+    assert "通過制" in e["notes"][0]
+
+    # 畢業資格審查表取不到時改用這學期的課，並說明
+    e = estimate_gpa(_estimate_transcript(), None, remaining="until_graduation")
+    assert e["remaining_credits"] == 6 and "暫時取不到" in e["notes"][0]
+
+
+def test_estimate_without_courses_in_progress_asks_for_credits():
+    transcript = _estimate_transcript()
+    transcript["semesters"] = transcript["semesters"][:1]
+    e = estimate_gpa(transcript, target_gpa=3.8)
+    assert e["scenarios"] == []
+    assert e["answers"][0].startswith("成績單上看不到還沒有成績的課")
+    assert estimate_gpa({"program": "學士班", "semesters": []}) is None
+
+
+def test_analysis_includes_estimate_and_passes_its_options():
+    transcript = {**_estimate_transcript(), "department": "", "grade": "", "cumulative_credits": 6, "ranks": {}}
+    a = analyze_academic_progress(transcript, None)
+    assert a["estimate"]["remaining_credits"] == 6 and a["estimate"]["answers"] == []
+
+    a = analyze_academic_progress(transcript, None, "estimate", {"target_gpa": 3.5})
+    assert a["focus"] == "estimate"
+    assert a["estimate"]["answers"][0].startswith("目前累計 GPA 4.00，已經在 3.50 以上")

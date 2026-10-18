@@ -128,6 +128,25 @@ const SHAPES = {
       <path d="M4.5 15.5v2.7a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-2.7" />
     </>
   ),
+  calculator: (
+    <>
+      <rect x="5" y="2.8" width="14" height="18.4" rx="2.2" />
+      <rect x="8" y="5.8" width="8" height="3.6" rx="0.8" />
+      <circle cx="9" cy="13" r="0.95" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="13" r="0.95" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="13" r="0.95" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="16.8" r="0.95" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="16.8" r="0.95" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="16.8" r="0.95" fill="currentColor" stroke="none" />
+    </>
+  ),
+  target: (
+    <>
+      <circle cx="12" cy="12" r="8.75" />
+      <circle cx="12" cy="12" r="4.9" />
+      <circle cx="12" cy="12" r="1.15" fill="currentColor" stroke="none" />
+    </>
+  ),
 };
 
 export const ICON_NAMES = Object.keys(SHAPES);
