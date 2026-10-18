@@ -242,11 +242,40 @@ def test_unmet_rules_report_gap_not_covered_by_sub_rules():
     a = analyze_academic_progress(parse_transcript_html(TRANSCRIPT_HTML), graduation)
     unmet = a["graduation_categories"][0]["unmet_rules"]
 
+    # 整體那行顯示整體還差多少：補核心通識修 2 門就同時補滿整體的 10 門，不是細項達標後再多修 1 門
     assert [(u["name"], u["remaining_credits"], u["remaining_courses"]) for u in unmet] == [
         ("核心通識課程", 5, 1),
-        ("共同必修學分整體", 0, 1),
+        ("共同必修學分整體", 5, 2),
     ]
-    assert unmet[1]["memo"] == "細項都達標後整體還要再多修的部分，修「外文、核心通識課程、大一國文」任一類的課都算"
+    assert unmet[1]["memo"] == "補細項修的課也算在內，修「外文、核心通識課程、大一國文」任一類的課都算"
+
+
+def test_unmet_rules_whole_gap_counts_only_extra_for_parent():
+    # 上層加總時整體那行只算差額：外層要 12 門，內層整體缺的 2 門裡只有 1 門是細項以外的，
+    # 外層缺 3 門 = 核心通識 1 + 內層差額 1 + 外層自己多出來的 1，所以外層也要列整體那行
+    inner = _rule("共同必修學分", False, 20, 25, 8, 10, [
+        _rule("外文", True, 6, 6, 2, 2),
+        _rule("核心通識課程", False, 9, 14, 4, 5),
+        _rule("大一國文", True, 5, 5, 2, 2),
+    ])
+    def unmet_of(outer):
+        graduation = {
+            "total_required": 128, "total_earned": 20, "total_courses": 8,
+            "passed_threshold": False, "categories": [outer],
+        }
+        a = analyze_academic_progress(parse_transcript_html(TRANSCRIPT_HTML), graduation)
+        return a["graduation_categories"][0]["unmet_rules"]
+
+    unmet = unmet_of(_rule("其它", False, 20, 25, 8, 11, [inner]))
+    assert [(u["name"], u["remaining_credits"], u["remaining_courses"]) for u in unmet] == [
+        ("核心通識課程", 5, 1),
+        ("共同必修學分整體", 5, 2),
+        ("其它整體", 5, 3),
+    ]
+
+    # 外層缺的剛好等於細項缺的加上內層差額時，不重複列
+    unmet = unmet_of(_rule("其它", False, 20, 25, 8, 10, [inner]))
+    assert [u["name"] for u in unmet] == ["核心通識課程", "共同必修學分整體"]
 
 
 def test_alerts_skip_retaken_and_in_progress_courses():
