@@ -134,6 +134,11 @@ def _parse_semester_table(table, term: str, label: str) -> dict:
             "remark": cells[col["備註"]].get_text(" ", strip=True).strip("-").strip(),
         })
 
+    # 還沒有成績的這學期，iNCU 的總結寫「學期平均：0」（成績欄是「未到」），不是真的考 0 分。
+    # 當成 0 的話學業分析會寫「比上學期退步 80 幾分」，獎學金的「前一學期平均」也會拿 0 分去比（2026-10 實測）
+    if summary.get("average") == 0 and not any(c["score"] is not None for c in courses):
+        summary["average"] = None
+
     return {"term": term, "label": label, "courses": courses, "summary": summary}
 
 
@@ -321,10 +326,16 @@ def _counts_toward_average(course: dict, student_program: str) -> bool:
     return True
 
 
+AWAITING_SCORE_TEXTS = ("未到", "Not Entered")
+
+
 def _awaiting_grade(course: dict, student_program: str) -> bool:
     """還沒有成績、出成績之後會算進累計平均跟 GPA 的課（這學期修課中的課）。
-    成績欄是「-」或空白才算，停修、通過、抵免這類有寫字的不算。"""
-    if course["score"] is not None or course["score_text"].strip(" -—"):
+    成績欄是「未到」（iNCU 成績查詢的寫法）、「-」或空白才算，停修、通過、抵免這類不算。"""
+    text = course["score_text"]
+    if course["score"] is not None:
+        return False
+    if text.strip(" -—") and not any(mark in text for mark in AWAITING_SCORE_TEXTS):
         return False
     return _counts_toward_average({**course, "score": 0.0}, student_program)
 
@@ -441,7 +452,7 @@ def _extra_credits(current: float, credits: float, remaining: float, target: flo
 
 def _scope_text(source: str, credits: int) -> str:
     if source == "until_graduation":
-        return f"到畢業前剩下的 {credits} 學分"
+        return f"畢業前剩下 {credits} 學分"
     if source == "user":
         return f"接下來 {credits} 學分"
     return f"這學期 {credits} 學分"

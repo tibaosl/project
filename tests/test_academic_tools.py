@@ -350,6 +350,27 @@ def _estimate_transcript():
     }
 
 
+def _with_current_semester(html):
+    """多一個還沒有成績的這學期：成績欄是「未到」，總結寫「學期平均：0」（2026-10 真實成績單的寫法）。"""
+    current = _semester_table(115, 1, [
+        _course_row("CE9010", "作業系統", "必修", 3, "未到"),
+        _course_row("PE9010", "體育", "體育", 0, "未到"),
+    ], 0, 0)
+    return html.replace("<h5>學期排名</h5>", current + "<h5>學期排名</h5>")
+
+
+def test_semester_without_grades_has_no_average_not_zero():
+    transcript = parse_transcript_html(_with_current_semester(TRANSCRIPT_HTML))
+    assert transcript["semesters"][-1]["term"] == "1151"
+    assert transcript["semesters"][-1]["summary"]["average"] is None
+    a = analyze_academic_progress(transcript, None, "grades")
+    # 不會寫成「比上學期退步 75 分」
+    assert a["gpa"]["latest_change"] == -5.0
+    assert a["gpa"]["semesters"][-1]["average"] is None
+    # 「未到」的課是這學期還在修的，0 學分的體育不算 GPA
+    assert [c["name"] for c in courses_awaiting_grades(transcript)] == ["修課中", "作業系統"]
+
+
 def test_courses_awaiting_grades_are_in_progress_courses_that_count_toward_gpa():
     assert [c["name"] for c in courses_awaiting_grades(_estimate_transcript())] == ["作業系統", "演算法"]
     # 測試用的 HTML：成績欄是「-」的修課中
@@ -422,7 +443,7 @@ def test_estimate_remaining_credits_from_user_or_graduation_report():
 
     graduation = {"total_required": 128, "total_earned": 100}
     e = estimate_gpa(_estimate_transcript(), graduation, remaining="until_graduation")
-    assert (e["remaining_credits"], e["scope_text"]) == (28, "到畢業前剩下的 28 學分")
+    assert (e["remaining_credits"], e["scope_text"]) == (28, "畢業前剩下 28 學分")
     assert "通過制" in e["notes"][0]
 
     # 畢業資格審查表取不到時改用這學期的課，並說明
