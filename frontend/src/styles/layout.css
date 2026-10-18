@@ -416,7 +416,7 @@
 
 .welcome-hero {
   text-align: center;
-  margin-bottom: 22px;
+  margin-bottom: 16px;
 }
 
 .welcome-logo {
@@ -437,10 +437,231 @@
   color: var(--ncux-text);
 }
 
-.welcome-hero p {
-  margin: 0;
+.welcome-prompt {
+  margin: 20px 0 12px;
+  text-align: center;
   color: var(--ncux-text-muted);
   font-size: 14px;
+}
+
+/* ---- 歡迎畫面的「最近要注意」（RemindersCard.jsx） ---- */
+
+.reminders {
+  padding: 12px 14px 10px;
+  background: var(--ncux-surface);
+  border: 1px solid var(--ncux-border);
+  border-radius: var(--ncux-radius);
+  box-shadow: var(--ncux-shadow);
+}
+
+.reminders-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 0 2px 8px;
+  border-bottom: 1px solid var(--ncux-border);
+}
+
+.reminders-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ncux-text);
+}
+
+.reminders-title > .ncux-icon {
+  color: var(--ncux-accent);
+}
+
+.reminders-range {
+  font-size: 12.5px;
+  color: var(--ncux-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.reminder-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.reminder-list li + li {
+  border-top: 1px solid var(--ncux-border);
+}
+
+.reminder-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 4px;
+  font: inherit;
+  text-align: left;
+  color: var(--ncux-text);
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+}
+
+.reminder-item.is-clickable {
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.reminder-item.is-clickable:hover {
+  background: var(--ncux-surface-muted);
+}
+
+.reminder-item.is-clickable:focus-visible,
+.reminders-more:focus-visible {
+  outline: 2px solid var(--ncux-primary);
+  outline-offset: 1px;
+}
+
+.reminder-icon {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  margin-top: 1px;
+  border-radius: 50%;
+  background: var(--ncux-primary-light);
+  color: var(--ncux-primary);
+}
+
+.reminder-icon-scholarship,
+.reminder-icon-hours {
+  background: var(--ncux-confirm-bg);
+  color: var(--ncux-accent);
+}
+
+.reminder-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reminder-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.reminder-when {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ncux-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.reminder-badge {
+  margin-right: 0;
+  padding: 1px 8px;
+  font-size: 11px;
+}
+
+.reminder-badge-plain {
+  background: var(--ncux-surface-muted);
+  color: var(--ncux-text-muted);
+  border: 1px solid var(--ncux-border);
+}
+
+.reminder-title {
+  font-size: 14px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.reminder-detail {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ncux-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.reminder-hint {
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ncux-confirm-text);
+}
+
+.reminder-arrow {
+  flex: none;
+  align-self: center;
+  color: var(--ncux-text-muted);
+  transition: color 0.15s ease, transform 0.15s ease;
+}
+
+.reminder-item.is-clickable:hover .reminder-arrow {
+  color: var(--ncux-primary);
+  transform: translateX(3px);
+}
+
+.reminders-more {
+  display: block;
+  margin: 2px auto 0;
+  padding: 4px 12px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ncux-primary);
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.reminders-more:hover {
+  background: var(--ncux-primary-light);
+}
+
+.reminders-empty,
+.reminders-note,
+.reminders-loading {
+  margin: 8px 2px 2px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--ncux-text-muted);
+}
+
+.reminders-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reminders-loading .dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ncux-accent);
+  animation: ncux-pulse 1.2s ease-in-out infinite;
+}
+
+.reminders-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 0 4px;
+}
+
+.reminders-skeleton div {
+  height: 34px;
+  border-radius: 8px;
+  background: linear-gradient(
+    90deg,
+    var(--ncux-surface-muted) 25%,
+    var(--ncux-border) 50%,
+    var(--ncux-surface-muted) 75%
+  );
+  background-size: 200% 100%;
+  animation: ncux-shimmer 1.2s ease-in-out infinite;
 }
 
 .suggestion-grid {
@@ -612,7 +833,9 @@
 @media (prefers-reduced-motion: reduce) {
   .welcome,
   .follow-ups,
-  .suggestion-card-skeleton {
+  .suggestion-card-skeleton,
+  .reminders-skeleton div,
+  .reminders-loading .dot {
     animation: none;
   }
 }
