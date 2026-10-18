@@ -8,6 +8,7 @@ import asyncio
 import mimetypes
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import uvicorn
 from fastapi import FastAPI
@@ -31,11 +32,13 @@ from backend.agent.agent_tools import (
     load_calendar_safely,
     start_prewarm,
 )
+from backend.agent import reminder_prep
 from backend.ncu import oauth_portal
 from backend.agent.suggestions import pick_starter_questions
 from backend import paths
 from backend.analysis.academic_calendar import load_calendar
 from backend.analysis.calendar_export import build_ics, export_summary
+from backend.analysis.reminders import build_reminders
 from backend.logging_config import make_print_logger
 from backend.rag import academic_agent
 from backend.security import LocalOnlyMiddleware
@@ -88,6 +91,12 @@ async def health():
     return {"status": "ok"}
 
 
+def _after_login(username: str, session: NCUSession):
+    """登入成功後在背景先做的事：預熱 iNCU（第一個問題不用等授權），接著準備開場畫面的「最近要注意」。"""
+    start_prewarm(username, session)
+    reminder_prep.start(username)
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -115,7 +124,7 @@ async def login(req: LoginRequest):
         return {"status": "error", "message": "登入失敗，請確認帳號密碼是否正確。"}
 
     token = issue_session_token(req.username)
-    start_prewarm(req.username, session)
+    _after_login(req.username, session)
     print(f"[main API] {req.username} 登入成功，已核發 session token。")
     return {"status": "success", "token": token, "username": req.username}
 
@@ -164,7 +173,7 @@ async def _run_chrome_login(report) -> dict:
         await adopt_session(username, session)
 
     token = issue_session_token(username)
-    start_prewarm(username, session)
+    _after_login(username, session)
     print(f"[main API] {username}（{identity.get('chinese_name') or '未知姓名'}）透過 Chrome 登入成功。")
     return {
         "type": "result",
@@ -237,6 +246,7 @@ async def logout(req: LogoutRequest):
     username = resolve_session_token(req.token)
     revoke_session_token(req.token)
     if username and not has_active_tokens(username):
+        reminder_prep.clear(username)
         await reset_session(username)
     return {"status": "success"}
 
@@ -356,6 +366,24 @@ async def starter_suggestions(req: SuggestionRequest):
     """
     logged_in = bool(req.token and resolve_session_token(req.token))
     return {"questions": pick_starter_questions(logged_in, exclude=frozenset(req.exclude))}
+
+
+class RemindersRequest(BaseModel):
+    token: str = ""
+
+
+@app.post("/api/reminders")
+async def reminders(req: RemindersRequest):
+    """開場畫面的「最近要注意」卡片（reminders.build_reminders）：校曆上接下來 7 天的截止日跟考試，有登入再加上
+    已報名的活動、快截止的獎學金、等很久還沒核發的時數。
+
+    iNCU 的資料是登入後在背景準備的（reminder_prep），這裡不等：還沒好的部分列在 loading，status 是
+    "loading" 時前端過幾秒再問一次。跟 /api/suggestions 一樣用 POST 帶 token，不放在網址上。
+    """
+    events = await load_calendar_safely()
+    username = resolve_session_token(req.token) if req.token else None
+    state = reminder_prep.snapshot(username) if username else {}
+    return build_reminders(datetime.now(), events, logged_in=bool(username), **state)
 
 
 class CalendarExportRequest(BaseModel):

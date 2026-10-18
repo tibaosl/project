@@ -2,10 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchStarterQuestions } from "../api/suggestions";
 import Icon from "./Icon";
 import Logo from "./Logo";
+import RemindersCard from "./RemindersCard";
 
 const SKELETON_COUNT = 6;
 
-/** 對話還沒開始時的歡迎畫面：打招呼 + 一組可以直接點的推薦問題。 */
+/** 對話還沒開始時的歡迎畫面：打招呼、「最近要注意」的提醒，再加一組可以直接點的推薦問題。 */
 export default function WelcomePanel({ chineseName, isGuest, token, onAsk }) {
   const [questions, setQuestions] = useState([]);
   const [status, setStatus] = useState("loading");
@@ -31,8 +32,11 @@ export default function WelcomePanel({ chineseName, isGuest, token, onAsk }) {
           <Logo size={40} />
         </div>
         <h2>{chineseName ? `嗨，${chineseName}！` : "嗨，歡迎使用 NCUXplore！"}</h2>
-        <p>直接用中文問我校園大小事，或是點一個問題開始：</p>
       </div>
+
+      <RemindersCard token={token} isGuest={isGuest} onAsk={onAsk} />
+
+      <p className="welcome-prompt">直接用中文問我校園大小事，或是點一個問題開始：</p>
 
       {status === "error" ? (
         <p className="welcome-error">暫時拿不到推薦問題，直接在下面輸入也可以喔。</p>

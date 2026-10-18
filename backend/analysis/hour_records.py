@@ -84,21 +84,28 @@ def _start_minute(text: str) -> str:
     return f"{match.group(1)} {int(match.group(2)):02d}:{match.group(3)}" if match else ""
 
 
-def attach_checkin(activities: list[dict[str, Any]], registrations: list[dict[str, str]]) -> None:
-    """把報名紀錄的「簽到/簽退」接到時數頁的活動上（activity["checkin"]）。兩頁的名稱寫法不一樣
-    （報名頁的場次名稱常附英文），用開始時間相同、場次名稱互相包含來認是同一個活動。"""
-    for activity in activities:
-        start = _start_minute(activity["start"])
-        session_name = _plain(activity["name"].rsplit("/", 1)[-1])
-        if not start or not session_name:
+def matching_registration(activity: dict[str, Any], registrations: list[dict[str, str]]) -> Optional[dict[str, str]]:
+    """時數頁的活動在報名紀錄裡是哪一筆，找不到回傳 None。兩頁的名稱寫法不一樣（報名頁的場次名稱
+    常附英文），用開始時間相同、場次名稱互相包含來認是同一個活動。"""
+    start = _start_minute(activity["start"])
+    session_name = _plain(activity["name"].rsplit("/", 1)[-1])
+    if not start or not session_name:
+        return None
+    for registration in registrations or []:
+        if _start_minute(registration.get("活動場次時間", "")) != start:
             continue
-        for registration in registrations or []:
-            if _start_minute(registration.get("活動場次時間", "")) != start:
-                continue
-            registered = _plain(registration.get("場次名稱", "")) or _plain(registration.get("活動名稱", ""))
-            if registered and (session_name in registered or registered in session_name):
-                activity["checkin"] = registration.get("簽到/簽退", "")
-                break
+        registered = _plain(registration.get("場次名稱", "")) or _plain(registration.get("活動名稱", ""))
+        if registered and (session_name in registered or registered in session_name):
+            return registration
+    return None
+
+
+def attach_checkin(activities: list[dict[str, Any]], registrations: list[dict[str, str]]) -> None:
+    """把報名紀錄的「簽到/簽退」接到時數頁的活動上（activity["checkin"]）。"""
+    for activity in activities:
+        registration = matching_registration(activity, registrations)
+        if registration is not None:
+            activity["checkin"] = registration.get("簽到/簽退", "")
 
 
 def _day(start: str) -> str:
