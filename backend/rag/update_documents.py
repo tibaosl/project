@@ -6,7 +6,8 @@ Windows 的工作排程器每週跑一次（設定方式見 README「法規文�
     python -m backend.rag.update_documents
 
 每次的紀錄存在 storage/update_logs/（一次一個檔案，只留最近 KEEP_LOGS 份）。前一步失敗就不做後面的步驟。
-費用：重抓不花錢，只有新增或改版的文件要呼叫模型產生卡片、整理獎學金資格（平常一週幾份到幾十份）。
+費用：重抓不花錢，只有新增或改版的文件要呼叫模型產生卡片、整理獎學金資格（平常一週幾份到幾十份），
+紀錄最後一行是這次的 OpenAI 用量（usage_log.py）。
 """
 
 import os
@@ -14,10 +15,11 @@ import subprocess
 import sys
 from datetime import datetime
 
-from backend import paths
+from backend import paths, usage_log
 
 LOG_DIR = paths.STORAGE_DIR / "update_logs"
 KEEP_LOGS = 12
+USAGE_SOURCE = "每週更新文件"
 
 # 每一步都在專案根目錄執行，python -m 跟 -c 才 import 得到 backend
 STEPS = [
@@ -31,11 +33,23 @@ STEPS = [
 ]
 
 
+def usage_line(started: datetime) -> str:
+    """這次更新各步驟（子程序）呼叫 OpenAI 的用量，從用量紀錄加總。"""
+    try:
+        records = [r for r in usage_log.load_records(started) if r["source"] == USAGE_SOURCE]
+    except Exception as e:
+        return f"OpenAI 用量讀不到：{e}"
+    cost = sum(r["cost"] or 0 for r in records)
+    return f"OpenAI 用量約 US${cost:.2f}（{len(records)} 次呼叫）"
+
+
 def main() -> int:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    log_path = LOG_DIR / f"{datetime.now():%Y%m%d_%H%M%S}.log"
-    # 工作排程器用 pythonw 跑的時候沒有主控台，輸出一律寫進紀錄檔
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
+    started = datetime.now()
+    log_path = LOG_DIR / f"{started:%Y%m%d_%H%M%S}.log"
+    # 工作排程器用 pythonw 跑的時候沒有主控台，輸出一律寫進紀錄檔。
+    # 每一步是不同的程式，用環境變數讓用量紀錄都記在「每週更新文件」底下
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", usage_log.SOURCE_ENV: USAGE_SOURCE}
     code = 0
     with log_path.open("w", encoding="utf-8") as log:
         for name, command in STEPS:
@@ -48,6 +62,7 @@ def main() -> int:
                 break
         else:
             log.write(f"== {datetime.now():%Y-%m-%d %H:%M:%S} 完成\n")
+        log.write(f"== {usage_line(started)}\n")
     for old in sorted(LOG_DIR.glob("*.log"))[:-KEEP_LOGS]:
         old.unlink()
     return code

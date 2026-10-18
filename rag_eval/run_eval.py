@@ -36,6 +36,8 @@ sys.path.insert(0, str(ROOT))
 from dotenv import load_dotenv  # noqa: E402
 from openai import OpenAI  # noqa: E402
 
+from backend import usage_log  # noqa: E402
+
 load_dotenv(ROOT / ".env")
 
 JUDGE_MODEL = "gpt-5.4"
@@ -135,6 +137,7 @@ def judge(client: OpenAI, item: dict, answer: str) -> dict:
                 messages=[{"role": "user", "content": prompt}],
                 response_format={"type": "json_schema", "json_schema": {"name": "verdict", "schema": JUDGE_SCHEMA, "strict": True}},
             )
+            usage_log.record_response("評分", response, JUDGE_MODEL)
             return json.loads(response.choices[0].message.content)
         except Exception:
             if attempt == 2:
@@ -143,6 +146,7 @@ def judge(client: OpenAI, item: dict, answer: str) -> dict:
 
 
 def run_one(module, client: OpenAI, item: dict) -> dict:
+    usage_log.start_request()  # 用量統計的「每次提問」就是每一題（含評分）
     started = time.time()
     try:
         result = module.query_academic_knowledge(item["question"], history_string(item.get("history", []), item["question"]))
@@ -170,6 +174,7 @@ def run_one(module, client: OpenAI, item: dict) -> dict:
 
 def check_routing(module, item: dict) -> dict:
     """只跑挑文件那一步：該回答的題目要挑到標準文件，查無資料的題目要判成 not_found。"""
+    usage_log.start_request()
     started = time.time()
     plan = module.choose_documents(item["question"], history_string(item.get("history", []), item["question"]), module.get_catalog())
     picked = equivalent_names(module, [doc.file_name for doc in plan["documents"]])
@@ -210,6 +215,7 @@ def main():
                 print(f"X {c['id']:<28} {c['decision']:<10} 挑了：{c['picked']}")
         seconds = sorted(c["seconds"] for c in checks)
         print(f"\n挑文件正確 {sum(c['ok'] for c in checks)} / {len(checks)}｜耗時中位數 {seconds[len(seconds) // 2]:.1f}s")
+        print(usage_log.process_summary())
         return
 
     client = OpenAI()
@@ -240,6 +246,7 @@ def main():
     out_path = out_dir / f"{datetime.now():%Y%m%d_%H%M%S}{label}.json"
     out_path.write_text(json.dumps(results, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"逐題結果：{out_path}")
+    print(usage_log.process_summary())
 
 
 if __name__ == "__main__":

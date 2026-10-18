@@ -32,6 +32,7 @@ from typing import Literal, Optional, get_args
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from backend import usage_log
 from backend.rag import academic_agent
 from backend.rag import rag_documents
 from backend.analysis.academic_tools import (
@@ -217,6 +218,7 @@ def extract_scholarships(doc: rag_documents.CatalogDocument) -> dict:
         ],
         response_format={"type": "json_schema", "json_schema": {"name": "scholarships", "schema": EXTRACTION_SCHEMA, "strict": True}},
     )
+    usage_log.record_response("整理獎學金", response, EXTRACT_MODEL)
     return json.loads(response.choices[0].message.content)
 
 
