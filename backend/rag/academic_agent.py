@@ -38,6 +38,7 @@ import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 
+from backend import usage_log
 from backend.rag import rag_documents
 from backend.language import asked_in_english, has_han
 from backend.logging_config import make_print_logger
@@ -367,7 +368,7 @@ def question_vectors(texts: list[str]) -> np.ndarray:
     with _question_vector_lock:
         missing = [t for t in dict.fromkeys(texts) if t not in _question_vector_cache]
     if missing:
-        vectors = rag_documents.embed_texts(missing)
+        vectors = rag_documents.embed_texts(missing, purpose="問題向量")
         with _question_vector_lock:
             if len(_question_vector_cache) > 256:
                 _question_vector_cache.clear()
@@ -568,6 +569,7 @@ def plan_query(
         messages=[{"role": "system", "content": instructions}, {"role": "user", "content": request}],
         response_format={"type": "json_schema", "json_schema": {"name": "document_plan", "schema": ROUTER_SCHEMA, "strict": True}},
     )
+    usage_log.record_response("挑文件", response, ROUTER_MODEL)
     plan = json.loads(response.choices[0].message.content)
 
     by_id = {doc.doc_id: doc for doc in catalog}
@@ -821,10 +823,13 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "") -> It
                 {"role": "user", "content": build_answer_request(plan, query_str, history_str)},
             ],
             stream=True,
+            stream_options={"include_usage": True},  # 最後多一個沒有 choices、只有 usage 的片段
         )
         answer_parts: list[str] = []
         cleaner = AnswerCleaner()
         for chunk in stream:
+            if getattr(chunk, "usage", None) is not None:
+                usage_log.record_response("回答", chunk, ANSWER_MODEL)
             delta = chunk.choices[0].delta.content if chunk.choices else None
             if delta:
                 answer_parts.append(delta)

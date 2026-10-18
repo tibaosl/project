@@ -17,6 +17,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from backend import usage_log
 from backend.language import asked_in_english, has_han
 from backend.logging_config import make_print_logger
 
@@ -435,6 +436,7 @@ async def generate_suggestions(
     try:
         prompt = _build_suggestion_prompt(user_message, describe_answer(answer), question, used_labels, logged_in)
         reply = await _get_suggestion_llm().ainvoke(prompt)
+        usage_log.record_message("建議問題", reply, "gpt-5.4-mini")
         parsed = parse_suggestion(reply.content)
     except Exception as exc:
         print(f"[Suggestions] 產生選項失敗，改用備案：{exc}")

@@ -35,7 +35,7 @@ from backend.agent.agent_tools import (
 from backend.agent import reminder_prep
 from backend.ncu import oauth_portal
 from backend.agent.suggestions import pick_starter_questions
-from backend import paths
+from backend import paths, usage_log
 from backend.analysis.academic_calendar import load_calendar
 from backend.analysis.calendar_export import build_ics, export_summary
 from backend.analysis.reminders import build_reminders
@@ -307,6 +307,7 @@ async def chat_with_agent(req: ChatRequest):
         return {"status": "error", "response": [TOO_LONG_MESSAGE], "sources": [], "debug_info": {"current_step": "rejected"}}
 
     try:
+        usage_log.start_request()
         final_state = await run_ncuxplore_agent(
             req.user_message, username, password, thread_id=_thread_key(username, req.thread_id)
         )
@@ -454,6 +455,7 @@ async def chat_with_agent_stream(req: ChatRequest):
             yield f"data: {json.dumps({'type': 'done'}, ensure_ascii=False)}\n\n"
             return
         try:
+            usage_log.start_request()  # 這次提問的模型呼叫記成同一題（用量統計算每題花多少）
             async for event in run_ncuxplore_agent_stream(
                 req.user_message, username, password, thread_id=_thread_key(username, req.thread_id)
             ):
