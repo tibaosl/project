@@ -616,34 +616,49 @@ def _unmet_rules(rule: dict) -> list[dict]:
     """往下找到「真正沒過」的最細規則，上層只是因為底下沒過才沒過的不重複列。
 
     學校的上層要求不一定等於細項加總（例如共同必修要 10 門，細項加起來只有 9 門）：
-    細項是各自的下限，細項都達標後，上層還要再多修的部分算在任一細項都可以。
-    上層缺的比細項缺的多時，差額另外列一行，不能讓它無聲消失。
+    上層缺的比細項缺的多時，另外列一行「整體」，不能讓它無聲消失。
+    """
+    return [item for item, _ in _unmet_with_gaps(rule)]
+
+
+def _unmet_with_gaps(rule: dict) -> list[tuple[dict, tuple[int, int]]]:
+    """每一行附上它算進上層缺口的 (學分, 門數)。
+
+    整體那行的差額只拿來判斷要不要列、給更上層加總（更上層才不會重複計算），
+    顯示的是整體還差多少：細項缺的門數是下限，核心通識差 5 學分、1 門，
+    實際修 2 門就把整體的 10 門也補滿了，寫成「細項達標後還要再多修 1 門」會讓人以為要多修。
+    同一套拆法 graduation_check._with_whole_gap 也在用。
     """
     if rule["passed"]:
         return []
-    remaining_credits, remaining_courses = _remaining(rule)
+    remaining = _remaining(rule)
     failing_children = [c for c in rule["children"] if not c["passed"]]
     if not failing_children:
-        return [{
-            "name": rule["name"],
-            "remaining_credits": remaining_credits,
-            "remaining_courses": remaining_courses,
-            "memo": _clean_memo(rule["memo"]),
-        }]
+        return [(_unmet_item(rule["name"], remaining, _clean_memo(rule["memo"])), remaining)]
 
-    items = [item for child in failing_children for item in _unmet_rules(child)]
-    extra_credits = remaining_credits - sum(i["remaining_credits"] for i in items)
-    extra_courses = remaining_courses - sum(i["remaining_courses"] for i in items)
+    rows = [row for child in failing_children for row in _unmet_with_gaps(child)]
+    extra_credits = remaining[0] - sum(gap[0] for _, gap in rows)
+    extra_courses = remaining[1] - sum(gap[1] for _, gap in rows)
     if extra_credits > 0 or extra_courses > 0:
-        items.append({
-            "name": f"{rule['name']}整體",
-            "remaining_credits": max(0, extra_credits),
-            "remaining_courses": max(0, extra_courses),
-            "memo": "細項都達標後整體還要再多修的部分，修「"
+        memo = (
+            "補細項修的課也算在內，修「"
             + "、".join(c["name"] for c in rule["children"])
-            + "」任一類的課都算",
-        })
-    return items
+            + "」任一類的課都算"
+        )
+        rows.append((
+            _unmet_item(f"{rule['name']}整體", remaining, memo),
+            (max(0, extra_credits), max(0, extra_courses)),
+        ))
+    return rows
+
+
+def _unmet_item(name: str, remaining: tuple[int, int], memo: str) -> dict:
+    return {
+        "name": name,
+        "remaining_credits": remaining[0],
+        "remaining_courses": remaining[1],
+        "memo": memo,
+    }
 
 
 def _clean_memo(memo: str) -> str:
