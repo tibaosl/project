@@ -223,6 +223,7 @@ def test_non_credit_conditions():
     college = items["資電學院選修總學分"]
     assert college["status"] == TODO
     assert college["lines"] == ["還差 21 學分"]
+    assert college["how"] == "審查表沒寫哪些課算，可以問我系上的規定，文件裡查不到的話要問系辦。"
     assert college["asks"][0]["question"] == "資訊工程學系 113 學年度入學，「資電學院選修總學分」有什麼規定？"
 
 

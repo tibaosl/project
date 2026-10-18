@@ -261,8 +261,9 @@ def _advice(rule: dict, title: str, department: str, cohort: str) -> tuple[str, 
         if areas and not any(_has_requirement(child) for child in rule["children"]):
             return f"選修通識課程補齊，{'、'.join(areas)}任一類的課都算。", []
         return "選修通識課程，補齊上面還缺的部分。", []
+    # 這類規定不一定有收錄（2026-10 查資工系的「資電學院選修總學分」，文件裡只有選修 45 學分）
     return (
-        "審查表沒寫哪些課算，可以問我系上的規定。",
+        "審查表沒寫哪些課算，可以問我系上的規定，文件裡查不到的話要問系辦。",
         [_ask(f"問{title}的規定", _question(department, cohort, f"「{title}」有什麼規定？"))],
     )
 
