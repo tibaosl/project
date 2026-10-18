@@ -32,6 +32,12 @@ gpt-5.4-mini 54/54。
 新加的都對（參數也對：「全拿 A」帶 assumed_grade、「到 3.5」帶 target_gpa、「畢業前」用 until_graduation），
 「我的 GPA 多少？」還是選學業分析。開發題錯的是一直不穩定的「我的英文畢業門檻過了嗎？」「幫我報名職涯講座」，
 保留題錯的「為什麼我參加的活動都沒有時數？」選成查法規，同一題各跑 10 次：改之前 9 對、改之後 10 對，是本來的起伏。
+2026-10-18 加了「畢業總檢」（check_my_graduation：學分以外的體育、操行、時數等全部畢業條件），開發題加 4 題、保留題
+加 2 題，「我的英文畢業門檻過了嗎？」「我體育修完了嗎？」改成學業分析或畢業總檢都算對：83/85 三次、34/34 兩次，新加的
+都對，錯的是「幫我報名職涯講座」（三次都反問）、一次「職涯講座的詳細內容是什麼？」、一次「我禮拜三有什麼課？」反問是
+哪一週（同一題跑 30 次，加工具之前都選課表，之後課表 19 次、行程 11 次，兩個都算對）。
+跟 GPA 試算合併之後（兩個新工具都在）：88/89、36/37 跟 37/37，錯的是「幫我報名職涯講座」跟一次「我想報名那個 Python 工作坊」，
+都是反問要哪一場。
 """
 
 import argparse
@@ -78,12 +84,17 @@ CASES = [
     ("我想把這學期的課加進我的行事曆", [], {"export_calendar_file"}),
     ("我還差幾學分才能畢業？", [], {"get_my_academic_analysis"}), ("我的必修修完了嗎？", [], {"get_my_academic_analysis"}),
     ("我這學期平均幾分？", [], {"get_my_academic_analysis"}), ("我有被當的課嗎？", [], {"get_my_academic_analysis"}),
-    ("我的英文畢業門檻過了嗎？", [], {"get_my_academic_analysis"}),
+    # 畢業總檢（2026-10-18 加）：學分以外的體育、操行、時數等全部畢業條件。英文能力、體育是審查表上的條件，
+    # 畢業總檢的清單會寫出過了沒（通過的話寫用什麼通過），學業分析也查得到，兩個都算對
+    ("我的英文畢業門檻過了嗎？", [], {"get_my_academic_analysis", "check_my_graduation"}),
     # GPA 試算、只差成績的獎學金（2026-10-18 加）
     ("這學期全拿 A 累計 GPA 會變多少？", [], {"estimate_my_gpa"}),
     ("剩下的課平均要考幾分累計 GPA 才到 3.5？", [], {"estimate_my_gpa"}),
     ("如果這學期每科都考 80 分，我的累計平均會是多少？", [], {"estimate_my_gpa"}),
     ("有哪些獎學金我成績再好一點就能申請？", [], {"recommend_scholarships_for_me"}),
+    ("我能畢業嗎？", [], {"check_my_graduation"}), ("離畢業還差什麼？", [], {"check_my_graduation"}),
+    ("我還有哪些畢業條件沒完成？", [], {"check_my_graduation"}),
+    ("幫我檢查一下我可以畢業了沒", [], {"check_my_graduation"}),
     ("我可以申請哪些獎學金？", [], {"recommend_scholarships_for_me"}), ("有什麼獎學金適合我？", [], {"recommend_scholarships_for_me"}),
     ("我是低收入戶，有什麼助學金可以申請？", [], {"recommend_scholarships_for_me"}),
     ("書卷獎可以拿多少錢？", [], {R}), ("羅家倫獎學金要交什麼資料？", [], {R}),
@@ -138,7 +149,8 @@ HOLDOUT = [
     ("有沒有辦法把行程同步到 iPhone 的行事曆？", [], {"export_calendar_file"}),
     ("校內有便利商店嗎？", [], {R}), ("學校哪裡可以剪頭髮？", [], {R}),
     ("工五館門禁怎麼申請？", [], {R}), ("學分抵免怎麼申請？", [], {R}), ("體育課要修幾學期？", [], {R}),
-    ("我體育修完了嗎？", [], {"get_my_academic_analysis"}), ("hi", [], {NONE}), ("你會做什麼？", [], {NONE}),
+    ("我體育修完了嗎？", [], {"get_my_academic_analysis", "check_my_graduation"}), ("hi", [], {NONE}), ("你會做什麼？", [], {NONE}),
+    ("我下學期可以順利畢業嗎？", [], {"check_my_graduation"}), ("畢業前我還要完成哪些事？", [], {"check_my_graduation"}),
     ("這學期 all A 的話 GPA 會到多少", [], {"estimate_my_gpa"}),
     ("畢業前 GPA 還有機會拉到 3.8 嗎？", [], {"estimate_my_gpa"}),
     ("我差一點就能拿的獎學金有哪些？", [], {"recommend_scholarships_for_me"}),

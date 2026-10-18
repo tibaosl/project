@@ -6,7 +6,7 @@ import FollowUpSuggestions from "./FollowUpSuggestions";
 import CopyAnswerButton from "./CopyAnswerButton";
 import { AssistantAvatar, UserAvatar } from "./Avatar";
 
-function MessageBubble({ msg }) {
+function MessageBubble({ msg, onAsk }) {
   const contentRef = useRef(null);
   const isAssistant = msg.role === "assistant";
   // 文字回答（法規問答這類）講完才給複製。卡片本身就是整理好的畫面，反問使用者的句子也不用複製
@@ -19,7 +19,7 @@ function MessageBubble({ msg }) {
       {isAssistant && msg.status && <StatusIndicator text={msg.status} />}
       {msg.content != null && (
         <div ref={contentRef}>
-          <MessageContent content={msg.content} />
+          <MessageContent content={msg.content} onAsk={onAsk} />
         </div>
       )}
       {isAssistant && !msg.status && msg.content == null && !msg.isStreaming && (
@@ -47,7 +47,7 @@ export default function MessageList({ messages, onAsk, busy = false }) {
       {messages.map((msg) => (
         <div className={`chat-message-row role-${msg.role}`} key={msg.id}>
           {msg.role === "assistant" && <AssistantAvatar />}
-          <MessageBubble msg={msg} />
+          <MessageBubble msg={msg} onAsk={onAsk} />
           {msg.role === "user" && <UserAvatar />}
         </div>
       ))}

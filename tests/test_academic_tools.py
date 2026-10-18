@@ -468,3 +468,19 @@ def test_analysis_includes_estimate_and_passes_its_options():
     a = analyze_academic_progress(transcript, None, "estimate", {"target_gpa": 3.5})
     assert a["focus"] == "estimate"
     assert a["estimate"]["answers"][0].startswith("目前累計 GPA 4.00，已經在 3.50 以上")
+
+
+def test_alerts_skip_courses_still_in_progress_on_graduation_report():
+    # 2026-10 實測：這學期還在修的課，審查表寫「未到(Not Entered)」、qualified 是 "2"，以前被列成
+    # 「畢業審查未通過」，必修還會寫「需要重新修習才能畢業」
+    category = dict(REQUIRED_CATEGORY)
+    rules = json.loads(category["course"])
+    rules["12100"]["12101"]["course"].append(_grad_course("1151", "CE9200", "這學期在修", "未到(Not Entered)", "2"))
+    category["course"] = json.dumps(rules)
+    graduation = parse_graduation_report_html(GRADUATION_HTML.replace(_block(REQUIRED_CATEGORY), _block(category)))
+
+    leaf = graduation["categories"][0]["children"][0]["children"][0]
+    assert [c["in_progress"] for c in leaf["courses"]] == [False, False, False, True]
+    alerts = analyze_academic_progress(parse_transcript_html(TRANSCRIPT_HTML), graduation)["alerts"]
+    assert "CE9200" not in {a["course_no"] for a in alerts}
+    assert "CE9100" in {a["course_no"] for a in alerts}

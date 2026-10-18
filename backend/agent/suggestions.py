@@ -45,6 +45,11 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "這學期平均要考幾分，累計 GPA 才會到 3.8？",
         "如果這學期每科都考 80 分，累計平均會是多少？",
     )),
+    "check_my_graduation": FeatureSuggestions("畢業總檢", True, (
+        "我能畢業嗎？",
+        "離畢業還差什麼？",
+        "我還有哪些畢業條件沒完成？",
+    )),
     "recommend_scholarships_for_me": FeatureSuggestions("獎學金推薦", True, (
         "我可以申請哪些獎學金？",
         "有什麼獎學金適合我？",
@@ -205,6 +210,8 @@ _CARD_CONTENTS: dict[str, Any] = {
         "estimate": "目前的累計 GPA 跟累計平均、這學期還沒有成績的課、剩下的課都拿 A+ 到 B- 各會變成多少累計 GPA，"
                     "以及使用者問的假設成績或目標 GPA、平均要考幾分",
     },
+    "graduation_check": "畢業總學分跟各類別的學分缺口、要重修的必修、這學期修課中的課都通過的話還差多少、體育、操行、"
+                        "服務學習、英文能力、學習護照時數，每一項完成了沒、還差多少、怎麼補",
     "hours_dashboard": "學習護照每個類別、細項的時數跟畢業門檻，還差幾小時、有沒有達標",
     "scholarship_recommendations": "依成績、系所、年級找出的符合資格、還要確認條件、只差成績或排名門檻（差多少、這學期要考幾分）的獎學金，各自的金額、截止日、申請方式",
     "activity_recommendations": "依時數缺口推薦、還能報名的活動場次（時間、時數、名額）",
@@ -395,6 +402,13 @@ def _clean_questions(questions: list[str], user_message: str, max_length: int = 
     return cleaned
 
 
+# 學業分析、時數功能的範例裡，畢業總檢卡片已經回答到的
+GRADUATION_CHECK_ALSO_ANSWERS = (
+    "我還差幾學分畢業？", "我的必修都修完了嗎？", "我有沒有需要重修的課？",
+    "我的學習護照時數還差多少？", "我的時數達到畢業門檻了嗎？", "我的服務學習時數夠了嗎？",
+)
+
+
 def _answered_examples(answer: Any, called_tools: list[str]) -> set[str]:
     """卡片已經完整回答的功能，它的範例問題（比對用的形式）。
 
@@ -409,7 +423,13 @@ def _answered_examples(answer: Any, called_tools: list[str]) -> set[str]:
         return set()
     if isinstance(answer, dict) and answer.get("kind") == "campus_calendar":
         return set()
-    return {_compact(q) for t in called_tools if t in TOOL_SUGGESTIONS for q in TOOL_SUGGESTIONS[t].examples}
+    answered = {_compact(q) for t in called_tools if t in TOOL_SUGGESTIONS for q in TOOL_SUGGESTIONS[t].examples}
+    if isinstance(answer, dict) and answer.get("kind") == "graduation_check":
+        # 卡片上每一項已經有可以點的問題（問必修科目、推薦補時數的活動），下面不要再放一次。
+        # 學分、時數的缺口卡片上也都有（2026-10 實測：看完畢業總檢又推薦「我還差幾學分畢業？」）
+        answered |= {_compact(a["question"]) for item in answer.get("items", []) for a in item.get("asks", [])}
+        answered |= {_compact(q) for q in GRADUATION_CHECK_ALSO_ANSWERS}
+    return answered
 
 
 def _fallback_follow_ups(

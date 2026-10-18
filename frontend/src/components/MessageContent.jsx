@@ -6,6 +6,7 @@ import ActivityList from "./ActivityList";
 import ActivityDetail from "./ActivityDetail";
 import ScheduleTable from "./ScheduleTable";
 import AcademicAnalysis from "./AcademicAnalysis";
+import GraduationCheck from "./GraduationCheck";
 import ScholarshipList from "./ScholarshipList";
 import CampusCalendar from "./CampusCalendar";
 import PersonalAgenda from "./PersonalAgenda";
@@ -14,10 +15,12 @@ import CalendarExport from "./CalendarExport";
 /**
  * 依內容形狀分派渲染方式，對應後端各個工具回傳的 content：
  * - 字串 → 當 Markdown 顯示（法規回答、選課結果、活動搜尋列表...）
- * - {kind: "hours_dashboard" | "academic_analysis" | "scholarship_recommendations"
+ * - {kind: "hours_dashboard" | "academic_analysis" | "graduation_check" | "scholarship_recommendations"
  *    | "activity_recommendations" | "activity_tag_search" | "activity_detail"
  *    | "activity_confirmation" | "campus_calendar" | "personal_agenda" | "calendar_export", ...} → 各自的卡片元件
  * - 課表的陣列（每筆有 day/period/time/details）→ 課表格線
+ *
+ * onAsk：卡片上可以點的問題（例如畢業總檢的「問必修科目有哪些」）用它送出，沒給就不顯示按鈕。
  *
  * 跟舊版 ui.py 的 render_agent_reply() 是同一套邏輯，只是從 Streamlit
  * markdown 改寫成 React 元件。
@@ -53,7 +56,7 @@ function ScrollableTable({ node, ...props }) {
   );
 }
 
-export default function MessageContent({ content }) {
+export default function MessageContent({ content, onAsk }) {
   if (content == null) return null;
 
   if (typeof content === "string") {
@@ -84,6 +87,8 @@ export default function MessageContent({ content }) {
         return <HoursDashboard data={content} />;
       case "academic_analysis":
         return <AcademicAnalysis data={content} />;
+      case "graduation_check":
+        return <GraduationCheck data={content} onAsk={onAsk} />;
       case "scholarship_recommendations":
         return <ScholarshipList data={content} />;
       case "activity_recommendations":
