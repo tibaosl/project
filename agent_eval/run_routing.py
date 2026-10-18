@@ -28,6 +28,10 @@ gpt-5.4-mini 54/54。
 就反問的「幫我報名職涯講座」「職涯講座的詳細內容是什麼？」跟偶爾選成查法規的「我的英文畢業門檻過了嗎？」。
 2026-10-13 加了「活動時數紀錄」（find_my_hour_records：某個活動的時數核發了沒、哪些活動待核發），開發題加 4 題、
 保留題加 2 題：80/81、32/32，新加的都對，錯的是「我的英文畢業門檻過了嗎？」。
+2026-10-18 加了「GPA 試算」（estimate_my_gpa）跟獎學金的「只差成績」，開發題加 4 題、保留題加 3 題：83/85、34/35，
+新加的都對（參數也對：「全拿 A」帶 assumed_grade、「到 3.5」帶 target_gpa、「畢業前」用 until_graduation），
+「我的 GPA 多少？」還是選學業分析。開發題錯的是一直不穩定的「我的英文畢業門檻過了嗎？」「幫我報名職涯講座」，
+保留題錯的「為什麼我參加的活動都沒有時數？」選成查法規，同一題各跑 10 次：改之前 9 對、改之後 10 對，是本來的起伏。
 """
 
 import argparse
@@ -75,6 +79,11 @@ CASES = [
     ("我還差幾學分才能畢業？", [], {"get_my_academic_analysis"}), ("我的必修修完了嗎？", [], {"get_my_academic_analysis"}),
     ("我這學期平均幾分？", [], {"get_my_academic_analysis"}), ("我有被當的課嗎？", [], {"get_my_academic_analysis"}),
     ("我的英文畢業門檻過了嗎？", [], {"get_my_academic_analysis"}),
+    # GPA 試算、只差成績的獎學金（2026-10-18 加）
+    ("這學期全拿 A 累計 GPA 會變多少？", [], {"estimate_my_gpa"}),
+    ("剩下的課平均要考幾分累計 GPA 才到 3.5？", [], {"estimate_my_gpa"}),
+    ("如果這學期每科都考 80 分，我的累計平均會是多少？", [], {"estimate_my_gpa"}),
+    ("有哪些獎學金我成績再好一點就能申請？", [], {"recommend_scholarships_for_me"}),
     ("我可以申請哪些獎學金？", [], {"recommend_scholarships_for_me"}), ("有什麼獎學金適合我？", [], {"recommend_scholarships_for_me"}),
     ("我是低收入戶，有什麼助學金可以申請？", [], {"recommend_scholarships_for_me"}),
     ("書卷獎可以拿多少錢？", [], {R}), ("羅家倫獎學金要交什麼資料？", [], {R}),
@@ -130,6 +139,9 @@ HOLDOUT = [
     ("校內有便利商店嗎？", [], {R}), ("學校哪裡可以剪頭髮？", [], {R}),
     ("工五館門禁怎麼申請？", [], {R}), ("學分抵免怎麼申請？", [], {R}), ("體育課要修幾學期？", [], {R}),
     ("我體育修完了嗎？", [], {"get_my_academic_analysis"}), ("hi", [], {NONE}), ("你會做什麼？", [], {NONE}),
+    ("這學期 all A 的話 GPA 會到多少", [], {"estimate_my_gpa"}),
+    ("畢業前 GPA 還有機會拉到 3.8 嗎？", [], {"estimate_my_gpa"}),
+    ("我差一點就能拿的獎學金有哪些？", [], {"recommend_scholarships_for_me"}),
     ("有沒有我拿得到的獎學金", [], {"recommend_scholarships_for_me"}),
     ("我成績不錯，可以申請什麼獎學金嗎？", [], {"recommend_scholarships_for_me"}),
     ("清寒獎學金的申請條件是什麼？", [], {R}), ("沒有導師密碼可以選課嗎？", [], {R}),

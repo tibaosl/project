@@ -35,7 +35,14 @@ from openai import OpenAI
 from backend import usage_log
 from backend.rag import academic_agent
 from backend.rag import rag_documents
-from backend.analysis.academic_tools import course_failed, graded_cumulative_ranks
+from backend.analysis.academic_tools import (
+    compute_gpa,
+    course_failed,
+    courses_awaiting_grades,
+    graded_cumulative_ranks,
+    required_score,
+    round_up,
+)
 from backend.logging_config import make_print_logger
 
 print = make_print_logger(__name__)
@@ -487,6 +494,8 @@ class StudentProfile:
     cumulative_class_rank: str
     cumulative_dept_rank: str
     previous_year: int  # 「前一學年」是哪個學年度
+    average_credits: int = 0       # 算累計平均的學分（academic_tools.compute_gpa），試算累計平均用
+    in_progress_credits: int = 0   # 這學期還沒有成績、之後會算進平均的學分
 
 
 _GRADE_NAMES = "一二三四五六七"
@@ -548,6 +557,7 @@ def build_profile(transcript: dict, today: Optional[date] = None) -> StudentProf
         ))
     cumulative_ranks = graded_cumulative_ranks(transcript)
     latest_rank = cumulative_ranks[-1][1] if cumulative_ranks else {}
+    gpa = compute_gpa(transcript)
     return StudentProfile(
         department=department or transcript.get("department", ""),
         college=college,
@@ -558,6 +568,8 @@ def build_profile(transcript: dict, today: Optional[date] = None) -> StudentProf
         cumulative_class_rank=latest_rank.get("class_rank") or "",
         cumulative_dept_rank=latest_rank.get("dept_rank") or "",
         previous_year=academic_year(today) - 1,
+        average_credits=gpa["credits"] if gpa else 0,
+        in_progress_credits=sum(c["credits"] for c in courses_awaiting_grades(transcript)),
     )
 
 
@@ -628,6 +640,58 @@ def year_average(semesters: list[Semester]) -> float:
     return sum(s.average for s in semesters) / len(semesters)
 
 
+# 「只差成績」：其他條件都符合，只有成績或排名門檻沒到，而且差得不多的（平均差 5 分以內，排名差 10 個
+# 百分點以內、也不到門檻的兩倍）。差太多的跟不符合一樣不列，不然清單會被根本拿不到的獎學金塞滿
+NEAR_AVERAGE_GAP = 5.0
+NEAR_RANK_GAP = 10.0
+_CANNOT_ESTIMATE_RANK = "排名要看同學的成績，沒辦法試算"
+
+
+def _grades_near_hint(basis: str, minimum: float, gap: float, profile: StudentProfile) -> Optional[str]:
+    """平均沒到門檻但差得不多時，寫出差幾分、這學期要考幾分下次申請才符合（跟 GPA 試算一樣的算法）。
+    這學期全考 100 分也到不了的不算差一點，回傳 None。"""
+    if gap > NEAR_AVERAGE_GAP:
+        return None
+    lead = f"差 {gap:.2f} 分"
+    this_year = profile.previous_year + 1
+    remaining = profile.in_progress_credits
+    graded_this_year = [s for s in profile.semesters if s.term[:-1] == str(this_year)]
+    if basis == "歷年":
+        need = required_score(profile.cumulative_average, profile.average_credits, remaining, minimum) \
+            if profile.average_credits else None
+        if need is None:
+            return f"{lead}，累計平均要再提高 {gap:.2f} 分才符合"
+        if need > 100:
+            return None
+        return f"{lead}。這學期 {remaining} 學分平均要考 {round_up(need):.2f} 分以上，累計平均才會到 {minimum:g}"
+    if basis == "前一學年":
+        if graded_this_year and remaining:
+            done = year_average(graded_this_year)
+            need = required_score(done, sum(s.credits for s in graded_this_year), remaining, minimum)
+            if need > 100:
+                return None
+            return (f"{lead}。下次申請看 {this_year} 學年的平均，{graded_this_year[-1].label} 是 {done:.2f}，"
+                    f"這學期平均要考 {round_up(need):.2f} 分以上才符合")
+        return f"{lead}。{this_year} 學年（這學期跟下學期）平均考到 {minimum:g} 分以上，下次申請就符合"
+    if basis == "前一學年每學期":
+        if any(s.average < minimum for s in graded_this_year):
+            return None  # 這學年已經有一學期沒到，下次申請也不符合
+        return f"{lead}。{this_year} 學年上下學期都考到 {minimum:g} 分以上，下次申請就符合"
+    return f"{lead}。這學期平均考到 {minimum:g} 分以上，下次申請就符合"
+
+
+def _grades_result(label: str, value: float, minimum: float, basis: str, profile: StudentProfile) -> dict:
+    if value >= minimum:
+        return {"label": label, "ok": True, "kind": "grades"}
+    result = {"label": label, "ok": False, "kind": "grades"}
+    # 差幾分用畫面上顯示的分數（小數兩位）算，「你：85.31」配「差 0.69 分」才對得起來
+    gap = round(minimum - round(value, 2), 2)
+    hint = _grades_near_hint(basis, minimum, gap, profile)
+    if hint:
+        result.update(gap=gap, hint=hint)
+    return result
+
+
 def _check_grades(rule: dict, profile: StudentProfile) -> Optional[dict]:
     minimum, basis = rule["min_average"], rule["basis"]
     if not minimum:
@@ -636,28 +700,30 @@ def _check_grades(rule: dict, profile: StudentProfile) -> Optional[dict]:
     if basis == "歷年":
         label = f"歷年平均 {minimum:g} 分以上"
         if profile.cumulative_average is None:
-            return {"label": f"{label}（查不到你的歷年平均）", "ok": None}
-        return {"label": f"{label}（你：{profile.cumulative_average:.2f}）", "ok": profile.cumulative_average >= minimum}
+            return {"label": f"{label}（查不到你的歷年平均）", "ok": None, "kind": "grades"}
+        return _grades_result(f"{label}（你：{profile.cumulative_average:.2f}）", profile.cumulative_average,
+                              minimum, basis, profile)
     semesters = _semesters_for(profile, basis)
     if basis == "前一學年":
         label = f"{year}平均 {minimum:g} 分以上"
         if not semesters:
-            return {"label": f"{label}（查不到你 {year}的成績）", "ok": None}
+            return {"label": f"{label}（查不到你 {year}的成績）", "ok": None, "kind": "grades"}
         value = year_average(semesters)
-        return {"label": f"{label}（你：{value:.2f}）", "ok": value >= minimum}
+        return _grades_result(f"{label}（你：{value:.2f}）", value, minimum, basis, profile)
     if basis == "前一學年每學期":
         label = f"{year}上下學期平均都 {minimum:g} 分以上"
         if not semesters:
-            return {"label": f"{label}（查不到你 {year}的成績）", "ok": None}
+            return {"label": f"{label}（查不到你 {year}的成績）", "ok": None, "kind": "grades"}
         you = "、".join(f"{s.label} {s.average:.2f}" for s in semesters)
-        if any(s.average < minimum for s in semesters):
-            return {"label": f"{label}（你：{you}）", "ok": False}
-        return {"label": f"{label}（你：{you}）", "ok": True if len(semesters) >= 2 else None}
+        lowest = min(s.average for s in semesters)
+        if lowest < minimum:
+            return _grades_result(f"{label}（你：{you}）", lowest, minimum, basis, profile)
+        return {"label": f"{label}（你：{you}）", "ok": True if len(semesters) >= 2 else None, "kind": "grades"}
     label = f"前一學期平均 {minimum:g} 分以上"
     if not semesters:
-        return {"label": f"{label}（查不到你的學期成績）", "ok": None}
+        return {"label": f"{label}（查不到你的學期成績）", "ok": None, "kind": "grades"}
     latest = semesters[0]
-    return {"label": f"{label}（你：{latest.label} {latest.average:.2f}）", "ok": latest.average >= minimum}
+    return _grades_result(f"{label}（你：{latest.label} {latest.average:.2f}）", latest.average, minimum, basis, profile)
 
 
 def parse_rank(text: str) -> Optional[tuple[int, int]]:
@@ -684,6 +750,38 @@ def _rank_text(text: str, percent: float) -> str:
     return f"{text}，前 {position * 100 / total:.1f}%" if percent else text
 
 
+def _rank_near_hint(texts: list[str], percent: float, top: int) -> Optional[tuple[float, str]]:
+    """排名沒到門檻但差得不多時回傳 (差幾個百分點, 說明)。排名要看同學的成績，只寫目前排名跟門檻，不試算。
+    texts 是沒到門檻的那幾學期（或累計）的排名，用最差的一個判斷。"""
+    worst = None
+    for text in texts:
+        parsed = parse_rank(text)
+        if parsed is None:
+            return None
+        position, total = parsed
+        limit = min(p for p in (percent, top * 100 / total if top else 0) if p)
+        you = position * 100 / total
+        if worst is None or you - limit > worst[0]:
+            worst = (you - limit, you, limit, position, total)
+    if worst is None:
+        return None
+    gap, you, limit, position, total = worst
+    if gap > NEAR_RANK_GAP or you > limit * 2:
+        return None
+    if top and not percent:
+        return gap, f"目前第 {position} 名，門檻前 {top} 名。{_CANNOT_ESTIMATE_RANK}"
+    return gap, f"目前排名前 {you:.1f}%，門檻前 {limit:g}%。{_CANNOT_ESTIMATE_RANK}"
+
+
+def _rank_result(label: str, ok: Optional[bool], failing: list[str], percent: float, top: int) -> dict:
+    result = {"label": label, "ok": ok, "kind": "rank"}
+    if ok is False:
+        near = _rank_near_hint(failing, percent, top)
+        if near:
+            result.update(gap=round(near[0], 2), hint=near[1])
+    return result
+
+
 def _check_rank(rule: dict, profile: StudentProfile) -> Optional[dict]:
     percent, top, basis = rule["percent"], rule["top"], rule["basis"]
     if not percent and not top:
@@ -692,7 +790,8 @@ def _check_rank(rule: dict, profile: StudentProfile) -> Optional[dict]:
     target = "、".join(part for part in (f"前 {percent:g}%" if percent else "", f"前 {top} 名" if top else "") if part)
     if basis == "歷年":
         text = profile.cumulative_dept_rank if scope == "系" else profile.cumulative_class_rank
-        return {"label": f"累計{scope}排名{target}（你：{_rank_text(text, percent)}）", "ok": _rank_ok(text, percent, top)}
+        return _rank_result(f"累計{scope}排名{target}（你：{_rank_text(text, percent)}）",
+                            _rank_ok(text, percent, top), [text], percent, top)
 
     semesters = _semesters_for(profile, basis)
     if basis == "前一學年每學期":
@@ -719,7 +818,8 @@ def _check_rank(rule: dict, profile: StudentProfile) -> Optional[dict]:
         ok = None
     else:
         ok = True
-    return {"label": f"{label}（你：{you}）", "ok": ok}
+    failing = [text for (_, text), result in zip(ranks, results) if result is False]
+    return _rank_result(f"{label}（你：{you}）", ok, failing, percent, top)
 
 
 def _check_no_failing(item: dict, profile: StudentProfile) -> Optional[dict]:
@@ -737,7 +837,9 @@ def _check_no_failing(item: dict, profile: StudentProfile) -> Optional[dict]:
 
 def evaluate(item: dict, profile: StudentProfile, statuses: tuple[str, ...] = ()) -> tuple[str, list[dict], list[dict]]:
     """回傳 (結果, 判斷過的條件, 要使用者確認的條件)。結果是 eligible（條件都符合）、maybe（成績單判斷得了的
-    都符合，但還有要確認的身分條件，或資料不夠判斷不了）、ineligible（有條件不符合）。"""
+    都符合，但還有要確認的身分條件，或資料不夠判斷不了）、near（只差成績：其他條件都符合、沒有要確認的，
+    只有平均或排名門檻沒到而且差得不多，沒到的條件有 gap 跟 hint）、ineligible（有條件不符合）。
+    成績跟排名的條件有 kind（grades、rank）。"""
     checks: list[dict] = []
     nationality = item["nationality"]
     if nationality in FOREIGN_STATUSES:
@@ -767,8 +869,11 @@ def evaluate(item: dict, profile: StudentProfile, statuses: tuple[str, ...] = ()
         # 一個條件都沒整理出來（一覽表只寫「依公告」的基金會獎學金），不能當成人人都符合
         pending.append({"kind": "其他", "text": "文件沒有寫明申請資格，要看辦法或公告"})
 
-    if any(c["ok"] is False for c in checks):
-        return "ineligible", checks, pending
+    failed = [c for c in checks if c["ok"] is False]
+    if failed:
+        # 只有成績、排名的條件沒到（而且差得不多才有 hint），其他條件都確定符合
+        only_grades = all(c.get("hint") for c in failed) and all(c["ok"] is not None for c in checks)
+        return ("near" if only_grades and not pending else "ineligible"), checks, pending
     if pending or any(c["ok"] is None for c in checks):
         return "maybe", checks, pending
     return "eligible", checks, pending
@@ -877,6 +982,8 @@ def combine_tiers(entries: list[dict]) -> list[dict]:
                     "name": _sub_award_text(m["name"]),
                     "amount": m["amount"],
                     "conditions": [p["text"] for p in m["pending"] if p["text"] not in common_pending],
+                    # 各獎項自己的門檻（班排名前 3%／前 10%），只差成績的提示也在這裡
+                    "checks": [c for c in m["checks"] if c["label"] not in common_checks],
                 }
                 for m in members
             ],
@@ -890,6 +997,16 @@ def combine_tiers(entries: list[dict]) -> list[dict]:
 
 def _sort_amount(entry: dict) -> int:
     return max([amount_value(entry["amount"])] + [amount_value(t["amount"]) for t in entry.get("tiers", [])])
+
+
+def _missing_by(checks: list[dict]) -> float:
+    return sum(c.get("gap", 0) for c in checks if c["ok"] is False)
+
+
+def _near_gap(entry: dict) -> float:
+    """只差成績的差多少（平均的分數加上排名的百分點），分獎項的看差最少的那個獎項。"""
+    tiers = [_missing_by(t["checks"]) for t in entry.get("tiers", [])]
+    return _missing_by(entry["checks"]) + (min(tiers) if tiers else 0)
 
 
 def _without_semicolons(value):
@@ -910,7 +1027,8 @@ def match_scholarships(
     """前端 ScholarshipList 元件吃的資料包。急難救助不推薦（遇到急難的人會直接問怎麼申請）。"""
     today = today or date.today()
     statuses = tuple(s for s in dict.fromkeys(statuses or ()) if s in DECLARABLE_STATUSES)
-    eligible, maybe, excluded = [], [], 0
+    groups: dict[str, list[dict]] = {"eligible": [], "maybe": [], "near": []}
+    excluded = 0
     for item in index:
         if item["kind"] == "急難救助":
             continue
@@ -920,19 +1038,21 @@ def match_scholarships(
             continue
         entry = _present(item, status, checks, pending, today)
         entry["_family"] = (scholarship_key(item["name"], base=True), _units_key(item), tuple(sorted({p["kind"] for p in pending})))
-        (eligible if status == "eligible" else maybe).append(entry)
-    eligible, maybe = combine_tiers(eligible), combine_tiers(maybe)
-    for entry in eligible + maybe:
+        groups[status].append(entry)
+    eligible, maybe, near = (combine_tiers(groups[key]) for key in ("eligible", "maybe", "near"))
+    for entry in eligible + maybe + near:
         del entry["_family"]
-    # 還沒截止（或看不出截止日）的在前，金額大的在前；要確認的條件少的在前
+    # 還沒截止（或看不出截止日）的在前，金額大的在前；要確認的條件少的在前；只差成績的差得少的在前
     eligible.sort(key=lambda e: (e["deadline_passed"] is True, -_sort_amount(e)))
     maybe.sort(key=lambda e: (len(e["pending"]), e["deadline_passed"] is True, -_sort_amount(e)))
+    near.sort(key=lambda e: (_near_gap(e), -_sort_amount(e)))
     return {
         "kind": "scholarship_recommendations",
         "profile": _profile_summary(profile),
         "statuses": list(statuses),
         "eligible": _without_semicolons(eligible),
         "maybe": _without_semicolons(maybe),
+        "near": _without_semicolons(near),
         "excluded_count": excluded,
         "apply_url": APPLY_URL,
     }
