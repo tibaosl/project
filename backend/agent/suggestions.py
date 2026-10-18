@@ -393,6 +393,13 @@ def _clean_questions(questions: list[str], user_message: str, max_length: int = 
     return cleaned
 
 
+# 學業分析、時數功能的範例裡，畢業總檢卡片已經回答到的
+GRADUATION_CHECK_ALSO_ANSWERS = (
+    "我還差幾學分畢業？", "我的必修都修完了嗎？", "我有沒有需要重修的課？",
+    "我的學習護照時數還差多少？", "我的時數達到畢業門檻了嗎？", "我的服務學習時數夠了嗎？",
+)
+
+
 def _answered_examples(answer: Any, called_tools: list[str]) -> set[str]:
     """卡片已經完整回答的功能，它的範例問題（比對用的形式）。
 
@@ -408,9 +415,11 @@ def _answered_examples(answer: Any, called_tools: list[str]) -> set[str]:
     if isinstance(answer, dict) and answer.get("kind") == "campus_calendar":
         return set()
     answered = {_compact(q) for t in called_tools if t in TOOL_SUGGESTIONS for q in TOOL_SUGGESTIONS[t].examples}
-    # 畢業總檢卡片上每一項已經有可以點的問題（問必修科目、推薦補時數的活動），下面不要再放一次
     if isinstance(answer, dict) and answer.get("kind") == "graduation_check":
+        # 卡片上每一項已經有可以點的問題（問必修科目、推薦補時數的活動），下面不要再放一次。
+        # 學分、時數的缺口卡片上也都有（2026-10 實測：看完畢業總檢又推薦「我還差幾學分畢業？」）
         answered |= {_compact(a["question"]) for item in answer.get("items", []) for a in item.get("asks", [])}
+        answered |= {_compact(q) for q in GRADUATION_CHECK_ALSO_ANSWERS}
     return answered
 
 
