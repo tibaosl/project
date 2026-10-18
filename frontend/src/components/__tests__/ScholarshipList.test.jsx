@@ -44,6 +44,7 @@ function envelope(overrides) {
     statuses: [],
     eligible: [],
     maybe: [],
+    near: [],
     excluded_count: 0,
     apply_url: "https://cis.ncu.edu.tw/Scholarship",
     ...overrides,
@@ -127,6 +128,69 @@ describe("ScholarshipList", () => {
     expect(card.style.opacity).toBe("");
     expect(card.querySelectorAll("svg.ncux-icon").length).toBeGreaterThan(0);
     expect(container.textContent).not.toMatch(/[💰📅📝📄🎓✓✗]/u);
+  });
+
+  it("只差成績的獎學金另外一區，沒到的條件下面寫差多少", () => {
+    const near = [
+      scholarship({
+        name: "羅家倫校長紀念獎學金（學士班）",
+        status: "near",
+        deadline: "",
+        checks: [
+          { label: "限學士班二年級以上（你：學士班三年級）", ok: true },
+          {
+            label: "114 學年平均 80 分以上（你：78.80）",
+            ok: false,
+            kind: "grades",
+            gap: 1.2,
+            hint: "差 1.20 分。115 學年（這學期跟下學期）平均考到 80 分以上，下次申請就符合",
+          },
+        ],
+      }),
+    ];
+    render(<MessageContent content={envelope({ eligible: [scholarship({})], near })} />);
+
+    expect(screen.getByText(/有 1 項獎學金你看起來符合資格，另外 1 項只差成績/)).toBeInTheDocument();
+    expect(screen.getByText("只差成績（1）")).toBeInTheDocument();
+    expect(screen.getByText(/其他條件都符合，只有平均或排名還沒到門檻/)).toBeInTheDocument();
+    expect(screen.getByText("114 學年平均 80 分以上（你：78.80）")).toBeInTheDocument();
+    expect(
+      screen.getByText("差 1.20 分。115 學年（這學期跟下學期）平均考到 80 分以上，下次申請就符合"),
+    ).toBeInTheDocument();
+  });
+
+  it("分獎項的卡片，各獎項自己的門檻跟提示列在獎項底下", () => {
+    const card = scholarship({
+      name: "系書卷獎",
+      amount: "",
+      quota: "",
+      status: "near",
+      tiers: [
+        {
+          name: "第一名",
+          amount: "5000 元",
+          conditions: [],
+          checks: [
+            {
+              label: "前一學期班排名前 5 名（你：114-2 7/52）",
+              ok: false,
+              kind: "rank",
+              gap: 3.85,
+              hint: "目前第 7 名，門檻前 5 名。排名要看同學的成績，沒辦法試算",
+            },
+          ],
+        },
+      ],
+    });
+    render(<MessageContent content={envelope({ near: [card] })} />);
+    expect(screen.getByText("前一學期班排名前 5 名（你：114-2 7/52）")).toBeInTheDocument();
+    expect(screen.getByText("目前第 7 名，門檻前 5 名。排名要看同學的成績，沒辦法試算")).toBeInTheDocument();
+  });
+
+  it("舊的資料沒有 near 也能顯示", () => {
+    const { near, ...old } = envelope({ eligible: [scholarship({})] });
+    render(<MessageContent content={old} />);
+    expect(screen.queryByText(/只差成績/)).not.toBeInTheDocument();
   });
 
   it("說明過的身分會顯示在上面", () => {

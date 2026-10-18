@@ -38,14 +38,20 @@ function CheckMark({ ok }) {
   return <Icon name="question" tone="warn" />;
 }
 
-function CheckLine({ ok, children }) {
+// hint：只差成績的條件寫差多少、這學期要考幾分（後端 scholarship_tools 算好的）
+function CheckLine({ ok, hint, children }) {
   return (
     <li className="ncux-with-icon" style={{ gap: 6 }}>
       <CheckMark ok={ok} />
-      <span>{children}</span>
+      <span>
+        {children}
+        {hint && <span className="ncux-check-hint">{hint}</span>}
+      </span>
     </li>
   );
 }
+
+const CHECK_LIST = { listStyle: "none", padding: 0, margin: "6px 0 4px", fontSize: 13, lineHeight: 1.7 };
 
 function deadlineText(item) {
   if (item.deadline && item.deadline_term) {
@@ -103,14 +109,24 @@ export function ScholarshipCard({ item }) {
               {t.name}
               {t.amount && `：${t.amount}`}
               {t.conditions?.length > 0 && `（條件：${t.conditions.join("、")}）`}
+              {/* 各獎項自己的門檻（班排名前 3%／前 10%） */}
+              {t.checks?.length > 0 && (
+                <ul style={{ ...CHECK_LIST, margin: "2px 0" }}>
+                  {t.checks.map((c) => (
+                    <CheckLine key={c.label} ok={c.ok} hint={c.hint}>
+                      {c.label}
+                    </CheckLine>
+                  ))}
+                </ul>
+              )}
             </li>
           ))}
         </ul>
       )}
       {deadline && <MetaLine icon="calendar">{deadline}</MetaLine>}
-      <ul style={{ listStyle: "none", padding: 0, margin: "6px 0 4px", fontSize: 13, lineHeight: 1.7 }}>
+      <ul style={CHECK_LIST}>
         {item.checks.map((c) => (
-          <CheckLine key={c.label} ok={c.ok}>
+          <CheckLine key={c.label} ok={c.ok} hint={c.hint}>
             {c.label}
           </CheckLine>
         ))}
@@ -167,13 +183,19 @@ function Section({ title, children }) {
 
 /**
  * data：recommend_scholarships_for_me 工具回傳的 {kind: "scholarship_recommendations", ...}。
- * eligible 是成績單看得出來、條件都符合的；maybe 是成績、年級符合，但還要確認身分或其他條件的。
+ * eligible 是成績單看得出來、條件都符合的；maybe 是成績、年級符合，但還要確認身分或其他條件的；
+ * near 是其他條件都符合、只差平均或排名門檻的（沒到的條件有 hint 寫差多少）。
  */
 export default function ScholarshipList({ data }) {
   const { profile, eligible, maybe } = data;
+  const near = data.near ?? [];
   const headline = eligible.length
     ? `有 ${eligible.length} 項獎學金你看起來符合資格`
     : "目前沒有找到從成績單就能確定符合的獎學金";
+  const others = [
+    maybe.length > 0 && `${maybe.length} 項還要確認條件`,
+    near.length > 0 && `${near.length} 項只差成績`,
+  ].filter(Boolean);
   const closed = eligible.filter((item) => item.deadline_passed).length;
 
   return (
@@ -183,7 +205,7 @@ export default function ScholarshipList({ data }) {
         <div>
           <div>
             {headline}
-            {maybe.length > 0 && `，另外 ${maybe.length} 項還要確認條件`}
+            {others.length > 0 && `，另外 ${others.join("、")}`}
           </div>
           <div style={{ fontSize: 12.5, fontWeight: 400, marginTop: 4 }}>{profileText(profile)}</div>
           {closed > 0 && (
@@ -219,6 +241,18 @@ export default function ScholarshipList({ data }) {
                 <ScholarshipCard key={item.name} item={item} />
               ))}
             </details>
+          ))}
+        </Section>
+      )}
+
+      {near.length > 0 && (
+        <Section title={`只差成績（${near.length}）`}>
+          <MetaLine icon="target" className="ncux-near-intro">
+            {"其他條件都符合，只有平均或排名還沒到門檻。大多看前一學期或前一學年的成績，這學期考好，下次申請就有機會。"}
+            {"想知道要考幾分可以問我，例如「這學期平均要考幾分累計才到 85」。"}
+          </MetaLine>
+          {near.map((item) => (
+            <ScholarshipCard key={item.name} item={item} />
           ))}
         </Section>
       )}

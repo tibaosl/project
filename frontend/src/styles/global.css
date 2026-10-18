@@ -188,6 +188,31 @@ button {
   color: var(--ncux-warn-text);
 }
 
+.ncux-banner-info {
+  background: var(--ncux-primary-light);
+  color: var(--ncux-text);
+}
+
+.ncux-banner-info > .ncux-icon {
+  color: var(--ncux-primary);
+}
+
+/* 學業分析成績區塊下面那行 GPA 試算（AcademicAnalysis.jsx） */
+.ncux-estimate-teaser {
+  margin-top: 8px;
+}
+
+/* 獎學金只差成績的說明跟每個條件的提示：差幾分、這學期要考幾分（ScholarshipList.jsx） */
+.ncux-near-intro {
+  margin-bottom: 6px;
+}
+
+.ncux-check-hint {
+  display: block;
+  font-size: 12.5px;
+  color: var(--ncux-text-muted);
+}
+
 .ncux-confirm-box {
   background: var(--ncux-confirm-bg);
   border: 1px solid var(--ncux-confirm-border);

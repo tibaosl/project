@@ -538,6 +538,8 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         成績/平均/GPA（4.3 制，照學校的等第對照表換算）/排名、有沒有被當或需要重修的課。
         不適用於學習護照「時數」進度（請用 get_my_hours_dashboard），也不適用於
         「畢業學分規定本身是多少」這種制度問題（請用 search_campus_regulations）。
+        問「如果拿某個成績 GPA 會變多少」「要考幾分才能到某個 GPA 或平均」這種還沒發生的試算，
+        請用 estimate_my_gpa。
         問能不能畢業、離畢業還差什麼（要看學分以外的體育、操行、時數等全部畢業條件）請用 check_my_graduation。
 
         Args:
@@ -558,6 +560,44 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             return {"content": f"系統執行時發生錯誤：{e}"}
 
         return {"content": analyze_academic_progress(transcript, graduation, focus)}
+
+    @tool
+    async def estimate_my_gpa(
+        target_gpa: float = 0,
+        target_average: float = 0,
+        assumed_grade: str = "",
+        remaining: Literal["this_semester", "until_graduation"] = "this_semester",
+        credits: int = 0,
+    ) -> dict:
+        """依使用者「自己」的成績單試算累計 GPA（4.3 制）跟累計平均（需要登入）：剩下的課都拿某個成績
+        會變多少，或剩下的課平均要考幾分才能到某個 GPA、平均。
+
+        使用時機：「這學期全拿 A 累計 GPA 會變多少」「剩下的課平均要考幾分累計才到 3.5」「如果每科都
+        考 80 分平均會是多少」「畢業前 GPA 還拉得到 3.8 嗎」這種還沒發生的試算。只問目前的 GPA、平均、
+        排名請用 get_my_academic_analysis。
+
+        Args:
+            target_gpa: 使用者想達到的累計 GPA（4.3 制），例如 3.5。沒提就 0。
+            target_average: 使用者想達到的累計平均（百分制），例如 85。沒提就 0。
+            assumed_grade: 假設剩下的課都拿的成績，等第（例如「A」「B+」）或分數（例如「80」）。沒提就空字串。
+            remaining: 「剩下的課」指哪些：this_semester 是這學期還沒有成績的課（預設），
+                使用者說「到畢業」「畢業前」「剩下的學期」用 until_graduation。
+            credits: 使用者自己說了還有幾學分要修（例如「還有 30 學分」）才填，沒說就 0。
+        """
+        try:
+            session = await _ensure_session()
+            if session is None:
+                return {"content": NO_CREDENTIALS_MSG}
+            transcript, graduation = await fetch_academic_records(
+                session, include_graduation=remaining == "until_graduation"
+            )
+        except Exception as e:
+            await reset_session(username)
+            return {"content": f"系統執行時發生錯誤：{e}"}
+
+        options = {"target_gpa": target_gpa, "target_average": target_average, "assumed_grade": assumed_grade,
+                   "remaining": remaining, "credits": credits}
+        return {"content": analyze_academic_progress(transcript, graduation, "estimate", options)}
 
     @tool
     async def check_my_graduation() -> dict:
@@ -591,10 +631,11 @@ def build_tools(username: str, password: str, history_str: str = "無"):
     @tool
     async def recommend_scholarships_for_me(statuses: Optional[list[DeclaredStatus]] = None) -> dict:
         """依使用者「自己」的學制、年級、系所、學業成績與排名，找出他可能可以申請的獎學金、助學金、
-        獎勵金（需要登入）。
+        獎勵金，以及其他條件都符合、只差成績或排名門檻的（會寫差多少）（需要登入）。
 
         使用時機：使用者想知道「自己」能申請哪些獎學金，例如「我可以申請哪些獎學金」「有什麼獎學金
-        適合我」「我的成績拿得到獎學金嗎」「我是低收入戶，有什麼助學金可以申請」。
+        適合我」「我的成績拿得到獎學金嗎」「有哪些獎學金我成績再好一點就能申請」「我是低收入戶，有什麼
+        助學金可以申請」。
         不適用於問某個獎學金本身的規定（金額、資格、怎麼申請，例如「書卷獎可以拿多少錢」「羅家倫
         獎學金要交什麼資料」），那種請用 search_campus_regulations。
 
@@ -1071,6 +1112,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         get_my_hours_dashboard,
         find_my_hour_records,
         get_my_academic_analysis,
+        estimate_my_gpa,
         check_my_graduation,
         recommend_scholarships_for_me,
         search_campus_activities,

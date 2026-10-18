@@ -39,6 +39,12 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "我有沒有需要重修的課？",
         "幫我整體分析一下學業狀況",
     )),
+    # GPA 試算的數字每個人都算得出來：目標到不了也會說全拿 A+ 能到多少
+    "estimate_my_gpa": FeatureSuggestions("GPA 試算", True, (
+        "這學期全拿 A 累計 GPA 會變多少？",
+        "這學期平均要考幾分，累計 GPA 才會到 3.8？",
+        "如果這學期每科都考 80 分，累計平均會是多少？",
+    )),
     "check_my_graduation": FeatureSuggestions("畢業總檢", True, (
         "我能畢業嗎？",
         "離畢業還差什麼？",
@@ -48,6 +54,7 @@ TOOL_SUGGESTIONS: dict[str, FeatureSuggestions] = {
         "我可以申請哪些獎學金？",
         "有什麼獎學金適合我？",
         "我的成績可以拿什麼獎學金？",
+        "有哪些獎學金我成績再好一點就能申請？",
     )),
     "get_my_schedule": FeatureSuggestions("課表", True, (
         "我這學期的課表",
@@ -198,13 +205,15 @@ def _get_suggestion_llm():
 _CARD_CONTENTS: dict[str, Any] = {
     "academic_analysis": {
         "credits": "已修跟畢業要求的學分、各畢業類別還缺什麼、還沒通過的必修",
-        "grades": "各學期平均跟 GPA、班排名、系排名、累計平均、累計 GPA 跟累計排名、被當或停修的課",
-        "overview": "已修跟畢業要求的學分、各畢業類別還缺什麼、被當或停修的課、各學期平均跟 GPA、班系排名、累計排名",
+        "grades": "各學期平均跟 GPA、班排名、系排名、累計平均、累計 GPA 跟累計排名、被當或停修的課、這學期全拿 A 或全拿 B 的累計 GPA",
+        "overview": "已修跟畢業要求的學分、各畢業類別還缺什麼、被當或停修的課、各學期平均跟 GPA、班系排名、累計排名、這學期全拿 A 或全拿 B 的累計 GPA",
+        "estimate": "目前的累計 GPA 跟累計平均、這學期還沒有成績的課、剩下的課都拿 A+ 到 B- 各會變成多少累計 GPA，"
+                    "以及使用者問的假設成績或目標 GPA、平均要考幾分",
     },
     "graduation_check": "畢業總學分跟各類別的學分缺口、要重修的必修、這學期修課中的課都通過的話還差多少、體育、操行、"
                         "服務學習、英文能力、學習護照時數，每一項完成了沒、還差多少、怎麼補",
     "hours_dashboard": "學習護照每個類別、細項的時數跟畢業門檻，還差幾小時、有沒有達標",
-    "scholarship_recommendations": "依成績、系所、年級找出的符合資格跟還要確認條件的獎學金，各自的金額、截止日、申請方式",
+    "scholarship_recommendations": "依成績、系所、年級找出的符合資格、還要確認條件、只差成績或排名門檻（差多少、這學期要考幾分）的獎學金，各自的金額、截止日、申請方式",
     "activity_recommendations": "依時數缺口推薦、還能報名的活動場次（時間、時數、名額）",
     "activity_tag_search": "提供這類時數、還能報名的活動場次（時間、時數、名額）",
     "activity_detail": "活動內容跟每個場次的時間、地點、時數、名額",
