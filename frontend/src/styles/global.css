@@ -248,6 +248,11 @@ button {
   opacity: 1;
 }
 
+/* 畢業總檢（GraduationCheck.jsx）每一項的「怎麼補」 */
+.graduation-how {
+  margin-top: 6px;
+}
+
 /* ---- 校曆（CampusCalendar.jsx）、我的行程（PersonalAgenda.jsx） ---- */
 
 .calendar-list {

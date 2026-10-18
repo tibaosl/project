@@ -1,6 +1,6 @@
 import Icon from "./Icon";
 
-function ProgressBar({ ratio, done }) {
+export function ProgressBar({ ratio, done }) {
   return (
     <div style={{ height: 8, borderRadius: 999, background: "var(--ncux-border)", overflow: "hidden" }}>
       <div

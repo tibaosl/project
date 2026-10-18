@@ -61,16 +61,20 @@ async def fetch_academic_records(session, include_graduation: bool = True) -> tu
     if not include_graduation:
         return transcript, None
 
-    print("[iNCU] 正在取得畢業資格審查表...")
     try:
-        graduation = parse_graduation_report_html(
-            await _load_incu_page(session, INCU_GRADUATE_REPORT_URL, ".total-credits")
-        )
+        graduation = await fetch_graduation_report(session)
     except Exception as exc:
         print(f"[iNCU] 畢業資格審查表取得失敗，只分析成績：{exc}")
         graduation = None
 
     return transcript, graduation
+
+
+async def fetch_graduation_report(session) -> dict:
+    print("[iNCU] 正在取得畢業資格審查表...")
+    return parse_graduation_report_html(
+        await _load_incu_page(session, INCU_GRADUATE_REPORT_URL, ".total-credits")
+    )
 
 
 # ============================================================
@@ -221,13 +225,16 @@ def _parse_rule(code: str, node: dict) -> dict:
         for c in raw_courses:
             name = c.get("crs_name") or {}
             memo = c.get("memo") or {}
+            score_text = str(c.get("score", ""))
             courses.append({
                 "semester": str(c.get("semester", "")),
                 "course_no": c.get("c_id", ""),
                 "name": name.get("tw", "") if isinstance(name, dict) else str(name),
                 "credits": _to_int(c.get("c_cred")),
-                "score_text": str(c.get("score", "")),
+                "score_text": score_text,
                 "qualified": str(c.get("qualified")) == "1",
+                # 這學期還在修、成績還沒出來的課：qualified 是 "2"、成績寫「未到(Not Entered)」（2026-10 實測）
+                "in_progress": str(c.get("qualified")) == "2" or score_text.startswith("未到"),
                 "memo": memo.get("tw", "") if isinstance(memo, dict) else str(memo),
             })
 
@@ -430,7 +437,8 @@ def _build_alerts(transcript: dict, graduation: Optional[dict]) -> list[dict]:
                 "required": course["course_type"] == "必修",
             })
 
-    # 畢業審查表判定未通過、但成績頁沒抓到的（例如抵免/跨系課程）
+    # 畢業審查表判定未通過、但成績頁沒抓到的（例如抵免/跨系課程）。這學期還在修的課審查表也判未通過，
+    # 不算（以前會被列成「必修課需要重新修習才能畢業」）
     if graduation:
         stack = list(graduation["categories"])
         while stack:
@@ -438,7 +446,8 @@ def _build_alerts(transcript: dict, graduation: Optional[dict]) -> list[dict]:
             stack.extend(rule["children"])
             for c in rule["courses"]:
                 key = (c["semester"], c["course_no"])
-                if c["qualified"] or key in seen or passed_later.get(c["course_no"], "") > c["semester"]:
+                if (c["qualified"] or c.get("in_progress") or key in seen
+                        or passed_later.get(c["course_no"], "") > c["semester"]):
                     continue
                 seen.add(key)
                 alerts.append({

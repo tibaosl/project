@@ -56,10 +56,11 @@ from backend.analysis.academic_calendar import (
     period_range,
     search_events,
 )
-from backend.analysis.academic_tools import analyze_academic_progress, fetch_academic_records
+from backend.analysis.academic_tools import analyze_academic_progress, fetch_academic_records, fetch_graduation_report
 from backend.analysis.agenda import build_agenda
 from backend.analysis import hour_records
 from backend.analysis.calendar_export import term_for_export
+from backend.analysis.graduation_check import build_graduation_check, needs_hours_dashboard
 from backend.analysis.scholarship_tools import DeclaredStatus, recommend_scholarships
 
 CalendarPeriod = Literal["today", "tomorrow", "this_week", "next_week", "next_30_days", "this_month", "next_month"]
@@ -537,6 +538,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         成績/平均/GPA（4.3 制，照學校的等第對照表換算）/排名、有沒有被當或需要重修的課。
         不適用於學習護照「時數」進度（請用 get_my_hours_dashboard），也不適用於
         「畢業學分規定本身是多少」這種制度問題（請用 search_campus_regulations）。
+        問能不能畢業、離畢業還差什麼（要看學分以外的體育、操行、時數等全部畢業條件）請用 check_my_graduation。
 
         Args:
             focus: 只回答使用者問的那一塊，不要附上沒問到的內容。
@@ -556,6 +558,35 @@ def build_tools(username: str, password: str, history_str: str = "無"):
             return {"content": f"系統執行時發生錯誤：{e}"}
 
         return {"content": analyze_academic_progress(transcript, graduation, focus)}
+
+    @tool
+    async def check_my_graduation() -> dict:
+        """檢查使用者「自己」能不能畢業，把所有畢業條件整理成一張清單（需要登入）：畢業總學分、
+        各類別的學分缺口、沒通過要重修的必修、體育、操行、服務學習、英文能力這些畢業資格審查表上的條件，
+        還有學習護照時數。每一項標出完成了沒、還差多少、怎麼補，這學期修課中的課也會算進去。
+
+        使用時機：使用者問自己「能不能畢業」「離畢業還差什麼」「還有哪些畢業條件沒完成」「可以準時畢業嗎」
+        這種要看全部畢業條件的問題。只問學分（還差幾學分、必修修完沒）或成績請用 get_my_academic_analysis，
+        只問學習護照時數請用 get_my_hours_dashboard，問畢業規定本身（例如英文門檻是幾分）請用
+        search_campus_regulations。不需要任何參數。
+        """
+        try:
+            session = await _ensure_session()
+            if session is None:
+                return {"content": NO_CREDENTIALS_MSG}
+            graduation = await fetch_graduation_report(session)
+        except Exception as e:
+            await reset_session(username)
+            return {"content": f"系統執行時發生錯誤：{e}"}
+
+        hours = None
+        # 審查表的「學生學習護照」只有總時數，還差哪幾類要看時數儀表板。讀不到就只用審查表回答
+        if needs_hours_dashboard(graduation):
+            try:
+                hours = await session.get_hours_dashboard()
+            except Exception as e:
+                print(f"[Agent] 讀學習護照時數失敗，只用畢業資格審查表回答：{e}")
+        return {"content": build_graduation_check(graduation, hours)}
 
     @tool
     async def recommend_scholarships_for_me(statuses: Optional[list[DeclaredStatus]] = None) -> dict:
@@ -1040,6 +1071,7 @@ def build_tools(username: str, password: str, history_str: str = "無"):
         get_my_hours_dashboard,
         find_my_hour_records,
         get_my_academic_analysis,
+        check_my_graduation,
         recommend_scholarships_for_me,
         search_campus_activities,
         get_activity_details,

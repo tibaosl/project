@@ -72,6 +72,7 @@ export default function Login() {
           <span className="ncux-badge ncux-badge-info">校曆</span>
           <span className="ncux-badge ncux-badge-info">課表與行程</span>
           <span className="ncux-badge ncux-badge-info">學業分析</span>
+          <span className="ncux-badge ncux-badge-info">畢業總檢</span>
           <span className="ncux-badge ncux-badge-info">獎學金</span>
           <span className="ncux-badge ncux-badge-info">時數進度</span>
           <span className="ncux-badge ncux-badge-info">活動報名</span>

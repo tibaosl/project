@@ -272,3 +272,18 @@ def test_follow_ups_missing_a_question_mark_get_one(monkeypatch):
                            called_tools=("get_campus_calendar",))
     assert kind == "follow_ups"
     assert questions == ["這個月有放假嗎？", "幫我查我有沒有被當的課", "期中考是什麼時候？"]
+
+
+def test_follow_ups_skip_questions_already_offered_on_the_graduation_card(monkeypatch):
+    # 畢業總檢卡片每一項已經有可以點的問題，下面「你可能還想問」不要再放一次
+    llm = _FakeLLM('{"kind": "follow_ups", "options": ["有什麼活動可以幫我補時數？", "我能畢業嗎？", '
+                   '"停修會影響畢業嗎？"]}')
+    card = {"kind": "graduation_check", "items": [
+        {"asks": [{"label": "推薦補時數的活動", "question": "有什麼活動可以幫我補時數？"}]},
+    ]}
+    kind, questions = _run(
+        monkeypatch, llm, user_message="離畢業還差什麼", answer=card,
+        called_tools=("check_my_graduation",), logged_in=True,
+    )
+    assert kind == "follow_ups"
+    assert questions == ["停修會影響畢業嗎？"]
