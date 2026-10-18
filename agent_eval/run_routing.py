@@ -41,6 +41,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 from langchain_openai import ChatOpenAI  # noqa: E402
 
+from backend import usage_log  # noqa: E402
 from backend.agent import supervisor_agent  # noqa: E402
 from backend.agent.agent_tools import build_tools  # noqa: E402
 
@@ -162,6 +163,7 @@ async def choose_tool(llm, message: str, history: list[str], semaphore) -> tuple
         started = time.time()
         ai_msg = await llm_with_tools.ainvoke(messages)
         elapsed = time.time() - started
+        usage_log.record_message("選工具", ai_msg, llm.model_name)
         if ai_msg.tool_calls:
             return ai_msg.tool_calls[0]["name"], ai_msg.tool_calls[0]["args"], "", elapsed
         return NONE, {}, ai_msg.text or "", elapsed
@@ -199,6 +201,7 @@ async def main() -> None:
         await evaluate(f"目前設定（{supervisor_agent.llm_smart.model_name}）", supervisor_agent.llm_smart, cases)
     for spec in args.model:
         await evaluate(spec, make_llm(spec), cases)
+    print(f"\n{usage_log.process_summary()}")
 
 
 if __name__ == "__main__":
