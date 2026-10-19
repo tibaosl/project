@@ -75,12 +75,6 @@ DeclaredStatus = Literal["經濟弱勢", "原住民", "新住民子女", "身心
 DECLARABLE_STATUSES: tuple[str, ...] = get_args(DeclaredStatus)
 FOREIGN_STATUSES = ("外籍生", "陸生", "僑生")
 
-# 獎學金文件常用的學院簡稱（系所的別名在 academic_hierarchy.json）
-COLLEGE_ALIASES = {
-    "電機資訊學院": "資訊電機學院", "資電學院": "資訊電機學院", "電資學院": "資訊電機學院",
-    "地科學院": "地球科學學院", "生醫學院": "生醫理工學院", "永續學院": "永續與綠能科技研究學院",
-}
-
 _client: Optional[OpenAI] = None
 
 
@@ -287,7 +281,7 @@ def resolve_unit(text: str) -> tuple[str, str]:
     """系所或學院的名稱（可以是別名，或「資訊電機學院資訊工程學系」這種學院加系所）→ (正式名稱, 所屬學院)。
     學院本身回傳 (學院, 學院)，認不出來回傳 ("", "")。"""
     text = re.sub(r"\s", "", text or "")
-    for alias, college in COLLEGE_ALIASES.items():
+    for alias, college in academic_agent.COLLEGE_ALIASES.items():
         text = text.replace(alias, college)
     aliases = academic_agent.unit_aliases()
     for alias, name, college in aliases:

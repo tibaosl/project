@@ -327,6 +327,11 @@ def keyword_candidates(
 
 
 _unit_cache: dict = {"mtime": None, "aliases": []}
+# 學院的簡稱（系所的別名在 academic_hierarchy.json），問題跟獎學金文件常這樣寫
+COLLEGE_ALIASES = {
+    "電機資訊學院": "資訊電機學院", "資電學院": "資訊電機學院", "電資學院": "資訊電機學院",
+    "地科學院": "地球科學學院", "生醫學院": "生醫理工學院", "永續學院": "永續與綠能科技研究學院",
+}
 
 
 def unit_aliases() -> list[tuple[str, str, str]]:
@@ -348,14 +353,23 @@ def unit_aliases() -> list[tuple[str, str, str]]:
 
 
 def mentioned_units(text: str) -> set[str]:
-    """問題講到的系所跟它的學院（系所對照表的正式名稱），標準答案的配對規則用。"""
+    """問題講到的系所跟它的學院（系所對照表的正式名稱），標準答案的配對規則用。
+    只講學院的（「工學院的學生考多益有補助嗎」）也算，學院常有自己的規定。"""
     found = set()
-    for alias, name, college in unit_aliases():
+    aliases = unit_aliases()
+    for alias, name, college in aliases:
         if alias in text:
             text = text.replace(alias, " ")
             found.add(name)
             if college:
                 found.add(college)
+    for alias, college in COLLEGE_ALIASES.items():
+        text = text.replace(alias, college)
+    # 長的先比：「管理學院」裡有「理學院」，「生醫理工學院」裡有「工學院」
+    for college in sorted({college for _, _, college in aliases if college}, key=len, reverse=True):
+        if college in text:
+            text = text.replace(college, " ")
+            found.add(college)
     return found
 
 

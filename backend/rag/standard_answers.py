@@ -8,7 +8,7 @@
 配錯比查不到更糟（問資工系的人拿到電機系的答案），所以配對分三關，都過了才用：
 1. 向量：問題跟每一則標準答案的各種問法比相似度，取最像的幾則（只是找候選，門檻不高）。
 2. 規則（不呼叫模型）：問題裡有標準問法跟答案都沒寫到的數字（年度、分數）不算；標準答案只適用某些學制（例如大學部），
-   問題要講到那個學制；只適用某些系所的，問題要講到那個系所；全校通用、但系所可能另有規定的，
+   問題要講到那個學制；只適用某些系所的，問題要講到那個系所（學院的規定講到學院或底下的系所都算）；全校通用、但系所可能另有規定的，
    問題講到系所就不算（any_unit 標成 true 的才不管系所，例如補辦學生證）。
 3. 模型確認：gpt-5.4-mini 看使用者的問題跟候選的標準答案，判斷能不能完整回答，不確定就不用（約 US$0.001）。
 
@@ -72,7 +72,8 @@ VERIFY_INSTRUCTIONS = """你是中央大學校園法規問答系統的「標準�
 
 規則：
 1. 使用者問的事情要跟標準答案回答的事情相同。只是相關、或使用者問的比標準答案更細（例如標準答案講申請方式，
-   使用者問的是被拒絕之後怎麼辦），都不算。
+   使用者問的是被拒絕之後怎麼辦），都不算。標準答案只是順帶提一句、不是這則主要在回答的事，也不算，
+   順帶提到的內容通常不完整。
 2. 使用者提到的條件（系所、學制、身分、入學年度、金額、分數、時間）標準答案都要有涵蓋，而且答案不會因為這個條件而不同。
    標準答案沒寫到的條件不算涵蓋。反過來，標準答案已經分情況列出（例如依入學年度、轉入年級、學制各寫一種規定），
    使用者沒說自己是哪一種也可以用，因為每種情況答案都寫了。
@@ -253,6 +254,17 @@ def candidates(vector: np.ndarray, answers: list[StandardAnswer], limit: int = C
     return [(answers[i], score) for i, score in best.items()]
 
 
+def unit_labels(units: list[str]) -> list[str]:
+    """給模型確認看的適用系所。學院後面列出底下的系所，模型才知道問「土木系」的也在「工學院」的範圍裡。"""
+    from backend.rag import academic_agent  # academic_agent 也 import 這個檔案，所以在這裡才 import
+
+    members: dict[str, list[str]] = {}
+    for _, name, college in academic_agent.unit_aliases():
+        if college in units and name not in units:
+            members.setdefault(college, []).append(name)
+    return [f"{unit}（含{'、'.join(dict.fromkeys(members[unit]))}）" if unit in members else unit for unit in units]
+
+
 def verify(question: str, entries: list[StandardAnswer],
            trace: Optional[Callable[[str], None]] = None) -> Optional[StandardAnswer]:
     """第 3 關：請小模型判斷能不能用其中一則回答。"""
@@ -260,7 +272,7 @@ def verify(question: str, entries: list[StandardAnswer],
     for entry in entries:
         scope = []
         if entry.units:
-            scope.append(f"只適用：{'、'.join(entry.units)}")
+            scope.append(f"只適用：{'、'.join(unit_labels(entry.units))}")
         if entry.degrees:
             scope.append(f"只適用學制：{'、'.join(entry.degrees)}")
         blocks.append(f"[{entry.id}] 標準問法：{'／'.join(entry.questions[:4])}\n"
