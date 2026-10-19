@@ -175,16 +175,18 @@ def record_message(purpose: str, message: Any, model: str = "") -> Optional[floa
 
 
 CACHE_HIT = "快取命中"
+STANDARD_HIT = "標準答案"  # 法規問答用了人工整理的標準答案（rag/standard_answers.py）
+_HITS = (CACHE_HIT, STANDARD_HIT)
 
 
-def record_cache_hit(saved: Optional[float]) -> None:
-    """法規問答直接用了快取的回答：沒有呼叫模型，記一筆 0 token 的紀錄，saved 是當初整理這個回答花的錢，
-    統計時才看得出快取省了多少（summary_lines 另外列，不算進呼叫次數）。"""
+def record_cache_hit(saved: Optional[float], purpose: str = CACHE_HIT) -> None:
+    """法規問答直接用了快取的回答或標準答案：沒有呼叫挑文件、回答的模型，記一筆 0 token 的紀錄，saved 是當初整理
+    這個回答花的錢（標準答案用一題的平均花費估計），統計時才看得出省了多少（summary_lines 另外列，不算進呼叫次數）。"""
     try:
         now = datetime.now()
         _append({
             "time": now.isoformat(timespec="seconds"), "source": current_source(), "request": _request.get(),
-            "purpose": CACHE_HIT, "model": "", "input": 0, "cached": 0, "output": 0, "reasoning": 0, "cost": 0.0,
+            "purpose": purpose, "model": "", "input": 0, "cached": 0, "output": 0, "reasoning": 0, "cost": 0.0,
             "saved": round(saved or 0.0, 6),
         }, now)
     except Exception as e:
@@ -230,8 +232,8 @@ def summary_lines(all_records: list[dict]) -> list[str]:
     if not all_records:
         return ["這段時間沒有用量紀錄。"]
     # 用到回答快取的紀錄沒有呼叫模型，不算進呼叫次數跟各用途的平均，最後另外列省了多少
-    hits = [r for r in all_records if r.get("purpose") == CACHE_HIT]
-    records = [r for r in all_records if r.get("purpose") != CACHE_HIT]
+    hits = [r for r in all_records if r.get("purpose") in _HITS]
+    records = [r for r in all_records if r.get("purpose") not in _HITS]
     cost = sum(r["cost"] or 0 for r in records)
     lines = [
         f"合計約 {_money(cost)}，呼叫 {len(records)} 次，"
@@ -266,7 +268,9 @@ def summary_lines(all_records: list[dict]) -> list[str]:
 
     if hits:
         saved = sum(r.get("saved") or 0 for r in hits)
-        lines.extend(["", f"法規問答快取：{len(hits)} 次直接用了之前整理的回答，約省下 {_money(saved)}"])
+        standard = sum(r.get("purpose") == STANDARD_HIT for r in hits)
+        detail = f"（其中標準答案 {standard} 次）" if standard else ""
+        lines.extend(["", f"法規問答快取：{len(hits)} 次直接用了之前整理的回答{detail}，約省下 {_money(saved)}"])
 
     # 有標提問編號的（網站的每次提問、評估的每一題），算每題花多少。法規問答跟其他功能分開算，差了好幾倍，
     # 用到快取的法規問答也分開算（只剩選工具跟建議問題）。
@@ -278,7 +282,7 @@ def summary_lines(all_records: list[dict]) -> list[str]:
     for (source, _), items in requests.items():
         if any(r["purpose"] in ("挑文件", "回答") for r in items):
             kind = "法規問答"
-        elif any(r["purpose"] == CACHE_HIT for r in items):
+        elif any(r["purpose"] in _HITS for r in items):
             kind = "法規問答（快取）"
         else:
             kind = "其他"

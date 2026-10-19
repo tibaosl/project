@@ -8,15 +8,25 @@ export function cachedDayLabel(created, now = new Date()) {
   return `${date.getMonth() + 1}/${date.getDate()}`;
 }
 
+const NOTE_TITLES = {
+  cached: "這題之前有人問過，相關文件後來沒有更新，所以直接用當時整理好的回答",
+  standard: "這題是常見問題，用對照文件整理好的標準答案回答",
+};
+
 /**
- * 法規問答直接用了之前整理好的回答（後端的回答快取：同一個問題被問過、兩次都挑到一樣的文件）時，
- * 回答下面的小字。讓使用者知道這是什麼時候整理的，覺得不對或想要最新的可以按「重新查詢」。
+ * 法規問答直接用了之前整理好的回答時，回答下面的小字：後端的回答快取（同一個問題被問過、兩次都挑到一樣的文件），
+ * 或是常見問題的標準答案（standard）。讓使用者知道這是什麼時候整理的，覺得不對或想要最新的可以按「重新查詢」。
  */
-export default function CachedAnswerNote({ created, onRefresh, disabled = false }) {
+export default function CachedAnswerNote({ created, standard = false, onRefresh, disabled = false }) {
   const day = cachedDayLabel(created);
-  const label = day === "今天" ? "今天整理好的回答" : day ? `${day} 整理好的回答` : "之前整理好的回答";
+  let label;
+  if (standard) {
+    label = day === "今天" ? "標準答案（今天整理）" : day ? `標準答案（${day} 整理）` : "標準答案";
+  } else {
+    label = day === "今天" ? "今天整理好的回答" : day ? `${day} 整理好的回答` : "之前整理好的回答";
+  }
   return (
-    <span className="cached-answer-note" title="這題之前有人問過，相關文件後來沒有更新，所以直接用當時整理好的回答">
+    <span className="cached-answer-note" title={NOTE_TITLES[standard ? "standard" : "cached"]}>
       <Icon name="clock" />
       <span>{label}</span>
       {onRefresh && (

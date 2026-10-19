@@ -42,6 +42,7 @@ function MessageBubble({ msg, onAsk, onRefresh, busy }) {
           {cached && (
             <CachedAnswerNote
               created={msg.cached.created}
+              standard={msg.cached.standard}
               onRefresh={onRefresh ? () => onRefresh(msg.id, msg.cached.key) : undefined}
               disabled={busy}
             />

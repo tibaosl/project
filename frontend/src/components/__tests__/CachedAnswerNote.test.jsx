@@ -29,3 +29,11 @@ describe("CachedAnswerNote", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });
+
+describe("CachedAnswerNote 標準答案", () => {
+  it("標準答案標出是標準答案跟整理的日期", () => {
+    render(<CachedAnswerNote created="2026-10-18" standard onRefresh={vi.fn()} />);
+    expect(screen.getByText("標準答案（10/18 整理）")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重新查詢這則回答" })).toBeInTheDocument();
+  });
+});

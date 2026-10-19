@@ -158,6 +158,11 @@ def test_version_year_reads_roc_and_western_years():
     assert rd._version_year(_doc("D1", "申請業務說明", version="2026/01/09 更新")) == 115
     assert rd._version_year(_doc("D1", "申請表", file_name="115專題確認表.docx")) == 115
     assert rd._version_year(_doc("D1", "申請表")) == 0
+    # 版本只寫中文數字的年份（宿舍管理辦法 114 年的新版）
+    assert rd._version_year(_doc("D1", "宿舍管理辦法", version="中華民國一一四年十二月十九日學務會議修正通過")) == 114
+    assert rd._version_year(_doc("D1", "辦法", version="中華民國一○六年十月廿三日修正")) == 106
+    # 「十一年」「二年」這種不是民國年
+    assert rd._version_year(_doc("D1", "辦法", version="實施滿十一年後檢討，休學二年")) == 0
 
 
 def test_older_versions_point_to_latest():

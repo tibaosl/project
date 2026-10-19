@@ -10,7 +10,8 @@
   除了法規、辦法、表單，也能問校內餐廳與商店（地點、營業時間）、ATM、圖書館與運動中心的開放時間跟收費
   （`rag_documents.py` 處理文件、`academic_agent.py` 查詢，細節見下面「校園法規問答（RAG）」）。
   常被問的問題會直接用之前整理好的回答，馬上出來、不用再花錢，回答下面會註明是哪天整理的，可以按「重新查詢」
-  （`answer_cache.py`，見下面「回答快取」）。
+  （`answer_cache.py`，見下面「回答快取」）。一百多則常見問題另外有對照文件人工整理好的標準答案，換句話說也配得到
+  （`standard_answers.py`，見下面「標準答案」）。
 * **學校網站文件爬蟲**：`python -m backend.rag.crawler` 把全校各行政單位（教務處、學務處各組、總務處、國際處、圖書館、
   計中、通識、體育室…）跟各學院、系所網站上的法規、修業規定、表單、說明網頁抓到 `data/`，給法規問答用
   （`crawler.py`，要抓哪些網站設定在 `crawler_sources.py`）。
@@ -96,6 +97,7 @@ backend/                      後端（Python）
 └── rag/                      校園法規問答
     ├── academic_agent.py     挑文件、讀全文回答
     ├── answer_cache.py       回答快取（同一個問題再被問到時直接用之前的回答）
+    ├── standard_answers.py   常見問題的標準答案（standard_answers.json 是答案本身）
     ├── rag_documents.py      解析文件、產生文件卡片
     ├── crawler.py            學校網站文件爬蟲
     ├── crawler_sources.py    要抓哪些網站
@@ -297,6 +299,36 @@ python -m backend.rag.answer_cache --delete 學生證  # 發現某個回答有�
 python -m backend.rag.answer_cache --clear         # 全部刪掉
 ```
 
+### 標準答案
+
+回答快取只認同一個問題（「補辦學生證要多少錢」跟「學生證掉了補辦費用」算兩題），而且每題都要先讓模型回答兩次。
+常被問的問題另外有標準答案（`backend/rag/standard_answers.json`）：對照 `data/` 的文件寫好的回答，每則有幾種問法、
+根據哪幾份文件。使用者的問題跟某一則講的是同一件事，就直接用標準答案，不用挑文件、讀全文，
+回答下面會註明「標準答案（10/19 整理）」，一樣可以按「重新查詢」。目前 105 則、四百多種問法，
+大多是評估題庫裡的常見問題（學則、學雜費、宿舍、圖書館、獎助學金、運動中心、出國交換等）。
+
+* **怎麼配**（`standard_answers.match`），三關都過才用。配錯比查不到糟（拿到別系的規定），所以寧可不配：
+  1. 向量：問題跟每一則的每種問法比相似度，取最像的 3 則當候選。
+  2. 規則（不呼叫模型）：問題裡的數字（年度、分數）標準答案要寫到，只適用某學制的要問題講到那個學制，
+     全校的規定問題講到系所時不用（系所可能另訂），系所不能另訂的（例如補辦學生證）標成 `any_unit` 才照樣用。
+  3. 模型確認：gpt-5.4-mini 看問題跟候選的答案，判斷能不能完整回答，不確定就不用（一題約 US$0.001）。
+* 只用在一句話就問完的中文問題。有前文的（「那物理系呢」）、英文問題、問「今天」「這學期」「還來得及嗎」這類
+  跟今天日期有關的，照一般流程。配到之後存成一筆確認過的回答快取，同一個問題下次連確認都不用。
+* **文件改了就停用**：每則記下根據的文件的內容 hash，文件內容改了、不見了、被標成舊版，那一則就先不用，
+  每週更新文件的紀錄最後會列出要重看的標準答案。標準答案改了，之前存的快取也跟著不用。
+* 評估（`run_eval.py`）會關掉標準答案，量的是一般流程。網站可以用 `RAG_STANDARD_ANSWERS=0` 關掉。
+
+```powershell
+python -m backend.rag.standard_answers                 # 幾則、哪些因為文件改了先停用
+python -m backend.rag.standard_answers --try "問題"    # 看這個問題會配到哪一則、每一關的結果
+python -m backend.rag.standard_answers --hash 檔名     # 新增標準答案時算文件的 text_sha256
+python rag_eval/run_standard.py                        # 配對測試，「配錯」要是 0
+python rag_eval/run_standard.py --judge                # 另外用評估的評分模型檢查標準答案本身
+```
+
+新增或修改標準答案（或改了配對的規則、prompt）都要跑 `run_standard.py`。配對測試的題目在
+`rag_eval/standard_match.json`：每題標應該配到哪一則，或不該配到任何一則（`null`，故意找的相近但標準答案沒涵蓋的問題）。
+
 ### 獎學金推薦
 
 獎學金推薦（agent 工具 `recommend_scholarships_for_me`）用的也是 `data/` 裡的文件，分成兩步：
@@ -339,8 +371,9 @@ python -m backend.usage_log --month 2026-10
 * 來源分成網站、法規評估、選工具評估、每週更新文件等。網站跟法規評估的每一題會標同一個提問編號，
   統計會分開算「法規問答」跟其他功能每題平均花多少（2026-10 實測法規問答一題約 US$0.09，
   其中挑文件約六成，查校曆這類只經過選工具的約 US$0.005）。
-* 法規問答用了回答快取時記一筆 0 token 的「快取命中」，統計最後會列「法規問答快取：幾次直接用了之前整理的回答，
-  約省下多少」，每次提問的平均也會另外列「法規問答（快取）」。
+* 法規問答用了回答快取時記一筆 0 token 的「快取命中」，用了標準答案記「標準答案」（省下的用一題平均 US$0.09 估），
+  統計最後會列「法規問答快取：幾次直接用了之前整理的回答（其中標準答案幾次），約省下多少」，
+  每次提問的平均也會另外列「法規問答（快取）」。
 * `rag_eval/run_eval.py`、`agent_eval/run_routing.py` 跑完最後一行會印這次評估的用量。
 * 新增呼叫 OpenAI 的地方要記錄用量：SDK 的回應用 `usage_log.record_response`，LangChain 的訊息用
   `usage_log.record_message`，串流要加 `stream_options={"include_usage": True}`。

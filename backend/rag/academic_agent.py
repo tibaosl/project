@@ -13,7 +13,8 @@
    送給使用者之前會拿掉，見 AnswerCleaner）。
 
 同一個問題（連同對話紀錄）被問過、兩次都挑到一樣的文件之後，再有人問就直接用存下來的回答，
-不再呼叫模型（回答快取，規則見 answer_cache.py）。
+不再呼叫模型（回答快取，規則見 answer_cache.py）。常見問題另外有人工對照文件整理好的標準答案，
+換句話說也配得到（standard_answers.py），配到就不用挑文件跟回答。
 
 為什麼不再把文件切成 chunk 做向量 + BM25 檢索：舊版找錯檔案，大多是因為各學院、
 各年度的表單內容長得很像，切成片段之後就分不出是哪個學院、哪一年的，片段也常把
@@ -42,7 +43,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from backend import usage_log
-from backend.rag import answer_cache, rag_documents
+from backend.rag import answer_cache, rag_documents, standard_answers
 from backend.language import asked_in_english, has_han
 from backend.logging_config import make_print_logger
 
@@ -344,6 +345,18 @@ def unit_aliases() -> list[tuple[str, str, str]]:
                     pairs.append((alias, name, entry.get("college", "")))
         _unit_cache.update(mtime=mtime, aliases=sorted(pairs, key=lambda pair: -len(pair[0])))
     return _unit_cache["aliases"]
+
+
+def mentioned_units(text: str) -> set[str]:
+    """問題講到的系所跟它的學院（系所對照表的正式名稱），標準答案的配對規則用。"""
+    found = set()
+    for alias, name, college in unit_aliases():
+        if alias in text:
+            text = text.replace(alias, " ")
+            found.add(name)
+            if college:
+                found.add(college)
+    return found
 
 
 def unit_folders(text: str, catalog: list[rag_documents.CatalogDocument]) -> set[str]:
@@ -812,6 +825,10 @@ def cached_documents(entry: dict, query_str: str, history_str: str,
     """
     if not entry.get("confirmed") or answer_cache.is_expired(entry):
         return None
+    if entry.get("standard"):  # 從標準答案來的：標準答案改過、停用了就不能用
+        standard = standard_answers.find(entry["standard"], catalog)
+        if standard is None or standard.stale or standard.answer_hash != entry.get("standard_hash"):
+            return None
     state = answer_cache.catalog_state(catalog)
     documents = [state.by_fingerprint.get(fp) for fp in entry.get("selected", [])]
     if any(doc is None for doc in documents):
@@ -837,7 +854,9 @@ def _cached_answer_events(entry: dict, documents: list, english: bool) -> Iterat
         yield {"type": "token", "text": replace_semicolons(entry["answer"])}
         yield {"type": "sources", "sources": []}
         return
-    yield {"type": "cached", "key": entry["key"], "created": entry["created"]}
+    standard = bool(entry.get("standard"))
+    yield {"type": "cached", "key": entry["key"], "created": entry.get("reviewed") if standard else entry["created"],
+           "standard": standard}
     if decision == "not_found":
         yield {"type": "token", "text": NOT_FOUND_ANSWER_EN if english else NOT_FOUND_ANSWER}
         yield {"type": "sources", "sources": []}
@@ -875,6 +894,50 @@ def _store_answer(key: str, previous: Optional[dict], refresh: bool, query_str: 
         return False
 
 
+def standalone_question(query_str: str, history_str: str) -> Optional[str]:
+    """一句話就問完的問題：對話紀錄只有這一句（或沒有對話紀錄），回傳使用者自己的話。有前文的不算，
+    「那物理系呢」這種要看前面才知道在問什麼。"""
+    history = (history_str or "").strip()
+    if not history or history == "無":
+        return query_str.strip()
+    if " -> " not in history and history.startswith("[使用者]:"):
+        return history[len("[使用者]:"):].strip()
+    return None
+
+
+def _standard_answer(query_str: str, history_str: str,
+                     catalog: list[rag_documents.CatalogDocument]) -> Optional[standard_answers.StandardAnswer]:
+    """配標準答案（standard_answers.match）。只用在一句話問完的中文問題，問「今天、這學期還能不能」這類的不用。"""
+    question = standalone_question(query_str, history_str)
+    if not question or asked_in_english(question) or standard_answers.asks_about_today(question):
+        return None
+    if not standard_answers.available(catalog):
+        return None
+    vector = question_vectors([question])[0]
+    return standard_answers.match(question, vector, catalog, mentioned_units(question))
+
+
+def _store_standard(key: str, previous: Optional[dict], query_str: str, history_str: str,
+                    standard: standard_answers.StandardAnswer, catalog: list[rag_documents.CatalogDocument]) -> dict:
+    """配到的標準答案存成一筆確認過的快取：一模一樣的問題下次直接用，「重新查詢」也照樣能用。
+    標準答案改了（answer_hash 不同）或停用了，這筆快取就跟著不能用（cached_documents）。"""
+    state = answer_cache.catalog_state(catalog)
+    previous = previous or {}
+    entry = {
+        "format": answer_cache.FORMAT, "key": key, "query": query_str, "history": history_str,
+        "created": datetime.now().isoformat(timespec="seconds"), "catalog": state.version,
+        "decision": "answer", "question": standard.questions[0],
+        "documents": [doc.file_name for doc in standard.documents],
+        "selected": [state.fingerprints[doc.doc_id] for doc in standard.documents],
+        "answer": standard.answer, "cost": standard_answers.TYPICAL_COST, "confirmed": True,
+        "computed": previous.get("computed", 0), "hits": previous.get("hits", 0) + 1,
+        "last_hit": datetime.now().isoformat(timespec="seconds"), "routes": previous.get("routes", {}),
+        "standard": standard.id, "standard_hash": standard.answer_hash, "reviewed": standard.reviewed,
+    }
+    answer_cache.save(entry)
+    return entry
+
+
 def cached_answer_ready(query_str: str, history_str: str, route: str, min_routes: int = 2) -> bool:
     """supervisor 用：這段對話（含對話紀錄）之前被選工具的模型導到法規問答至少 min_routes 次（route 見
     answer_cache.remember_route），回答也確認過、現在還能用，就可以不問選工具的模型、直接用快取回答。"""
@@ -907,7 +970,8 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "", refre
     """逐步 yield 事件（不含 SSE 包裝，呼叫端自己序列化）：
     - {"type": "status", "text": "..."}
     - {"type": "plan", "question": ..., "decision": ..., "documents": [檔名...]}  # 除錯用，前端不需要
-    - {"type": "cached", "key": ..., "created": ...}  # 這次直接用了快取的回答（反問不送），key 給「重新查詢」用
+    - {"type": "cached", "key": ..., "created": ..., "standard": ...}  # 這次直接用了快取的回答（反問不送），key 給
+                                                      # 「重新查詢」用，standard 是用了標準答案（created 是整理的日期）
     - {"type": "cache_key", "key": ..., "hit": ...}  # 這次的回答在快取裡的鍵（用到快取或剛存進去），supervisor 拿來
                                                       # 存取回答下面的選項（answer_cache.remember_suggestions），不送給前端
     - {"type": "token", "text": "..."}          # 逐字答案片段
@@ -934,6 +998,20 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "", refre
             usage_log.record_cache_hit(previous.get("cost"))
             yield {"type": "cache_key", "key": key, "hit": True}
             yield from _cached_answer_events(previous, cached, english)
+            return
+
+        standard = None
+        if key and not refresh and standard_answers.ENABLED:
+            try:
+                standard = _standard_answer(query_str, history_str, catalog)
+            except Exception as e:  # 配對失敗就照平常回答
+                print(f"[Academic Agent] 標準答案配對失敗，照平常回答：{type(e).__name__}: {e}")
+        if standard is not None:
+            print(f"[Academic Agent] 問題：「{query_str}」用標準答案 {standard.id}")
+            entry = _store_standard(key, previous, query_str, history_str, standard, catalog)
+            usage_log.record_cache_hit(standard_answers.TYPICAL_COST, usage_log.STANDARD_HIT)
+            yield {"type": "cache_key", "key": key, "hit": True}
+            yield from _cached_answer_events(entry, standard.documents, english)
             return
 
         yield {"type": "status", "text": "正在挑選相關文件..."}

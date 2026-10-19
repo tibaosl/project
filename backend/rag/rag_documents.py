@@ -829,11 +829,18 @@ def _series_key(title: str) -> str:
     return re.sub(r"[\s\d_\-【】\[\]()（）「」『』]", "", title)
 
 
+# 「中華民國一一四年十二月十九日」這種逐字寫的中文數字年份。2026-10 宿舍管理辦法 114 年的新版只寫這種年份，
+# 認不出來，被當成舊版、指到 110 年那份
+_CHINESE_DIGITS = str.maketrans("〇○零一二三四五六七八九", "000123456789")
+_CHINESE_YEAR_RE = re.compile(r"(?<![一二三四五六七八九十〇○零])([一][〇○零一二三四][〇○零一二三四五六七八九])\s*年")
+
+
 def _version_year(doc: "CatalogDocument") -> int:
-    """從版本、標題、檔名裡找民國年（112、114.06.10）或西元年（2026），取最大的，找不到回傳 0。"""
+    """從版本、標題、檔名裡找民國年（112、114.06.10、一一四年）或西元年（2026），取最大的，找不到回傳 0。"""
     text = f"{doc.card['version']} {doc.card['title']} {doc.file_name}"
     years = [int(y) for y in re.findall(r"(?<!\d)(1[0-4]\d)(?!\d)", text)]
     years += [int(y) - 1911 for y in re.findall(r"(?<!\d)(20\d\d)(?!\d)", text)]
+    years += [int(y.translate(_CHINESE_DIGITS)) for y in _CHINESE_YEAR_RE.findall(text)]
     return max(years, default=0)
 
 
