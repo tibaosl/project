@@ -170,6 +170,35 @@ def test_unit_rules():
     assert sa.passes_rules("資工系書卷獎", cs, {"資訊工程學系", "資訊電機學院"})
     assert not sa.passes_rules("物理系書卷獎", cs, {"物理學系"})
     assert not sa.passes_rules("書卷獎怎麼選", cs, set())
+    # 學院的規定：講到學院或學院底下的系都算
+    college = _answer(units=["工學院"])
+    assert sa.passes_rules("工學院考多益有補助嗎", college, {"工學院"})
+    assert sa.passes_rules("機械系考多益有補助嗎", college, {"機械工程學系", "工學院"})
+    assert not sa.passes_rules("理學院考多益有補助嗎", college, {"理學院"})
+
+
+def test_mentioned_units_include_colleges(monkeypatch):
+    monkeypatch.setattr(agent, "unit_aliases", lambda: [
+        ("資工系", "資訊工程學系", "資訊電機學院"), ("企管系", "企業管理學系", "管理學院"),
+        ("物理系", "物理學系", "理學院"), ("生醫系", "生醫科學與工程學系", "生醫理工學院"),
+        ("機械系", "機械工程學系", "工學院"),
+    ])
+    assert agent.mentioned_units("資工系的書卷獎") == {"資訊工程學系", "資訊電機學院"}
+    assert agent.mentioned_units("工學院的學生考多益有補助嗎") == {"工學院"}
+    assert agent.mentioned_units("資電學院的英文畢業門檻") == {"資訊電機學院"}
+    # 「管理學院」裡有「理學院」，「生醫理工學院」裡有「工學院」，不能多認
+    assert agent.mentioned_units("管理學院的英文畢業門檻") == {"管理學院"}
+    assert agent.mentioned_units("生醫理工學院有英檢獎勵嗎") == {"生醫理工學院"}
+    assert agent.mentioned_units("補辦學生證要多少錢") == set()
+
+
+def test_college_scope_lists_its_departments_for_the_verifier(monkeypatch):
+    monkeypatch.setattr(agent, "unit_aliases", lambda: [
+        ("土木工程學系", "土木工程學系", "工學院"), ("土木系", "土木工程學系", "工學院"),
+        ("機械系", "機械工程學系", "工學院"), ("物理系", "物理學系", "理學院"),
+    ])
+    assert sa.unit_labels(["工學院"]) == ["工學院（含土木工程學系、機械工程學系）"]
+    assert sa.unit_labels(["物理學系"]) == ["物理學系"]
 
 
 # ============================================================
