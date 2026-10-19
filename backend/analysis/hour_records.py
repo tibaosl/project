@@ -37,6 +37,13 @@ def parse_month_day(text: str) -> Optional[tuple[int, int]]:
     return None
 
 
+def _given(entries: list[dict]) -> list[dict]:
+    """真的有給時數的那幾筆。時數頁會把一個活動的每個類別都列出來，沒有給的類別是 0 小時（例如只給人文藝術
+    2 小時，自我探索與生涯規劃也列了一筆 0 小時「待核發」），回答時不列，「最近要注意」卡片也是這樣算
+    （reminders.hours_reminders）。時數不明（None）的照樣列。"""
+    return [entry for entry in entries if entry.get("hours") != 0]
+
+
 def _category_matches(entry: dict, category: str) -> bool:
     wanted = _plain(category)
     return not wanted or wanted in {_plain(entry["category"]), _plain(_GROUP_OF.get(entry["category"], ""))}
@@ -44,8 +51,8 @@ def _category_matches(entry: dict, category: str) -> bool:
 
 def find_activities(activities: list[dict[str, Any]], keyword: str = "", date: str = "",
                     category: str = "", status: str = "全部") -> list[dict[str, Any]]:
-    """挑出符合條件的活動，新的在前面。每個活動多一個 matched_hours：符合類別跟狀態的那幾筆時數
-    （條件是「還沒有時數」時是空的）。"""
+    """挑出符合條件的活動，新的在前面。每個活動多一個 matched_hours：符合類別跟狀態、真的有給時數的
+    那幾筆（條件是「還沒有時數」時是空的）。"""
     words = [_plain(word) for word in (keyword or "").split() if _plain(word)]
     month_day = parse_month_day(date)
     results = []
@@ -61,7 +68,7 @@ def find_activities(activities: list[dict[str, Any]], keyword: str = "", date: s
             matched = []
         else:
             matched = [
-                entry for entry in activity["hours"]
+                entry for entry in _given(activity["hours"])
                 if _category_matches(entry, category) and status in ("全部", "", entry["status"])
             ]
             # 有指定類別或狀態時，至少要有一筆時數符合，沒有時數的活動只在沒指定時列出來
@@ -165,14 +172,21 @@ def _single_answer(activity: dict, now: datetime) -> str:
             f"所以也還不是「待核發」。{_checkin_sentence(activity)}"
             f"如果活動已經結束一段時間，可以向{unit}確認。"
         )
-    pending = [entry for entry in activity["hours"] if entry["status"] == "待核發"]
-    issued = [entry for entry in activity["hours"] if entry["status"] == "已核發"]
+    given = _given(activity["hours"])
+    if not given:
+        categories = "、".join(dict.fromkeys(entry["category"] for entry in activity["hours"]))
+        return (
+            f"{head}在時數頁上列的類別（{categories}）都是 **0 小時**，主辦單位登錄了但沒有給你時數。"
+            f"{_checkin_sentence(activity)}如果你認為應該有時數，可以向{unit}確認。"
+        )
+    pending = [entry for entry in given if entry["status"] == "待核發"]
+    issued = [entry for entry in given if entry["status"] == "已核發"]
     sentences = []
     if pending:
         sentences.append(f"{'、'.join(_hours_text(e) for e in pending)}**待核發**（主辦單位已經登錄，還在等核發）")
     if issued:
         sentences.append(f"{'、'.join(_hours_text(e) for e in issued)}**已核發**")
-    others = [entry for entry in activity["hours"] if entry not in pending and entry not in issued]
+    others = [entry for entry in given if entry not in pending and entry not in issued]
     if others:
         sentences.append("、".join(f"{_hours_text(e)}（{e['status']}）" for e in others))
     return f"{head}的時數：" + "，".join(sentences) + "。" + (_checkin_sentence(activity) if pending else "")
@@ -184,7 +198,8 @@ def _table(activities: list[dict]) -> str:
     columns = ["活動", "日期", "時數", "狀態"] + (["簽到/簽退"] if with_checkin else [])
     lines = ["| " + " | ".join(columns) + " |", "|" + " --- |" * len(columns)]
     for activity in shown:
-        entries = activity["matched_hours"] or activity["hours"]
+        # 每個類別都是 0 小時的活動照實列出 0 小時，不然會被當成主辦單位還沒登錄
+        entries = activity["matched_hours"] or _given(activity["hours"]) or activity["hours"]
         cells = [
             activity["name"].replace("|", "｜"),
             _day(activity["start"]),

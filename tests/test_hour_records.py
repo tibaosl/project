@@ -121,3 +121,33 @@ def test_checkin_is_only_needed_for_activities_still_waiting():
     # 待核發的已經登錄時數了，不用多花時間讀報名紀錄
     assert not hour_records.needs_checkin(hour_records.find_activities(ACTIVITIES, status="待核發"))
     assert hour_records.needs_checkin(hour_records.find_activities(ACTIVITIES, keyword="新生電影節"))
+
+
+ZERO_ROWS = [
+    {"cells": ["藝文講座/電影與城市", "人文藝術中心", "團體", "2026-09-10 18:00  2026-09-10 20:00"],
+     "hours": [["學習護照", "人文藝術", "2", "時數待核發"], ["學習護照", "自我探索與生涯規劃", "0", "時數待核發"]]},
+    {"cells": ["社團博覽會/社團介紹", "課外活動組", "團體", "2026-09-05 12:00  2026-09-05 13:00"],
+     "hours": [["學習護照", "社團參與", "0", "已核發"], ["學習護照", "自我探索與生涯規劃", "0", "已核發"]]},
+]
+ZERO_ACTIVITIES = parse_activity_rows(ZERO_ROWS)
+
+
+def test_zero_hour_categories_are_not_listed_as_pending():
+    # 時數頁會把每個類別都列出來，沒有給時數的類別是 0 小時，不能寫成「自我探索與生涯規劃 0 小時待核發」
+    text = hour_records.answer(ZERO_ACTIVITIES, keyword="電影與城市")
+    assert "人文藝術 2 小時**待核發**" in text
+    assert "自我探索" not in text
+
+    assert hour_records.find_activities(ZERO_ACTIVITIES, category="自我探索與生涯規劃") == []
+    table = hour_records.answer(ZERO_ACTIVITIES + ACTIVITIES, status="待核發")
+    assert "電影與城市 | 2026/9/10 | 人文藝術 2 小時 | 待核發 |" in table
+    assert "自我探索" not in table
+
+
+def test_activities_with_only_zero_hours_say_no_hours_were_given():
+    text = hour_records.answer(ZERO_ACTIVITIES, keyword="社團博覽會")
+    assert "（社團參與、自我探索與生涯規劃）都是 **0 小時**" in text
+    assert "還沒有任何時數紀錄" not in text  # 主辦單位已經登錄了，不是還沒登錄
+
+    table = hour_records.answer(ZERO_ACTIVITIES)
+    assert "社團介紹 | 2026/9/5 | 社團參與 0 小時、自我探索與生涯規劃 0 小時 | 已核發 |" in table
