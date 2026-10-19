@@ -17,7 +17,11 @@ from urllib.parse import parse_qs, quote, urlparse
 
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel
-from backend.agent.supervisor_agent import run_ncuxplore_agent, run_ncuxplore_agent_stream
+from backend.agent.supervisor_agent import (
+    _iterate_sync_generator_in_thread,
+    run_ncuxplore_agent,
+    run_ncuxplore_agent_stream,
+)
 from backend.ncu.action_tools import NCUSession
 from backend.agent.agent_tools import (
     adopt_session,
@@ -40,7 +44,7 @@ from backend.analysis.academic_calendar import load_calendar
 from backend.analysis.calendar_export import build_ics, export_summary
 from backend.analysis.reminders import build_reminders
 from backend.logging_config import make_print_logger
-from backend.rag import academic_agent
+from backend.rag import academic_agent, answer_cache
 from backend.security import LocalOnlyMiddleware
 
 print = make_print_logger(__name__)
@@ -475,6 +479,39 @@ async def chat_with_agent_stream(req: ChatRequest):
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
         },
+    )
+
+
+class RefreshAnswerRequest(BaseModel):
+    key: str
+
+
+@app.post("/api/regulations/refresh")
+async def refresh_regulation_answer(req: RefreshAnswerRequest):
+    """法規問答的「重新查詢」：畫面上那則回答是之前整理好的（回答快取，見 rag/answer_cache.py），使用者覺得
+    不對或想要最新的，就不用快取，重新挑文件、回答，新的回答存回快取。key 是那則回答的 cached 事件帶的快取鍵，
+    用它找回原本的問題跟對話紀錄（不用帶 token：法規問答不會用到個人資料）。
+
+    事件格式跟 /api/chat/stream 一樣，只有 status、token、sources、error，最後一定有 done。
+    """
+    entry = answer_cache.load(req.key)
+    if entry is None:
+        return JSONResponse({"detail": "找不到這則回答原本的問題，請直接再問一次。"}, status_code=404)
+
+    async def event_source():
+        usage_log.start_request()
+        try:
+            answer = academic_agent.query_academic_knowledge_stream(entry["query"], entry["history"], refresh=True)
+            async for event in _iterate_sync_generator_in_thread(answer):
+                if event["type"] in ("status", "token", "sources", "error"):
+                    yield _sse(event)
+        except Exception as e:
+            print(f"[main API] 重新查詢時發生未預期錯誤：{e}")
+            yield _sse({"type": "error", "message": f"重新查詢時發生錯誤：{e}"})
+        yield _sse({"type": "done"})
+
+    return StreamingResponse(
+        event_source(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

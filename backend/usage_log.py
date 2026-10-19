@@ -11,6 +11,7 @@
 
 新增呼叫 OpenAI 的地方要記得記錄：OpenAI SDK 的回應用 record_response，LangChain 的訊息用 record_message，
 串流的回應要加 stream_options={"include_usage": True}，最後一個片段才有 usage（見 academic_agent 的回答）。
+法規問答用了回答快取（rag/answer_cache.py）時用 record_cache_hit 記一筆，沒有 token，saved 是當初整理那個回答花的錢。
 """
 
 import argparse
@@ -130,39 +131,64 @@ def estimate_cost(model: str, tokens: dict) -> Optional[float]:
     return (uncached * input_price + tokens["cached"] * cached_price + tokens["output"] * output_price) / 1_000_000
 
 
-def record(purpose: str, model: str, usage: Any) -> None:
-    """記一筆用量。usage 是 API 回應的 .usage，或 LangChain 訊息的 usage_metadata。"""
+def _append(entry: dict, now: datetime) -> None:
+    with _write_lock:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with (LOG_DIR / f"{now:%Y-%m}.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def record(purpose: str, model: str, usage: Any) -> Optional[float]:
+    """記一筆用量。usage 是 API 回應的 .usage，或 LangChain 訊息的 usage_metadata。
+    回傳估計的金額（法規問答把整理一題花的錢存進回答快取），沒有 usage 或模型沒有單價時回傳 None。"""
     try:
         tokens = normalize_usage(usage)
         if tokens is None:
-            return
+            return None
         cost = estimate_cost(model, tokens)
         now = datetime.now()
         entry = {
             "time": now.isoformat(timespec="seconds"), "source": current_source(), "request": _request.get(),
             "purpose": purpose, "model": model, **tokens, "cost": None if cost is None else round(cost, 6),
         }
+        _append(entry, now)
         with _write_lock:
-            LOG_DIR.mkdir(parents=True, exist_ok=True)
-            with (LOG_DIR / f"{now:%Y-%m}.jsonl").open("a", encoding="utf-8") as f:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
             _process_totals["calls"] += 1
             _process_totals["cost"] += cost or 0.0
+        return cost
     except Exception as e:
         log(f"[用量紀錄] 記錄失敗（不影響回答）：{e}")
+        return None
 
 
-def record_response(purpose: str, response: Any, model: str = "") -> None:
+def record_response(purpose: str, response: Any, model: str = "") -> Optional[float]:
     """OpenAI SDK 的回應（chat.completions、embeddings，或串流最後一個帶 usage 的片段）。"""
     returned = getattr(response, "model", None)
-    record(purpose, returned if isinstance(returned, str) and returned else model, getattr(response, "usage", None))
+    return record(purpose, returned if isinstance(returned, str) and returned else model, getattr(response, "usage", None))
 
 
-def record_message(purpose: str, message: Any, model: str = "") -> None:
+def record_message(purpose: str, message: Any, model: str = "") -> Optional[float]:
     """LangChain 回傳的 AIMessage（ChatOpenAI 的 ainvoke）。"""
     metadata = getattr(message, "response_metadata", None)
     returned = metadata.get("model_name") if isinstance(metadata, dict) else None
-    record(purpose, returned if isinstance(returned, str) and returned else model, getattr(message, "usage_metadata", None))
+    return record(purpose, returned if isinstance(returned, str) and returned else model, getattr(message, "usage_metadata", None))
+
+
+CACHE_HIT = "快取命中"
+
+
+def record_cache_hit(saved: Optional[float]) -> None:
+    """法規問答直接用了快取的回答：沒有呼叫模型，記一筆 0 token 的紀錄，saved 是當初整理這個回答花的錢，
+    統計時才看得出快取省了多少（summary_lines 另外列，不算進呼叫次數）。"""
+    try:
+        now = datetime.now()
+        _append({
+            "time": now.isoformat(timespec="seconds"), "source": current_source(), "request": _request.get(),
+            "purpose": CACHE_HIT, "model": "", "input": 0, "cached": 0, "output": 0, "reasoning": 0, "cost": 0.0,
+            "saved": round(saved or 0.0, 6),
+        }, now)
+    except Exception as e:
+        log(f"[用量紀錄] 記錄失敗（不影響回答）：{e}")
 
 
 def process_summary() -> str:
@@ -200,9 +226,12 @@ def _tokens(value: float) -> str:
     return f"{value / 1_000_000:.2f}M" if value >= 1_000_000 else f"{value:,.0f}"
 
 
-def summary_lines(records: list[dict]) -> list[str]:
-    if not records:
+def summary_lines(all_records: list[dict]) -> list[str]:
+    if not all_records:
         return ["這段時間沒有用量紀錄。"]
+    # 用到回答快取的紀錄沒有呼叫模型，不算進呼叫次數跟各用途的平均，最後另外列省了多少
+    hits = [r for r in all_records if r.get("purpose") == CACHE_HIT]
+    records = [r for r in all_records if r.get("purpose") != CACHE_HIT]
     cost = sum(r["cost"] or 0 for r in records)
     lines = [
         f"合計約 {_money(cost)}，呼叫 {len(records)} 次，"
@@ -235,14 +264,24 @@ def summary_lines(records: list[dict]) -> list[str]:
         days[r["time"][:10]] += r["cost"] or 0
     lines.extend(["", "每天"] + [f"  {day}  {_money(days[day]):>10}" for day in sorted(days)])
 
-    # 有標提問編號的（網站的每次提問、評估的每一題），算每題花多少。法規問答跟其他功能分開算，差了好幾倍。
+    if hits:
+        saved = sum(r.get("saved") or 0 for r in hits)
+        lines.extend(["", f"法規問答快取：{len(hits)} 次直接用了之前整理的回答，約省下 {_money(saved)}"])
+
+    # 有標提問編號的（網站的每次提問、評估的每一題），算每題花多少。法規問答跟其他功能分開算，差了好幾倍，
+    # 用到快取的法規問答也分開算（只剩選工具跟建議問題）。
     requests = defaultdict(list)
-    for r in records:
+    for r in all_records:
         if r.get("request"):
             requests[(r["source"], r["request"])].append(r)
-    by_source = defaultdict(lambda: {"法規問答": [], "其他": []})
+    by_source = defaultdict(lambda: {"法規問答": [], "法規問答（快取）": [], "其他": []})
     for (source, _), items in requests.items():
-        kind = "法規問答" if any(r["purpose"] in ("挑文件", "回答") for r in items) else "其他"
+        if any(r["purpose"] in ("挑文件", "回答") for r in items):
+            kind = "法規問答"
+        elif any(r["purpose"] == CACHE_HIT for r in items):
+            kind = "法規問答（快取）"
+        else:
+            kind = "其他"
         by_source[source][kind].append(sum(r["cost"] or 0 for r in items))
     for source, kinds in by_source.items():
         lines.extend(["", f"{source}的每次提問"])

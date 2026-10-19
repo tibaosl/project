@@ -8,6 +8,8 @@
  * 事件格式（跟 supervisor_agent.run_ncuxplore_agent_stream() 一致）：
  *   {type: "status", text}
  *   {type: "token", text}
+ *   {type: "cached", key, created}      # 法規問答直接用了之前整理好的回答（後端的回答快取），
+ *                                       # key 給「重新查詢」用（streamAnswerRefresh）
  *   {type: "result", content}
  *   {type: "sources", sources}
  *   {type: "error", message}
@@ -36,6 +38,26 @@ export async function streamChat({ userMessage, username, token, threadId }, onE
       token: token || "",
       thread_id: threadId,
     }),
+    signal,
+  });
+
+  if (!response.ok || !response.body) {
+    throw new HttpStatusError(response.status);
+  }
+
+  await readEventStream(response.body, onEvent);
+}
+
+/**
+ * 法規問答的「重新查詢」（/api/regulations/refresh）：畫面上那則回答是之前整理好的（cached 事件），
+ * 後端不用快取重新挑文件、回答。事件只有 status、token、sources、error、done，格式跟 streamChat 一樣。
+ * 找不到原本的問題時後端回 404（HttpStatusError）。
+ */
+export async function streamAnswerRefresh({ key }, onEvent, { signal } = {}) {
+  const response = await fetch("/api/regulations/refresh", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ key }),
     signal,
   });
 

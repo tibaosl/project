@@ -12,6 +12,9 @@
 2. 回答：把挑中文件的「全文」交給模型，照規則回答並標注引用 [1]、[2]（只用來決定要列哪些參考資料，
    送給使用者之前會拿掉，見 AnswerCleaner）。
 
+同一個問題（連同對話紀錄）被問過、兩次都挑到一樣的文件之後，再有人問就直接用存下來的回答，
+不再呼叫模型（回答快取，規則見 answer_cache.py）。
+
 為什麼不再把文件切成 chunk 做向量 + BM25 檢索：舊版找錯檔案，大多是因為各學院、
 各年度的表單內容長得很像，切成片段之後就分不出是哪個學院、哪一年的，片段也常把
 表頭或適用對象切掉，模型拿到的是缺了前提的數字。改成看目錄挑文件、讀整份文件之後，
@@ -39,7 +42,7 @@ from dotenv import load_dotenv
 from openai import OpenAI
 
 from backend import usage_log
-from backend.rag import rag_documents
+from backend.rag import answer_cache, rag_documents
 from backend.language import asked_in_english, has_han
 from backend.logging_config import make_print_logger
 
@@ -569,8 +572,9 @@ def plan_query(
         messages=[{"role": "system", "content": instructions}, {"role": "user", "content": request}],
         response_format={"type": "json_schema", "json_schema": {"name": "document_plan", "schema": ROUTER_SCHEMA, "strict": True}},
     )
-    usage_log.record_response("挑文件", response, ROUTER_MODEL)
+    cost = usage_log.record_response("挑文件", response, ROUTER_MODEL)
     plan = json.loads(response.choices[0].message.content)
+    plan["cost"] = cost or 0.0  # 存進回答快取，用到快取時才算得出省了多少
 
     by_id = {doc.doc_id: doc for doc in catalog}
     selected = []
@@ -616,7 +620,10 @@ def choose_documents(query_str: str, history_str: str, catalog: list[rag_documen
     if not hints:
         return plan
     print(f"[Academic Agent] 判斷為查無資料，帶關鍵字候選再確認：{[doc.doc_id for doc in hints]}")
-    return plan_query(query_str, history_str, catalog, candidates + [d for d in hints if d not in candidates], hints=hints)
+    first_cost = plan["cost"]
+    plan = plan_query(query_str, history_str, catalog, candidates + [d for d in hints if d not in candidates], hints=hints)
+    plan["cost"] += first_cost
+    return plan
 
 
 # ============================================================
@@ -780,13 +787,116 @@ def cited_sources(answer: str, documents: list[rag_documents.CatalogDocument]) -
     return [doc.file_name for doc in chosen]
 
 
-def query_academic_knowledge_stream(query_str: str, history_str: str = "") -> Iterator[dict]:
+# ============================================================
+# 回答快取（規則見 answer_cache.py）
+# ============================================================
+def answer_cache_key(query_str: str, history_str: str, now: Optional[datetime] = None) -> str:
+    """回答快取的鍵：對話紀錄（answer_cache.make_key），加上會影響回答的東西：挑文件跟回答的 prompt、
+    系所對照表、模型、初篩的參數、學年度學期、回答語言。改了這些，舊的快取自然就用不到。"""
+    context = [
+        ROUTER_INSTRUCTIONS, ANSWER_INSTRUCTIONS, department_directory(), ROUTER_MODEL, ROUTER_REASONING,
+        ANSWER_MODEL, ANSWER_REASONING, MAX_DOCUMENTS, ROUTER_CANDIDATES, ROUTER_ANSWERS_PER_CARD, UNIT_BOOST,
+        CAMPUS_RESERVE, ANSWER_RANKING, MAX_DOCUMENT_CHARS, academic_term(now), asked_in_english(query_str),
+    ]
+    return answer_cache.make_key(query_str, history_str, context, now)
+
+
+def cached_documents(entry: dict, query_str: str, history_str: str,
+                     catalog: list[rag_documents.CatalogDocument]) -> Optional[list]:
+    """快取的回答現在能不能用，能用就回傳它當初挑的文件（現在目錄裡的那幾份，反問、查無資料是空的），不能用回傳 None。
+
+    還沒確認過（只問過一次，或兩次挑的文件不一樣）、太舊、挑到的文件改了或不見了都不能用。目錄換了版本
+    （每週更新文件）時重新初篩一次：候選裡有當時還沒有、或內容改過的文件，模型可能會挑不一樣的文件，也不能用。
+    """
+    if not entry.get("confirmed") or answer_cache.is_expired(entry):
+        return None
+    state = answer_cache.catalog_state(catalog)
+    documents = [state.by_fingerprint.get(fp) for fp in entry.get("selected", [])]
+    if any(doc is None for doc in documents):
+        return None
+    if entry.get("catalog") != state.version:
+        before = answer_cache.version_fingerprints(entry.get("catalog", ""))
+        if before is None:
+            return None
+        shown = retrieve_candidates(query_str, history_str, catalog)
+        shown += keyword_candidates(f"{entry.get('question', '')} {query_str}", catalog)
+        if any(state.fingerprints[doc.doc_id] not in before for doc in shown):
+            return None
+        entry["catalog"] = state.version  # 下次同一個目錄就不用再檢查
+    return documents
+
+
+def _cached_answer_events(entry: dict, documents: list, english: bool) -> Iterator[dict]:
+    """把快取的回答照平常的事件送出去。回答跟查無資料多送一個 cached 事件，前端顯示「之前整理的回答」跟「重新查詢」。"""
+    decision = entry["decision"]
+    yield {"type": "plan", "question": entry.get("question", ""), "decision": decision,
+           "documents": [doc.file_name for doc in documents], "cached": True}
+    if decision == "clarify":
+        yield {"type": "token", "text": replace_semicolons(entry["answer"])}
+        yield {"type": "sources", "sources": []}
+        return
+    yield {"type": "cached", "key": entry["key"], "created": entry["created"]}
+    if decision == "not_found":
+        yield {"type": "token", "text": NOT_FOUND_ANSWER_EN if english else NOT_FOUND_ANSWER}
+        yield {"type": "sources", "sources": []}
+        return
+    # 存的是模型原本的回答（含引用編號），照現在的規則整理（拿掉編號、換掉分號）再送出
+    cleaner = AnswerCleaner()
+    yield {"type": "token", "text": cleaner.feed(entry["answer"]) + cleaner.flush()}
+    yield {"type": "sources", "sources": cited_sources(entry["answer"], documents)}
+
+
+def _store_answer(key: str, previous: Optional[dict], refresh: bool, query_str: str, history_str: str,
+                  plan: dict, answer: str, cost: float, catalog: list[rag_documents.CatalogDocument]) -> None:
+    """存這次的回答。跟上一次存的決定一樣、最相關的文件也一樣，才算確認（下一次起直接用）。
+    使用者按了「重新查詢」的不算確認：他可能覺得原本的回答不對，要再有人問一次、挑到一樣的文件才用。"""
+    try:
+        state = answer_cache.catalog_state(catalog)
+        selected = [state.fingerprints[doc.doc_id] for doc in plan["documents"]]
+        agrees = (
+            previous is not None and not refresh and previous.get("decision") == plan["decision"]
+            and (plan["decision"] != "answer" or answer_cache.top_documents_agree(previous.get("selected", []), selected))
+        )
+        previous = previous or {}
+        answer_cache.save({
+            "format": answer_cache.FORMAT, "key": key, "query": query_str, "history": history_str,
+            "created": datetime.now().isoformat(timespec="seconds"), "catalog": state.version,
+            "decision": plan["decision"], "question": plan["question"],
+            "documents": [doc.file_name for doc in plan["documents"]], "selected": selected,
+            "answer": answer, "cost": round(cost, 6), "confirmed": agrees,
+            "computed": previous.get("computed", 0) + 1, "hits": previous.get("hits", 0),
+            "last_hit": previous.get("last_hit", ""),
+        })
+    except Exception as e:  # 快取存不進去不影響這次的回答
+        print(f"[Academic Agent] 回答快取存不進去：{type(e).__name__}: {e}")
+
+
+def _usable_cache(query_str: str, history_str: str, refresh: bool,
+                  catalog: list[rag_documents.CatalogDocument]) -> tuple[Optional[str], Optional[dict], Optional[list]]:
+    """(鍵, 上一次存的回答, 能直接用的話它挑的文件)。快取關掉時三個都是 None，讀不到也不影響回答。"""
+    if not answer_cache.ENABLED:
+        return None, None, None
+    try:
+        key = answer_cache_key(query_str, history_str)
+        previous = answer_cache.load(key)
+        if previous is None or refresh:
+            return key, previous, None
+        return key, previous, cached_documents(previous, query_str, history_str, catalog)
+    except Exception as e:  # 快取壞掉就照平常問模型
+        print(f"[Academic Agent] 回答快取讀不到，照平常回答：{type(e).__name__}: {e}")
+        return None, None, None
+
+
+def query_academic_knowledge_stream(query_str: str, history_str: str = "", refresh: bool = False) -> Iterator[dict]:
     """逐步 yield 事件（不含 SSE 包裝，呼叫端自己序列化）：
     - {"type": "status", "text": "..."}
     - {"type": "plan", "question": ..., "decision": ..., "documents": [檔名...]}  # 除錯用，前端不需要
+    - {"type": "cached", "key": ..., "created": ...}  # 這次直接用了快取的回答（反問不送），key 給「重新查詢」用
     - {"type": "token", "text": "..."}          # 逐字答案片段
     - {"type": "sources", "sources": [...]}     # data/ 底下的檔名，前端會做成連結
     - {"type": "error", "message": "..."}
+
+    refresh：使用者按了「重新查詢」，不用快取，重新挑文件、回答，新的回答存回快取。
     """
     try:
         yield {"type": "status", "text": "正在載入法規資料庫..."}
@@ -795,21 +905,37 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "") -> It
             yield {"type": "error", "message": "法規資料庫是空的（data/ 底下沒有可讀取的文件）。"}
             return
 
+        english = asked_in_english(query_str)
+        key, previous, cached = _usable_cache(query_str, history_str, refresh, catalog)
+        if cached is not None:
+            print(f"[Academic Agent] 問題：「{query_str}」用快取的回答（{previous['created']} 整理，"
+                  f"第 {previous.get('hits', 0) + 1} 次用）")
+            previous["hits"] = previous.get("hits", 0) + 1
+            previous["last_hit"] = datetime.now().isoformat(timespec="seconds")
+            answer_cache.save(previous)
+            usage_log.record_cache_hit(previous.get("cost"))
+            yield from _cached_answer_events(previous, cached, english)
+            return
+
         yield {"type": "status", "text": "正在挑選相關文件..."}
         plan = choose_documents(query_str, history_str, catalog)
+        cost = plan.get("cost", 0.0)
         file_names = [doc.file_name for doc in plan["documents"]]
         print(f"[Academic Agent] 問題：「{query_str}」→「{plan['question']}」｜{plan['decision']}｜{file_names}")
         yield {"type": "plan", "question": plan["question"], "decision": plan["decision"], "documents": file_names}
 
-        english = asked_in_english(query_str)
         if plan["decision"] == "clarify":
             clarify = plan["clarify_question"]
             if not clarify or (english and _has_han(clarify)):
                 clarify = CLARIFY_FALLBACK_EN if english else CLARIFY_FALLBACK
+            if key:
+                _store_answer(key, previous, refresh, query_str, history_str, plan, clarify, cost, catalog)
             yield {"type": "token", "text": replace_semicolons(clarify)}
             yield {"type": "sources", "sources": []}
             return
         if plan["decision"] == "not_found":
+            if key:
+                _store_answer(key, previous, refresh, query_str, history_str, plan, "", cost, catalog)
             yield {"type": "token", "text": NOT_FOUND_ANSWER_EN if english else NOT_FOUND_ANSWER}
             yield {"type": "sources", "sources": []}
             return
@@ -829,7 +955,7 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "") -> It
         cleaner = AnswerCleaner()
         for chunk in stream:
             if getattr(chunk, "usage", None) is not None:
-                usage_log.record_response("回答", chunk, ANSWER_MODEL)
+                cost += usage_log.record_response("回答", chunk, ANSWER_MODEL) or 0.0
             delta = chunk.choices[0].delta.content if chunk.choices else None
             if delta:
                 answer_parts.append(delta)
@@ -840,25 +966,32 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "") -> It
         if rest:
             yield {"type": "token", "text": rest}
 
+        answer = "".join(answer_parts)
+        # 整段回答收完才存（使用者中途離開、串流斷掉的不存）。要存在最後一個事件之前：
+        # 使用者可能在最後一個事件送出時就關掉畫面，generator 會停在那裡，不會再往下跑
+        if key and answer.strip():
+            _store_answer(key, previous, refresh, query_str, history_str, plan, answer, cost, catalog)
         # 原始答案裡的引用編號決定要列哪些參考資料，顯示給使用者的版本已經拿掉編號
-        yield {"type": "sources", "sources": cited_sources("".join(answer_parts), plan["documents"])}
+        yield {"type": "sources", "sources": cited_sources(answer, plan["documents"])}
 
     except Exception as e:
         print(f"[Academic Agent] 查詢失敗：{type(e).__name__}: {e}")
         yield {"type": "error", "message": f"系統在查詢校園法規時發生錯誤：{e}"}
 
 
-def query_academic_knowledge(query_str: str, history_str: str = "") -> dict:
+def query_academic_knowledge(query_str: str, history_str: str = "", refresh: bool = False) -> dict:
     """非串流版本：把串流事件收集成一次回傳。"""
     answer_parts: list[str] = []
     result = {"answer": "", "sources": []}
-    for event in query_academic_knowledge_stream(query_str, history_str):
+    for event in query_academic_knowledge_stream(query_str, history_str, refresh):
         if event["type"] == "token":
             answer_parts.append(event["text"])
         elif event["type"] == "sources":
             result["sources"] = event["sources"]
         elif event["type"] == "plan":
             result["plan"] = {k: v for k, v in event.items() if k != "type"}
+        elif event["type"] == "cached":
+            result["cached"] = {k: v for k, v in event.items() if k != "type"}
         elif event["type"] == "error":
             answer_parts.append(event["message"])
     result["answer"] = "".join(answer_parts).strip()

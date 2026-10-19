@@ -2,6 +2,8 @@
     python -m pytest tests/test_rag_documents.py
 """
 
+from pathlib import Path
+
 import docx as python_docx
 
 from backend.rag import rag_documents as rd
@@ -339,3 +341,25 @@ def test_cache_write_failure_does_not_break_the_answer(tmp_path, monkeypatch, ca
     assert not target.exists()
     assert list(tmp_path.iterdir()) == []  # 暫存檔也清掉
     assert "寫不進去" in caplog.text
+
+
+def test_data_signature_lists_the_same_files_and_notices_changes(tmp_path, monkeypatch):
+    data = tmp_path / "data"
+    monkeypatch.setattr(rd, "DATA_DIR", data)
+    assert rd.data_signature() == ()
+    (data / "教務處" / "子資料夾").mkdir(parents=True)
+    (data / "教務處" / "學則.pdf").write_bytes(b"pdf")
+    (data / "教務處" / "子資料夾" / "表單.DOCX").write_bytes(b"docx")
+    (data / "教務處" / "~$暫存.docx").write_bytes(b"x")  # Word 開著時的暫存檔
+    (data / "教務處" / "圖片.png").write_bytes(b"png")
+    (data / ".crawler_manifest.json").write_text("{}", encoding="utf-8")
+
+    signature = rd.data_signature()
+    # 跟解析時列的檔案（list_data_files）一樣，大小跟修改時間也跟 Path.stat 一樣
+    assert signature == tuple(
+        (str(p.relative_to(data)), p.stat().st_size, p.stat().st_mtime_ns) for p in rd.list_data_files()
+    )
+    assert [name for name, *_ in signature] == [str(Path("教務處/子資料夾/表單.DOCX")), str(Path("教務處/學則.pdf"))]
+
+    (data / "教務處" / "學則.pdf").write_bytes(b"pdf v2")
+    assert rd.data_signature() != signature
