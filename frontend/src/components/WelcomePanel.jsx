@@ -6,7 +6,7 @@ import RemindersCard from "./RemindersCard";
 
 const SKELETON_COUNT = 6;
 
-/** 對話還沒開始時的歡迎畫面：打招呼、「最近要注意」的提醒，再加一組可以直接點的推薦問題。 */
+/** 對話還沒開始時的歡迎畫面：左上角「最近要注意」的提醒、打招呼，再加一組可以直接點的推薦問題。 */
 export default function WelcomePanel({ chineseName, isGuest, token, onAsk }) {
   const [questions, setQuestions] = useState([]);
   const [status, setStatus] = useState("loading");
@@ -27,14 +27,16 @@ export default function WelcomePanel({ chineseName, isGuest, token, onAsk }) {
 
   return (
     <section className="welcome" aria-label="開始對話">
-      <div className="welcome-hero">
-        <div className="welcome-logo">
-          <Logo size={40} />
+      {/* 「最近要注意」是左上角的小卡，寬螢幕跟打招呼並排，窄螢幕疊在打招呼上面 */}
+      <div className="welcome-top">
+        <RemindersCard token={token} isGuest={isGuest} onAsk={onAsk} />
+        <div className="welcome-hero">
+          <div className="welcome-logo">
+            <Logo size={40} />
+          </div>
+          <h2>{chineseName ? `嗨，${chineseName}！` : "嗨，歡迎使用 NCUXplore！"}</h2>
         </div>
-        <h2>{chineseName ? `嗨，${chineseName}！` : "嗨，歡迎使用 NCUXplore！"}</h2>
       </div>
-
-      <RemindersCard token={token} isGuest={isGuest} onAsk={onAsk} />
 
       <p className="welcome-prompt">直接用中文問我校園大小事，或是點一個問題開始：</p>
 
