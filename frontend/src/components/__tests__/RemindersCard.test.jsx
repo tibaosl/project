@@ -25,6 +25,7 @@ function reply(overrides = {}) {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  localStorage.clear();
 });
 
 describe("RemindersCard", () => {
@@ -65,16 +66,57 @@ describe("RemindersCard", () => {
     expect(screen.getByText("記得簽到、簽退，不然可能拿不到時數")).toBeInTheDocument();
   });
 
-  it("提醒很多時先收起來", async () => {
-    const user = userEvent.setup();
+  it("提醒很多時全部放在卡片裡的清單，標題列寫出幾項", async () => {
     const items = Array.from({ length: 7 }, (_, i) => ({ ...CALENDAR, title: `事件${i}` }));
     vi.spyOn(global, "fetch").mockResolvedValue(reply({ items }));
     render(<RemindersCard token="tok" onAsk={() => {}} />);
 
-    expect(await screen.findByText("事件4")).toBeInTheDocument();
-    expect(screen.queryByText("事件5")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "再看 2 項" }));
-    expect(screen.getByText("事件6")).toBeInTheDocument();
+    expect(await screen.findByText("事件6")).toBeInTheDocument();
+    expect(screen.getAllByRole("listitem")).toHaveLength(7);
+    expect(screen.getByRole("button", { name: "最近要注意（7）" })).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("點標題列收起來只剩標題，重新整理後還記得", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(global, "fetch").mockResolvedValue(reply({ items: [CALENDAR, ACTIVITY] }));
+    const { unmount } = render(<RemindersCard token="tok" onAsk={() => {}} />);
+
+    const toggle = await screen.findByRole("button", { name: "最近要注意（2）" });
+    expect(await screen.findByText("職涯講座")).toBeVisible();
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("職涯講座")).not.toBeVisible();
+    expect(screen.getByText("10/18（日）～10/24（六）")).not.toBeVisible();
+    expect(localStorage.getItem("ncuxplore_reminders_collapsed")).toBe("1");
+
+    unmount();
+    render(<RemindersCard token="tok" onAsk={() => {}} />);
+    const again = await screen.findByRole("button", { name: "最近要注意（2）" });
+    expect(again).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("職涯講座")).not.toBeVisible();
+
+    await user.click(again);
+    expect(again).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("職涯講座")).toBeVisible();
+    expect(localStorage.getItem("ncuxplore_reminders_collapsed")).toBeNull();
+  });
+
+  it("瀏覽器不讓存 localStorage 時一樣可以收起展開", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("SecurityError");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("QuotaExceededError");
+    });
+    vi.spyOn(global, "fetch").mockResolvedValue(reply());
+    render(<RemindersCard token="tok" onAsk={() => {}} />);
+
+    const toggle = await screen.findByRole("button", { name: "最近要注意（1）" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("受理課程停修申請")).not.toBeVisible();
   });
 
   it("沒有要注意的事跟沒抓到的部分都說清楚", async () => {

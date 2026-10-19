@@ -116,6 +116,7 @@ const SHAPES = {
     </>
   ),
   "arrow-right": <path d="M5 12h14M13.5 6.5 19 12l-5.5 5.5" />,
+  "chevron-down": <path d="M6.5 9.5 12 15l5.5-5.5" />,
   refresh: (
     <>
       <path d="M19.6 13.2A7.7 7.7 0 1 1 17.8 7" />

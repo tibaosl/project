@@ -444,46 +444,131 @@
   font-size: 14px;
 }
 
-/* ---- 歡迎畫面的「最近要注意」（RemindersCard.jsx） ---- */
+/* ---- 歡迎畫面左上角的「最近要注意」（RemindersCard.jsx） ----
+   原本是打招呼底下一整排的大卡片，把推薦問題擠到下面（使用者反映太大）。
+   改成左上角的小卡，標題列可以收起來，項目多時清單在卡片裡捲動。 */
+
+/* 寬螢幕三欄：小卡在左欄、打招呼在中欄，右欄空著讓打招呼留在正中間。
+   都靠上對齊，展開、收起小卡時打招呼不會跟著上下跳 */
+.welcome-top {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: start;
+  column-gap: 16px;
+  margin-bottom: 16px;
+}
+
+.welcome-top > .reminders {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+  width: 100%;
+  max-width: 300px;
+}
+
+.welcome-top > .welcome-hero {
+  grid-column: 2;
+  grid-row: 1;
+  margin-bottom: 0;
+}
+
+/* 左右欄放不下小卡時疊成一欄：小卡在上面靠左，打招呼在下面 */
+@media (max-width: 899px) {
+  .welcome-top {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 14px;
+  }
+
+  .welcome-top > .reminders {
+    max-width: 360px;
+  }
+
+  .welcome-top > .welcome-hero {
+    grid-column: 1;
+    grid-row: 2;
+  }
+}
 
 .reminders {
-  padding: 12px 14px 10px;
+  overflow: hidden;
+  text-align: left;
   background: var(--ncux-surface);
   border: 1px solid var(--ncux-border);
-  border-radius: var(--ncux-radius);
+  border-radius: 12px;
   box-shadow: var(--ncux-shadow);
 }
 
-.reminders-header {
+.reminders-toggle {
   display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  flex-wrap: wrap;
-  gap: 4px 12px;
-  padding: 0 2px 8px;
-  border-bottom: 1px solid var(--ncux-border);
-}
-
-.reminders-title {
-  font-size: 15px;
-  font-weight: 700;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 8px 10px 8px 12px;
+  font: inherit;
+  text-align: left;
   color: var(--ncux-text);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
 }
 
-.reminders-title > .ncux-icon {
+.reminders-toggle:hover {
+  background: var(--ncux-surface-muted);
+}
+
+.reminders-bell {
+  flex: none;
   color: var(--ncux-accent);
 }
 
+.reminders-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 700;
+}
+
+.reminders-count {
+  color: var(--ncux-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.reminders-chevron {
+  flex: none;
+  color: var(--ncux-text-muted);
+  transform: rotate(180deg);
+  transition: transform 0.2s ease, color 0.15s ease;
+}
+
+.reminders.is-collapsed .reminders-chevron {
+  transform: none;
+}
+
+.reminders-toggle:hover .reminders-chevron {
+  color: var(--ncux-primary);
+}
+
+.reminders-content {
+  padding: 0 8px 8px;
+  border-top: 1px solid var(--ncux-border);
+}
+
 .reminders-range {
-  font-size: 12.5px;
+  margin: 6px 4px 2px;
+  font-size: 11.5px;
   color: var(--ncux-text-muted);
   font-variant-numeric: tabular-nums;
 }
 
 .reminder-list {
-  list-style: none;
+  max-height: 208px;
   margin: 0;
   padding: 0;
+  list-style: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
 }
 
 .reminder-list li + li {
@@ -493,9 +578,9 @@
 .reminder-item {
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
   width: 100%;
-  padding: 9px 4px;
+  padding: 7px 4px;
   font: inherit;
   text-align: left;
   color: var(--ncux-text);
@@ -513,10 +598,11 @@
   background: var(--ncux-surface-muted);
 }
 
-.reminder-item.is-clickable:focus-visible,
-.reminders-more:focus-visible {
+/* 卡片跟清單會裁掉外框，焦點框畫在裡面 */
+.reminders-toggle:focus-visible,
+.reminder-item.is-clickable:focus-visible {
   outline: 2px solid var(--ncux-primary);
-  outline-offset: 1px;
+  outline-offset: -2px;
 }
 
 .reminder-icon {
@@ -524,8 +610,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   margin-top: 1px;
   border-radius: 50%;
   background: var(--ncux-primary-light);
@@ -543,18 +629,18 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 1px;
 }
 
 .reminder-head {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 2px 8px;
+  gap: 2px 6px;
 }
 
 .reminder-when {
-  font-size: 12.5px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--ncux-primary);
   font-variant-numeric: tabular-nums;
@@ -562,8 +648,9 @@
 
 .reminder-badge {
   margin-right: 0;
-  padding: 1px 8px;
-  font-size: 11px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  line-height: 1.6;
 }
 
 .reminder-badge-plain {
@@ -573,21 +660,21 @@
 }
 
 .reminder-title {
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
 .reminder-detail {
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--ncux-text-muted);
   overflow-wrap: anywhere;
 }
 
 .reminder-hint {
-  font-size: 12.5px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.45;
   color: var(--ncux-confirm-text);
 }
 
@@ -600,31 +687,14 @@
 
 .reminder-item.is-clickable:hover .reminder-arrow {
   color: var(--ncux-primary);
-  transform: translateX(3px);
-}
-
-.reminders-more {
-  display: block;
-  margin: 2px auto 0;
-  padding: 4px 12px;
-  font: inherit;
-  font-size: 12.5px;
-  color: var(--ncux-primary);
-  background: transparent;
-  border: 0;
-  border-radius: 999px;
-  cursor: pointer;
-}
-
-.reminders-more:hover {
-  background: var(--ncux-primary-light);
+  transform: translateX(2px);
 }
 
 .reminders-empty,
 .reminders-note,
 .reminders-loading {
-  margin: 8px 2px 2px;
-  font-size: 12.5px;
+  margin: 6px 4px 0;
+  font-size: 12px;
   line-height: 1.5;
   color: var(--ncux-text-muted);
 }
@@ -632,10 +702,11 @@
 .reminders-loading {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
-.reminders-loading .dot {
+.reminders-loading .dot,
+.reminders-toggle .dot {
   flex: none;
   width: 6px;
   height: 6px;
@@ -647,12 +718,12 @@
 .reminders-skeleton {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 10px 0 4px;
+  gap: 6px;
+  padding: 8px 0 2px;
 }
 
 .reminders-skeleton div {
-  height: 34px;
+  height: 26px;
   border-radius: 8px;
   background: linear-gradient(
     90deg,
@@ -835,7 +906,7 @@
   .follow-ups,
   .suggestion-card-skeleton,
   .reminders-skeleton div,
-  .reminders-loading .dot {
+  .reminders .dot {
     animation: none;
   }
 }
