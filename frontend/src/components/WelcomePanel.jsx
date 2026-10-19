@@ -27,7 +27,8 @@ export default function WelcomePanel({ chineseName, isGuest, token, onAsk }) {
 
   return (
     <section className="welcome" aria-label="開始對話">
-      {/* 「最近要注意」是左上角的小卡，寬螢幕跟打招呼並排，窄螢幕疊在打招呼上面 */}
+      {/* 「最近要注意」是左上角的小卡：很寬的螢幕放在聊天區左邊的空白（layout.css 的 .chat-main），
+          一般寬度跟打招呼並排，窄螢幕疊在打招呼上面 */}
       <div className="welcome-top">
         <RemindersCard token={token} isGuest={isGuest} onAsk={onAsk} />
         <div className="welcome-hero">

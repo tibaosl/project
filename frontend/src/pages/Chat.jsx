@@ -159,18 +159,21 @@ export default function Chat() {
         </div>
       </header>
 
-      <div className="chat-body" ref={bodyRef}>
-        {!online && <ConnectionBanner />}
-        {messages.length === 0 ? (
-          <WelcomePanel
-            chineseName={session.chineseName}
-            isGuest={!session.username}
-            token={session.token}
-            onAsk={handleSend}
-          />
-        ) : (
-          <MessageList messages={messages} onAsk={handleSend} onRefresh={handleRefresh} busy={isStreaming} />
-        )}
+      {/* chat-main 不捲動：寬螢幕時開場畫面的「最近要注意」以它為準，固定在聊天區左邊的空白 */}
+      <div className="chat-main">
+        <div className="chat-body" ref={bodyRef}>
+          {!online && <ConnectionBanner />}
+          {messages.length === 0 ? (
+            <WelcomePanel
+              chineseName={session.chineseName}
+              isGuest={!session.username}
+              token={session.token}
+              onAsk={handleSend}
+            />
+          ) : (
+            <MessageList messages={messages} onAsk={handleSend} onRefresh={handleRefresh} busy={isStreaming} />
+          )}
+        </div>
       </div>
 
       <div className="chat-input-bar">

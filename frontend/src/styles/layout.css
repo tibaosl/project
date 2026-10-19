@@ -262,6 +262,15 @@
   box-shadow: var(--ncux-shadow);
 }
 
+/* 包住 chat-body、本身不捲動：寬螢幕時開場畫面的「最近要注意」以它為準放在聊天區左邊的空白，
+   捲動推薦問題時不會跟著捲走 */
+.chat-main {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
 .chat-body {
   flex: 1;
   overflow-y: auto;
@@ -411,6 +420,12 @@
 .welcome {
   max-width: 880px;
   margin: 4vh auto 0;
+}
+
+/* 動畫放在子元素上：.welcome 自己有 transform 的話，寬螢幕時用 position 定位的「最近要注意」
+   在動畫期間會改以它為準、位置跳一下 */
+.welcome > :not(.welcome-top),
+.welcome-top > * {
   animation: ncux-rise-in 0.3s ease;
 }
 
@@ -486,6 +501,28 @@
   .welcome-top > .welcome-hero {
     grid-column: 1;
     grid-row: 2;
+  }
+}
+
+/* 左右兩邊的空白放得下小卡時（1500px 以上），小卡移到聊天區左邊的空白、對齊上面的 NCUXplore，
+   聊天區照舊置中、在它的右邊（使用者要求）。位置以 .chat-main 為準，捲動推薦問題時小卡不動 */
+@media (min-width: 1500px) {
+  .welcome-top {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .welcome-top > .welcome-hero {
+    grid-column: 1;
+  }
+
+  .welcome-top > .reminders {
+    position: absolute;
+    top: calc(20px + 4vh);
+    left: 20px;
+    z-index: 1;
+    /* 不超過左邊的空白（歡迎畫面寬 880px），跟推薦問題至少隔 36px */
+    width: min(320px, calc((100vw - 880px) / 2 - 56px));
+    max-width: none;
   }
 }
 
@@ -902,7 +939,8 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .welcome,
+  .welcome > :not(.welcome-top),
+  .welcome-top > *,
   .follow-ups,
   .suggestion-card-skeleton,
   .reminders-skeleton div,
