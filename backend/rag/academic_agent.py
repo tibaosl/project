@@ -847,8 +847,8 @@ def _cached_answer_events(entry: dict, documents: list, english: bool) -> Iterat
 
 
 def _store_answer(key: str, previous: Optional[dict], refresh: bool, query_str: str, history_str: str,
-                  plan: dict, answer: str, cost: float, catalog: list[rag_documents.CatalogDocument]) -> None:
-    """存這次的回答。跟上一次存的決定一樣、最相關的文件也一樣，才算確認（下一次起直接用）。
+                  plan: dict, answer: str, cost: float, catalog: list[rag_documents.CatalogDocument]) -> bool:
+    """存這次的回答，存得進去回傳 True。跟上一次存的決定一樣、最相關的文件也一樣，才算確認（下一次起直接用）。
     使用者按了「重新查詢」的不算確認：他可能覺得原本的回答不對，要再有人問一次、挑到一樣的文件才用。"""
     try:
         state = answer_cache.catalog_state(catalog)
@@ -867,8 +867,10 @@ def _store_answer(key: str, previous: Optional[dict], refresh: bool, query_str: 
             "computed": previous.get("computed", 0) + 1, "hits": previous.get("hits", 0),
             "last_hit": previous.get("last_hit", ""),
         })
+        return True
     except Exception as e:  # 快取存不進去不影響這次的回答
         print(f"[Academic Agent] 回答快取存不進去：{type(e).__name__}: {e}")
+        return False
 
 
 def _usable_cache(query_str: str, history_str: str, refresh: bool,
@@ -892,6 +894,8 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "", refre
     - {"type": "status", "text": "..."}
     - {"type": "plan", "question": ..., "decision": ..., "documents": [檔名...]}  # 除錯用，前端不需要
     - {"type": "cached", "key": ..., "created": ...}  # 這次直接用了快取的回答（反問不送），key 給「重新查詢」用
+    - {"type": "cache_key", "key": ..., "hit": ...}  # 這次的回答在快取裡的鍵（用到快取或剛存進去），supervisor 拿來
+                                                      # 存取回答下面的選項（answer_cache.remember_suggestions），不送給前端
     - {"type": "token", "text": "..."}          # 逐字答案片段
     - {"type": "sources", "sources": [...]}     # data/ 底下的檔名，前端會做成連結
     - {"type": "error", "message": "..."}
@@ -914,6 +918,7 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "", refre
             previous["last_hit"] = datetime.now().isoformat(timespec="seconds")
             answer_cache.save(previous)
             usage_log.record_cache_hit(previous.get("cost"))
+            yield {"type": "cache_key", "key": key, "hit": True}
             yield from _cached_answer_events(previous, cached, english)
             return
 
@@ -928,14 +933,14 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "", refre
             clarify = plan["clarify_question"]
             if not clarify or (english and _has_han(clarify)):
                 clarify = CLARIFY_FALLBACK_EN if english else CLARIFY_FALLBACK
-            if key:
-                _store_answer(key, previous, refresh, query_str, history_str, plan, clarify, cost, catalog)
+            if key and _store_answer(key, previous, refresh, query_str, history_str, plan, clarify, cost, catalog):
+                yield {"type": "cache_key", "key": key, "hit": False}
             yield {"type": "token", "text": replace_semicolons(clarify)}
             yield {"type": "sources", "sources": []}
             return
         if plan["decision"] == "not_found":
-            if key:
-                _store_answer(key, previous, refresh, query_str, history_str, plan, "", cost, catalog)
+            if key and _store_answer(key, previous, refresh, query_str, history_str, plan, "", cost, catalog):
+                yield {"type": "cache_key", "key": key, "hit": False}
             yield {"type": "token", "text": NOT_FOUND_ANSWER_EN if english else NOT_FOUND_ANSWER}
             yield {"type": "sources", "sources": []}
             return
@@ -969,8 +974,8 @@ def query_academic_knowledge_stream(query_str: str, history_str: str = "", refre
         answer = "".join(answer_parts)
         # 整段回答收完才存（使用者中途離開、串流斷掉的不存）。要存在最後一個事件之前：
         # 使用者可能在最後一個事件送出時就關掉畫面，generator 會停在那裡，不會再往下跑
-        if key and answer.strip():
-            _store_answer(key, previous, refresh, query_str, history_str, plan, answer, cost, catalog)
+        if key and answer.strip() and _store_answer(key, previous, refresh, query_str, history_str, plan, answer, cost, catalog):
+            yield {"type": "cache_key", "key": key, "hit": False}
         # 原始答案裡的引用編號決定要列哪些參考資料，顯示給使用者的版本已經拿掉編號
         yield {"type": "sources", "sources": cited_sources(answer, plan["documents"])}
 

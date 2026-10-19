@@ -401,6 +401,7 @@ class _ToolCallingLLM:
 
 def test_supervisor_passes_the_cached_event_to_the_frontend(monkeypatch):
     def fake_stream(query, history):
+        yield {"type": "cache_key", "key": "0" * 32, "hit": True}
         yield {"type": "cached", "key": "0" * 32, "created": "2026-10-18T10:00:00"}
         yield {"type": "token", "text": "200 元"}
         yield {"type": "sources", "sources": ["學生證遺失補發申請辦法.pdf"]}
@@ -413,7 +414,9 @@ def test_supervisor_passes_the_cached_event_to_the_frontend(monkeypatch):
 
     events = asyncio.run(collect())
     assert {"type": "cached", "key": "0" * 32, "created": "2026-10-18T10:00:00"} in events
+    assert not any(e["type"] == "cache_key" for e in events)  # 快取鍵只給 supervisor 自己用，不送給前端
     assert events[-1]["agent_results"] == ["200 元"]
+    assert events[-1]["answer_cache"] == {"key": "0" * 32, "hit": True}
 
 
 def _client():
@@ -445,3 +448,64 @@ def test_refresh_api_rejects_unknown_keys():
     response = _client().post("/api/regulations/refresh", json={"key": "../../.env"})
     assert response.status_code == 404
     assert _client().post("/api/regulations/refresh", json={"key": "b" * 32}).status_code == 404
+
+
+# ============================================================
+# 回答下面的選項跟著快取
+# ============================================================
+def test_answers_report_their_cache_key_to_the_supervisor(monkeypatch, catalog):
+    _fake(monkeypatch)
+    first = _ask()
+    key = next(e for e in first if e["type"] == "cache_key")
+    assert key["hit"] is False and answer_cache.load(key["key"]) is not None
+    _ask()
+    third = _ask()
+    assert {"type": "cache_key", "key": key["key"], "hit": True} in third
+
+    monkeypatch.setattr(answer_cache, "ENABLED", False)
+    assert not any(e["type"] == "cache_key" for e in _ask())
+
+
+def test_suggestions_are_kept_per_audience_and_dropped_with_a_new_answer(monkeypatch, catalog):
+    _fake(monkeypatch)
+    key = next(e for e in _ask() if e["type"] == "cache_key")["key"]
+    answer_cache.remember_suggestions(key, True, "follow_ups", ["我的學生證什麼時候可以領？"])
+    answer_cache.remember_suggestions(key, False, "follow_ups", [])  # 空的不存
+    assert answer_cache.cached_suggestions(key, True) == ("follow_ups", ["我的學生證什麼時候可以領？"])
+    assert answer_cache.cached_suggestions(key, False) is None
+
+    _ask()  # 重新整理的回答存進去，舊回答的選項跟著清掉
+    assert answer_cache.cached_suggestions(key, True) is None
+
+
+class _SuggestionCalls:
+    def __init__(self, result=("follow_ups", ["補辦要多久？"])):
+        self.result, self.calls = result, []
+
+    async def __call__(self, user_message, answer, called_tools, logged_in):
+        self.calls.append((user_message, answer, logged_in))
+        return self.result
+
+
+def _final(cache):
+    return {"agent_results": ["補發要 200 元"], "called_tools": ["search_campus_regulations"], "answer_cache": cache}
+
+
+def test_cached_answers_reuse_their_suggestions(monkeypatch, catalog):
+    _fake(monkeypatch)
+    key = next(e for e in _ask() if e["type"] == "cache_key")["key"]
+    generate = _SuggestionCalls()
+    monkeypatch.setattr(supervisor_agent, "generate_suggestions", generate)
+
+    # 剛整理好的回答：產生選項，存進快取
+    result = asyncio.run(supervisor_agent._turn_suggestions(_final({"key": key, "hit": False}), "補辦學生證", True))
+    assert result == ("follow_ups", ["補辦要多久？"]) and len(generate.calls) == 1
+    # 用到快取：直接用存好的，不呼叫模型
+    result = asyncio.run(supervisor_agent._turn_suggestions(_final({"key": key, "hit": True}), "補辦學生證", True))
+    assert result == ("follow_ups", ["補辦要多久？"]) and len(generate.calls) == 1
+    # 沒登入的人推薦的功能不一樣，要另外產生一次
+    asyncio.run(supervisor_agent._turn_suggestions(_final({"key": key, "hit": True}), "補辦學生證", False))
+    assert len(generate.calls) == 2 and answer_cache.cached_suggestions(key, False) is not None
+    # 不是法規問答（沒有快取鍵）照平常產生
+    asyncio.run(supervisor_agent._turn_suggestions(_final(None), "我的課表", True))
+    assert len(generate.calls) == 3
