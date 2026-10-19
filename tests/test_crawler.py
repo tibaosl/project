@@ -189,7 +189,43 @@ def test_follow_latest_year_only():
     <a href="/p/412-1019-1720.php">113教務章則彙編</a><a href="/p/412-1019-1725.php">校曆</a>"""
     soup = BeautifulSoup(html, "lxml")
     targets = follow_targets(soup, "https://pdc.adm.ncu.edu.tw/p/412-1019-2070.php", (Follow(text=r"(\d{3})\s*教務章則彙編", latest=True),))
-    assert targets == ["https://pdc.adm.ncu.edu.tw/p/412-1019-2330.php"]
+    assert targets == [("https://pdc.adm.ncu.edu.tw/p/412-1019-2330.php", "")]
+
+
+def test_follow_latest_compares_year_then_month_and_names_the_documents():
+    # 總務處資產組的最新消息：營業時間表每次公告一則，只跟年、月最新的，附檔改用公告的年月命名
+    html = """<a href="/2e319283/news/2e636b81/detail/a">115年9月開學校內餐廳商店營業時間_1150902</a>
+    <a href="/2e319283/news/2e636b81/detail/b">115年10月校內餐廳商店營業時間</a>
+    <a href="/2e319283/news/2e636b81/detail/c">114年12月校內餐廳商店營業時間</a>
+    <a href="/2e319283/news/2e636b81/detail/d">11505A01全校報廢品招標</a>"""
+    soup = BeautifulSoup(html, "lxml")
+    rule = Follow(url=r"/detail/", text=r"(\d{2,3})\s*年\s*(\d{1,2})\s*月.*營業時間", latest=True, name="{0}年{1}月校內餐廳商店營業時間表")
+    targets = follow_targets(soup, "https://www.oga.ncu.edu.tw/2e319283/news/2e636b81", (rule,))
+    assert targets == [("https://www.oga.ncu.edu.tw/2e319283/news/2e636b81/detail/b", "115年10月校內餐廳商店營業時間表")]
+
+
+def test_followed_page_documents_use_the_configured_name():
+    # 附件的 download 屬性是「1150907營業時間_彩.pdf」，比同一格前面的標題還像檔名，要用設定的名稱蓋過
+    from backend.rag import crawler as c
+
+    pages = {
+        "https://www.oga.ncu.edu.tw/news": '<a href="/news/detail/x">115年9月開學校內餐廳商店營業時間_1150902</a>',
+        "https://www.oga.ncu.edu.tw/news/detail/x": (
+            '<table><tr><td>115年9月開學校內餐廳商店營業時間 <a download="1150907營業時間_彩.pdf" '
+            'href="/resource/attachment/1689419726.pdf" title="1150907營業時間_彩.pdf">PDF</a></td></tr></table>'),
+    }
+
+    class FakeRenderer:
+        def get_html(self, url):
+            return f"<html><body>{pages[url]}</body></html>", url
+
+    crawler = c.Crawler.__new__(c.Crawler)
+    crawler.fetcher, crawler.renderer = None, FakeRenderer()
+    source = Source(name="總務處", render=True, seeds=("https://www.oga.ncu.edu.tw/news",), follow=(
+        Follow(url=r"/detail/", text=r"(\d{2,3})\s*年\s*(\d{1,2})\s*月.*營業時間", latest=True, name="{0}年{1}月校內餐廳商店營業時間表"),))
+    links, _ = crawler.collect(source, c.Report("總務處"))
+    [info] = links.values()
+    assert choose_name(info.names) == "115年9月校內餐廳商店營業時間表"
 
 
 def test_keep_latest_only_drops_older_years_of_the_same_series():
