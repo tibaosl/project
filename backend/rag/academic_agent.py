@@ -62,6 +62,8 @@ ANSWER_REASONING = os.getenv("RAG_ANSWER_REASONING", "low")
 MAX_DOCUMENTS = 4
 # 初篩留給挑文件模型看的卡片數。文件有上千份，整份目錄交給模型太慢也太貴，先用卡片向量跟
 # 關鍵字各排一次名、用 RRF 合併，取前面這麼多份（見 retrieve_candidates）。
+# 2026-10-19 比過 40 份：五份題庫挑對 208/215（60 份是 209/215），挑文件的費用只少 14%（整題約 7%），
+# 而且 course_withdrawal 的標準文件排在 41～50 名一定會漏掉，所以維持 60。
 ROUTER_CANDIDATES = int(os.getenv("RAG_ROUTER_CANDIDATES", "60"))
 # 卡片的「可回答問題」每張約 12 題，佔了挑文件 prompt 六成的 token，每張只列這麼多題（0 是全部列出）。
 # 2026-10 比過：全部、前 6／4／3 題，開發題跟保留題都全對，完全不列的話保留題錯 2 題。
@@ -865,12 +867,24 @@ def _store_answer(key: str, previous: Optional[dict], refresh: bool, query_str: 
             "documents": [doc.file_name for doc in plan["documents"]], "selected": selected,
             "answer": answer, "cost": round(cost, 6), "confirmed": agrees,
             "computed": previous.get("computed", 0) + 1, "hits": previous.get("hits", 0),
-            "last_hit": previous.get("last_hit", ""),
+            "last_hit": previous.get("last_hit", ""), "routes": previous.get("routes", {}),
         })
         return True
     except Exception as e:  # 快取存不進去不影響這次的回答
         print(f"[Academic Agent] 回答快取存不進去：{type(e).__name__}: {e}")
         return False
+
+
+def cached_answer_ready(query_str: str, history_str: str, route: str, min_routes: int = 2) -> bool:
+    """supervisor 用：這段對話（含對話紀錄）之前被選工具的模型導到法規問答至少 min_routes 次（route 見
+    answer_cache.remember_route），回答也確認過、現在還能用，就可以不問選工具的模型、直接用快取回答。"""
+    if not answer_cache.ENABLED:
+        return False
+    entry = answer_cache.load(answer_cache_key(query_str, history_str))
+    if entry is None or entry.get("routes", {}).get(route, 0) < min_routes:
+        return False
+    catalog = get_catalog()
+    return bool(catalog) and cached_documents(entry, query_str, history_str, catalog) is not None
 
 
 def _usable_cache(query_str: str, history_str: str, refresh: bool,

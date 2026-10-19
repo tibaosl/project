@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 from typing import TypedDict, Annotated, List
 from langgraph.graph import StateGraph, END
 import operator
@@ -155,6 +157,62 @@ async def _iterate_sync_generator_in_thread(gen):
         if item is sentinel:
             break
         yield item
+
+
+async def _regulation_answer_events(query: str, history_str: str, result: dict):
+    """法規問答走 academic_agent 的串流版本，逐字把答案吐出去——這是整條流程裡最慢、也最適合逐字呈現的一步。
+    狀態、快取註記（cached：前端顯示「重新查詢」）、答案片段照樣往外送，收完之後把整段答案（content）、
+    參考資料（sources）、這次回答在快取裡的鍵（answer_cache）寫進 result。"""
+    answer_parts: list[str] = []
+    result.update(sources=[], answer_cache=None)
+    try:
+        sync_gen = academic_agent.query_academic_knowledge_stream(query, history_str)
+        async for event in _iterate_sync_generator_in_thread(sync_gen):
+            if event["type"] in ("status", "cached"):
+                yield event
+            elif event["type"] == "token":
+                answer_parts.append(event["text"])
+                yield event
+            elif event["type"] == "sources":
+                result["sources"] = event["sources"]
+            elif event["type"] == "cache_key":
+                result["answer_cache"] = {"key": event["key"], "hit": event["hit"]}
+            elif event["type"] == "error":
+                answer_parts.append(f"\n（{event['message']}）")
+    except Exception as e:
+        print(f"[Agent] search_campus_regulations 串流失敗：{e}")
+        answer_parts.append(f"查詢法規時發生錯誤：{e}")
+    result["content"] = "".join(answer_parts)
+
+
+_route_fingerprint: dict = {}
+
+
+def regulation_route(logged_in: bool) -> str:
+    """回答快取裡「這段對話被導到法規問答」的標記（answer_cache.remember_route）：登入或訪客，加上選工具的
+    prompt、工具說明、模型的指紋。登入後「畢業要修幾學分」可能會被導到學業分析，所以分開算。
+    prompt 或工具改了指紋就不同，之前記的次數不算，要重新看模型怎麼選。"""
+    if "value" not in _route_fingerprint:
+        tools = [(t.name, t.description, t.args) for t in build_tools("", "", "無")]
+        payload = [AGENT_SYSTEM_PROMPT, getattr(llm_smart, "model_name", ""), getattr(llm_smart, "reasoning", ""), tools]
+        text = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        _route_fingerprint["value"] = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+    return f"{'login' if logged_in else 'guest'}:{_route_fingerprint['value']}"
+
+
+async def _cached_regulation_ready(user_input: str, history_str: str, route: str) -> bool:
+    try:
+        return await asyncio.to_thread(academic_agent.cached_answer_ready, user_input, history_str, route)
+    except Exception as e:  # 快取讀不到就照平常問選工具的模型
+        print(f"[Agent] 檢查回答快取失敗，照平常選工具：{e}")
+        return False
+
+
+async def _remember_route(key: str, route: str) -> None:
+    try:
+        await asyncio.to_thread(answer_cache.remember_route, key, route)
+    except Exception as e:
+        print(f"[Agent] 回答快取記不了選工具的結果：{e}")
 
 
 async def _agent_turn_events(user_input: str, username: str, password: str, pending_action: dict, history_str: str):
@@ -316,6 +374,20 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
     # JSON 動作抽取 prompt）。日後新增功能只要在 agent_tools.py 加一個
     # @tool 函式，不需要再動這裡的 prompt。
     # ------------------------------------------------------------------
+    # 這段對話（含對話紀錄，寫法差一點沒關係）之前已經被選工具的模型導到法規問答兩次以上，回答也確認過、
+    # 還在快取裡：直接用快取的回答，不用再等選工具的模型（約 3 秒、US$0.004）。有待確認的動作時照平常走
+    route = regulation_route(bool(username))
+    if not pending_action and await _cached_regulation_ready(user_input, history_str, route):
+        print("[Agent] 這段對話之前都導到法規問答，回答也在快取裡，直接用快取（不問選工具的模型）")
+        result: dict = {}
+        async for event in _regulation_answer_events(user_input, history_str, result):
+            yield event
+        yield {
+            "type": "final", "agent_results": [result["content"]], "sources": result["sources"],
+            "pending_action": {}, "called_tools": ["search_campus_regulations"], "answer_cache": result["answer_cache"],
+        }
+        return
+
     yield {"type": "status", "text": "正在理解你的問題..."}
     tools = build_tools(username, password, history_str)
     # parallel_tool_calls=False：沒有這個，模型偶爾會對同一個問題（尤其是
@@ -368,35 +440,20 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
             print(f"[Agent] 呼叫工具：{name}({tool_call['args']})")
             called_tools.append(name)
 
-            # search_campus_regulations 改走 academic_agent 的串流版本，
-            # 逐字把答案吐出去——這是整條流程裡最慢、也最適合逐字呈現的
-            # 一步。其他工具回傳的是結構化資料（課表/活動卡片/時數進度），
+            # search_campus_regulations 改走 academic_agent 的串流版本（_regulation_answer_events）。
+            # 其他工具回傳的是結構化資料（課表/活動卡片/時數進度），
             # 本來就不是「用打字機效果呈現」的東西，維持一次性回傳即可。
             if name == "search_campus_regulations":
                 query = tool_call["args"].get("query", user_input)
-                answer_parts: list[str] = []
-                result_sources: list = []
-                try:
-                    sync_gen = academic_agent.query_academic_knowledge_stream(query, history_str)
-                    async for event in _iterate_sync_generator_in_thread(sync_gen):
-                        if event["type"] in ("status", "cached"):  # cached：用了快取的回答，前端顯示「重新查詢」
-                            yield event
-                        elif event["type"] == "token":
-                            answer_parts.append(event["text"])
-                            yield event
-                        elif event["type"] == "sources":
-                            result_sources = event["sources"]
-                        elif event["type"] == "cache_key":
-                            cached_answer = {"key": event["key"], "hit": event["hit"]}
-                        elif event["type"] == "error":
-                            answer_parts.append(f"\n（{event['message']}）")
-                except Exception as e:
-                    print(f"[Agent] search_campus_regulations 串流失敗：{e}")
-                    answer_parts.append(f"查詢法規時發生錯誤：{e}")
-
-                content = "".join(answer_parts)
+                result: dict = {}
+                async for event in _regulation_answer_events(query, history_str, result):
+                    yield event
+                content = result["content"]
+                cached_answer = result["answer_cache"]
+                if cached_answer:  # 記下這段對話被導到法規問答，下次可以不問選工具的模型（見上面）
+                    await _remember_route(cached_answer["key"], route)
                 agent_results.append(content)
-                sources = result_sources
+                sources = result["sources"]
                 stop = True
                 messages.append(ToolMessage(content=content[:2000], tool_call_id=tool_call["id"]))
                 continue
