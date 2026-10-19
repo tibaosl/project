@@ -184,8 +184,12 @@ python -m backend.rag.crawler             # 抓到 data/<來源>/，例如 data/
 * 總務處、生醫理工學院的網頁是 JavaScript 載入的，原始 HTML 裡沒有內容，這兩個來源用 Playwright 的
   無頭 Chromium 渲染完再讀（`crawler_sources.py` 的 `render=True`），所以爬蟲也要先跑過
   `python -m playwright install chromium`。
-  總務處的「校園餐廳介紹」「校園商店介紹」是分類在下拉選單、一頁 10 筆要按下一頁的清單（`Page(categories=True)`），
-  爬蟲的瀏覽器會逐一選分類、翻頁，再打開每家店的詳細頁，整理成依地點分組、有營業時間跟電話的一份 Markdown。
+  總務處的「校園餐廳介紹」是分類在下拉選單、一頁 10 筆要按下一頁的清單（`Page(categories=True)`），
+  爬蟲的瀏覽器會逐一選分類、翻頁，再打開每家店的詳細頁，整理成依地點分組、有營業時間、電話跟發布日期的一份 Markdown。
+  這份清單沒有隨時更新（2026-10 還列著整修中的松苑餐廳店家），最新的是資產組每次開學、寒暑假前公告的
+  「校內餐廳商店營業時間」表（爬蟲只跟最新一則，存成「115年9月校內餐廳商店營業時間表.pdf」這樣的檔名），
+  哪些餐廳整修中、便利商店、ATM 則看學校官網的〈餐廳與商店〉（`中央大學官網` 來源，頁籤內容也是 JavaScript 載入的）。
+  法規問答的回答規則也寫了：寫了適用期間的營業時間表就算期間過了，只要沒有更新的一份，還是比更早的資料可靠。
   學務處 2026-10 改版後的下載專區也是 JavaScript 載入的，但它讀的 `/api/downloads/` 不用登入，
   跟電機系一樣直接讀網站的 API（`Source.api`，`crawler.osa_documents`），不用開瀏覽器一頁一頁按。
 * 每個檔案的來源網址記在 `data/.crawler_manifest.json`。不在裡面的檔案（自己手動放進 `data/` 的）
