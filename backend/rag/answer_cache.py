@@ -1,8 +1,8 @@
 """法規問答的回答快取：同一個問題（連同對話紀錄）再被問到時，直接用之前整理好的回答，不再呼叫模型。
 
 為什麼要快取：法規問答一題約 US$0.09（挑文件 0.055、回答 0.031，2026-10-13 用 usage_log 量的），是只經過
-選工具的功能的二十倍，學生問的問題又很集中（補辦學生證、休學、畢業學分）。用到快取時這一題只剩選工具跟
-「你可能還想問」約 US$0.008，回答也是馬上出來，不用等十幾秒。
+選工具的功能的二十倍，學生問的問題又很集中（補辦學生證、休學、畢業學分）。用到快取時這一題只剩選工具約
+US$0.004，回答也是馬上出來，不用等十幾秒。
 
 規則（查詢流程在 academic_agent.query_academic_knowledge_stream）：
 - 鍵：對話紀錄（含這一次的問題，去掉空白、標點、「請問」，全形半形視為一樣）、回答語言、學年度學期，
@@ -16,6 +16,7 @@
   沒有快取（見 academic_agent.cached_documents）。
 - 超過 MAX_AGE_DAYS 天的重新問一次，兩次挑的文件一樣就直接確認。
 - 使用者按「重新查詢」時不用快取，新的回答存回去，要再被確認一次才會給別人用。
+- 回答下面的「你可能還想問」（或反問的回答選項）也跟著回答存（remember_suggestions），用到快取時一起沿用。
 
 存在 storage/rag/answers/：一個鍵一個 JSON（裡面有原本的問題跟對話紀錄，「重新查詢」要用，只存在這台電腦），
 catalogs/ 是每個目錄版本的文件指紋清單。評估（rag_eval/run_eval.py）會關掉快取，量的才是每次重新回答的分數。
@@ -259,6 +260,29 @@ def top_documents_agree(before: list[str], after: list[str]) -> bool:
     """兩次挑的文件（指紋，最相關的在前面）算不算一樣：兩邊最相關的那份都在對方挑的文件裡。
     順序對調（辦法跟它的申請說明）、多挑或少挑一份補充文件都算一樣。"""
     return bool(before and after) and before[0] in after and after[0] in before
+
+
+def _audience(logged_in: bool) -> str:
+    return "login" if logged_in else "guest"
+
+
+def remember_suggestions(key: str, logged_in: bool, kind: str, questions: list[str]) -> None:
+    """回答下面的選項（「你可能還想問」或反問的回答選項，supervisor 在回答完後產生）跟著回答一起存，
+    下次用到這個快取時直接用，不用再呼叫模型（一次約 US$0.003）。登入跟沒登入推薦的功能不一樣，分開存。
+    回答重新整理（_store_answer 存新的回答）時會清掉，跟著新的回答重新產生。"""
+    entry = load(key)
+    if entry is None or not questions:
+        return
+    entry.setdefault("suggestions", {})[_audience(logged_in)] = {"kind": kind, "questions": list(questions)}
+    save(entry)
+
+
+def cached_suggestions(key: str, logged_in: bool) -> Optional[tuple[str, list[str]]]:
+    """存好的選項 (種類, 選項)，沒有的話回傳 None。"""
+    stored = ((load(key) or {}).get("suggestions") or {}).get(_audience(logged_in))
+    if not stored or not stored.get("questions"):
+        return None
+    return stored.get("kind", "follow_ups"), list(stored["questions"])
 
 
 def all_entries() -> list[dict]:

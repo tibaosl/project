@@ -9,7 +9,7 @@ from backend.ncu.activity_tools import (
     is_confirmation,
 )
 from backend import usage_log
-from backend.rag import academic_agent
+from backend.rag import academic_agent, answer_cache
 from backend.agent.suggestions import extract_question_to_user, generate_suggestions
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
@@ -174,7 +174,9 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
     - {"type": "cached", "key": ..., "created": ...}           # 法規查詢用了快取的回答（前端給「重新查詢」）
     - {"type": "result", "content": ...}                       # 某個工具/攔截分支的最終內容
     - {"type": "final", "agent_results": [...], "sources": [...],
-       "pending_action": {...}, "called_tools": [...]}          # 一定是最後一個事件
+       "pending_action": {...}, "called_tools": [...],
+       "answer_cache": {"key": ..., "hit": ...} 或 None}       # 一定是最後一個事件。answer_cache 是法規問答
+                                                              # 這次的回答在快取裡的鍵（見 _turn_suggestions）
     """
     print(f"\n[Agent] 收到使用者需求：「{user_input}」")
     print(f"[Agent] 參考對話歷史：「{history_str}」")
@@ -336,6 +338,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
     sources: list = []
     new_pending_action: dict = {}
     called_tools: list = []
+    cached_answer = None  # 法規問答的回答在快取裡的鍵（cache_key 事件）
 
     for _ in range(MAX_TOOL_ROUNDS):
         ai_msg = await llm_with_tools.ainvoke(messages)
@@ -383,6 +386,8 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
                             yield event
                         elif event["type"] == "sources":
                             result_sources = event["sources"]
+                        elif event["type"] == "cache_key":
+                            cached_answer = {"key": event["key"], "hit": event["hit"]}
                         elif event["type"] == "error":
                             answer_parts.append(f"\n（{event['message']}）")
                 except Exception as e:
@@ -432,6 +437,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
         "sources": sources,
         "pending_action": new_pending_action,
         "called_tools": called_tools,
+        "answer_cache": cached_answer,
     }
 
 
@@ -580,11 +586,33 @@ async def run_ncuxplore_agent_stream(user_message: str, username: str = "", pass
 
     # 等使用者回覆「確定」送出報名/取消時不給追問，避免把確認流程岔開
     if final_event and final_event["agent_results"] and not final_event["pending_action"]:
-        kind, questions = await generate_suggestions(
-            user_message,
-            final_event["agent_results"][-1],
-            final_event["called_tools"],
-            logged_in=bool(username),
-        )
+        kind, questions = await _turn_suggestions(final_event, user_message, logged_in=bool(username))
         if questions:
             yield {"type": "suggestions", "questions": questions, "kind": kind}
+
+
+async def _turn_suggestions(final_event: dict, user_message: str, logged_in: bool) -> tuple[str, list[str]]:
+    """回答下面的選項（suggestions.generate_suggestions）。法規問答用到回答快取時，沿用跟著那個回答存的選項，
+    不用再呼叫模型。剛整理好、存進快取的回答，產生選項之後也存回去，下一個用到快取的人就有。
+    快取讀寫失敗只是照平常產生選項。"""
+    cached = final_event.get("answer_cache")
+    if cached and cached["hit"]:
+        try:
+            stored = await asyncio.to_thread(answer_cache.cached_suggestions, cached["key"], logged_in)
+        except Exception as e:
+            print(f"[Agent-Stream] 讀不到快取的建議問題，重新產生：{e}")
+            stored = None
+        if stored:
+            return stored
+    kind, questions = await generate_suggestions(
+        user_message,
+        final_event["agent_results"][-1],
+        final_event["called_tools"],
+        logged_in=logged_in,
+    )
+    if cached:
+        try:
+            await asyncio.to_thread(answer_cache.remember_suggestions, cached["key"], logged_in, kind, questions)
+        except Exception as e:
+            print(f"[Agent-Stream] 建議問題存不進快取：{e}")
+    return kind, questions
