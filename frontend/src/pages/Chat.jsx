@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useSession } from "../context/SessionContext";
-import { streamChat, HttpStatusError } from "../api/chatStream";
+import { streamChat, streamAnswerRefresh, HttpStatusError } from "../api/chatStream";
 import MessageList from "../components/MessageList";
 import WelcomePanel from "../components/WelcomePanel";
 import ChatInput from "../components/ChatInput";
@@ -51,65 +51,95 @@ export default function Chat() {
     setMessages((prev) => prev.map((m) => (m.id === id ? updater(m) : m)));
   }
 
-  async function handleSend(text) {
-    if (isStreaming) return;
+  /** 開始一次請求（鎖住輸入框），回傳結束時要呼叫的函式。 */
+  function beginRequest() {
     const requestId = ++latestRequestRef.current;
-    const finishRequest = () => {
+    setIsStreaming(true);
+    return () => {
       if (requestId === latestRequestRef.current) setIsStreaming(false);
     };
+  }
+
+  /** 把串流事件套到 assistantId 那則訊息上（送出問題、重新查詢共用）。 */
+  function messageEventHandler(assistantId, finishRequest) {
+    let tokenBuffer = "";
+    return (event) => {
+      if (event.type === "status") {
+        updateMessage(assistantId, (m) => ({ ...m, status: event.text }));
+      } else if (event.type === "token") {
+        tokenBuffer += event.text;
+        const snapshot = tokenBuffer;
+        updateMessage(assistantId, (m) => ({ ...m, status: null, content: snapshot }));
+      } else if (event.type === "result") {
+        updateMessage(assistantId, (m) => ({ ...m, status: null, content: event.content }));
+      } else if (event.type === "cached") {
+        updateMessage(assistantId, (m) => ({ ...m, cached: { key: event.key, created: event.created } }));
+      } else if (event.type === "sources") {
+        updateMessage(assistantId, (m) => ({ ...m, sources: event.sources }));
+      } else if (event.type === "error") {
+        updateMessage(assistantId, (m) => ({
+          ...m,
+          status: null,
+          content: (m.content ? `${m.content}\n\n` : "") + event.message,
+        }));
+      } else if (event.type === "done") {
+        updateMessage(assistantId, (m) => ({ ...m, status: null, isStreaming: false }));
+        finishRequest();
+      } else if (event.type === "suggestions") {
+        updateMessage(assistantId, (m) => ({ ...m, suggestions: event.questions, suggestionKind: event.kind }));
+      } else if (event.type === "session_expired") {
+        // 後端明確告訴我們 token 已經失效了（跟單純訪客模式不一樣，見
+        // main.py _resolve_credentials 的說明）——清掉這個過期的本地
+        // session，導回登入頁並說明原因，不要讓使用者繼續對著一個
+        // 悄悄變成訪客模式的畫面納悶為什麼查不到自己的資料。
+        logout();
+        navigate(`/login?login_error=${encodeURIComponent(event.message)}`, { replace: true });
+      }
+    };
+  }
+
+  function showStreamFailure(assistantId, err, fallback) {
+    if (!(err instanceof HttpStatusError)) {
+      markUnreachable();
+    }
+    updateMessage(assistantId, (m) => ({ ...m, status: null, isStreaming: false, content: m.content || fallback }));
+  }
+
+  async function handleSend(text) {
+    if (isStreaming) return;
+    const finishRequest = beginRequest();
     const userMsg = { id: makeId(), role: "user", content: text };
     const assistantId = makeId();
     const assistantMsg = { id: assistantId, role: "assistant", content: null, status: null, isStreaming: true };
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
-    setIsStreaming(true);
-
-    let tokenBuffer = "";
 
     try {
       await streamChat(
         { userMessage: text, username: session.username, token: session.token, threadId: session.threadId },
-        (event) => {
-          if (event.type === "status") {
-            updateMessage(assistantId, (m) => ({ ...m, status: event.text }));
-          } else if (event.type === "token") {
-            tokenBuffer += event.text;
-            const snapshot = tokenBuffer;
-            updateMessage(assistantId, (m) => ({ ...m, status: null, content: snapshot }));
-          } else if (event.type === "result") {
-            updateMessage(assistantId, (m) => ({ ...m, status: null, content: event.content }));
-          } else if (event.type === "sources") {
-            updateMessage(assistantId, (m) => ({ ...m, sources: event.sources }));
-          } else if (event.type === "error") {
-            updateMessage(assistantId, (m) => ({
-              ...m,
-              status: null,
-              content: (m.content ? `${m.content}\n\n` : "") + event.message,
-            }));
-          } else if (event.type === "done") {
-            updateMessage(assistantId, (m) => ({ ...m, status: null, isStreaming: false }));
-            finishRequest();
-          } else if (event.type === "suggestions") {
-            updateMessage(assistantId, (m) => ({ ...m, suggestions: event.questions, suggestionKind: event.kind }));
-          } else if (event.type === "session_expired") {
-            // 後端明確告訴我們 token 已經失效了（跟單純訪客模式不一樣，見
-            // main.py _resolve_credentials 的說明）——清掉這個過期的本地
-            // session，導回登入頁並說明原因，不要讓使用者繼續對著一個
-            // 悄悄變成訪客模式的畫面納悶為什麼查不到自己的資料。
-            logout();
-            navigate(`/login?login_error=${encodeURIComponent(event.message)}`, { replace: true });
-          }
-        }
+        messageEventHandler(assistantId, finishRequest)
       );
     } catch (err) {
-      if (!(err instanceof HttpStatusError)) {
-        markUnreachable();
-      }
-      updateMessage(assistantId, (m) => ({
-        ...m,
-        status: null,
-        isStreaming: false,
-        content: m.content || `連線發生錯誤：${err.message}`,
-      }));
+      showStreamFailure(assistantId, err, `連線發生錯誤：${err.message}`);
+    } finally {
+      finishRequest();
+    }
+  }
+
+  // 快取的法規回答按了「重新查詢」：同一則訊息原地換成重新整理的回答（對話紀錄不會多一句）
+  async function handleRefresh(messageId, key) {
+    if (isStreaming) return;
+    const finishRequest = beginRequest();
+    updateMessage(messageId, (m) => ({
+      ...m, content: null, sources: null, cached: null, status: "正在重新查詢...", isStreaming: true,
+    }));
+
+    try {
+      await streamAnswerRefresh({ key }, messageEventHandler(messageId, finishRequest));
+    } catch (err) {
+      const message = err instanceof HttpStatusError && err.status === 404
+        ? "找不到這則回答原本的問題，請直接再問一次。"
+        : `重新查詢失敗：${err.message}`;
+      showStreamFailure(messageId, err, message);
     } finally {
       finishRequest();
     }
@@ -137,7 +167,7 @@ export default function Chat() {
             onAsk={handleSend}
           />
         ) : (
-          <MessageList messages={messages} onAsk={handleSend} busy={isStreaming} />
+          <MessageList messages={messages} onAsk={handleSend} onRefresh={handleRefresh} busy={isStreaming} />
         )}
       </div>
 

@@ -23,6 +23,7 @@ import argparse
 import importlib
 import importlib.util
 import json
+import os
 import sys
 import time
 import unicodedata
@@ -32,6 +33,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+# 評估要量的是每次重新回答的分數，不能用網站存下來的回答快取（backend/rag/answer_cache.py），
+# 評估的回答也不要存進去給網站用。要在 import backend 之前設定
+os.environ["RAG_ANSWER_CACHE"] = "0"
 
 from dotenv import load_dotenv  # noqa: E402
 from openai import OpenAI  # noqa: E402

@@ -1074,12 +1074,21 @@
   }
 }
 
-/* 文字回答下面的複製按鈕（CopyAnswerButton）：小、淡，不搶回答的視線 */
-.copy-answer-button {
+/* 文字回答下面的一排小按鈕：複製（CopyAnswerButton）、快取回答的「重新查詢」（CachedAnswerNote）。
+   小、淡，不搶回答的視線 */
+.answer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin-top: 8px;
+}
+
+.copy-answer-button,
+.answer-action-button {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-top: 8px;
   padding: 3px 8px;
   font: inherit;
   font-size: 12.5px;
@@ -1090,12 +1099,32 @@
   cursor: pointer;
 }
 
-.copy-answer-button:hover {
+.copy-answer-button:hover,
+.answer-action-button:hover:not(:disabled) {
   color: var(--ncux-primary);
   border-color: var(--ncux-primary);
 }
 
-.copy-answer-button:focus-visible {
+.copy-answer-button:focus-visible,
+.answer-action-button:focus-visible {
   outline: 2px solid var(--ncux-primary);
   outline-offset: 2px;
+}
+
+.answer-action-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.cached-answer-note {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-size: 12.5px;
+  color: var(--ncux-text-muted);
+}
+
+.cached-answer-note > .ncux-icon {
+  flex-shrink: 0;
 }

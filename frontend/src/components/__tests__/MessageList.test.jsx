@@ -72,6 +72,21 @@ describe("MessageList", () => {
     expect(onAsk).toHaveBeenCalledWith("要");
   });
 
+  it("快取的法規回答講完後註明整理的日期，按「重新查詢」會帶這則訊息跟快取鍵", async () => {
+    const onRefresh = vi.fn();
+    const cached = { key: "a".repeat(32), created: "2026-10-18T21:03:11" };
+    const messages = [
+      { id: "1", role: "assistant", content: "補發學生證要 200 元", cached },
+      { id: "2", role: "assistant", content: "還在打字", cached, isStreaming: true },
+      { id: "3", role: "assistant", content: "一般的回答" },
+    ];
+    render(<MessageList messages={messages} onAsk={vi.fn()} onRefresh={onRefresh} />);
+
+    expect(screen.getAllByText("10/18 整理好的回答")).toHaveLength(1);  // 還在打字的不顯示，一般的回答沒有
+    await userEvent.setup().click(screen.getByRole("button", { name: "重新查詢這則回答" }));
+    expect(onRefresh).toHaveBeenCalledWith("1", "a".repeat(32));
+  });
+
   it("還在處理新問題時不顯示追問", () => {
     const messages = [{ id: "1", role: "assistant", content: "回答", suggestions: ["追問"] }];
     render(<MessageList messages={messages} onAsk={vi.fn()} busy />);

@@ -171,6 +171,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
     依序可能 yield 的事件（都是 dict，呼叫端自己決定怎麼用）：
     - {"type": "status", "text": "..."}
     - {"type": "token", "text": "..."}                         # 僅法規查詢這條路會有
+    - {"type": "cached", "key": ..., "created": ...}           # 法規查詢用了快取的回答（前端給「重新查詢」）
     - {"type": "result", "content": ...}                       # 某個工具/攔截分支的最終內容
     - {"type": "final", "agent_results": [...], "sources": [...],
        "pending_action": {...}, "called_tools": [...]}          # 一定是最後一個事件
@@ -375,7 +376,7 @@ async def _agent_turn_events(user_input: str, username: str, password: str, pend
                 try:
                     sync_gen = academic_agent.query_academic_knowledge_stream(query, history_str)
                     async for event in _iterate_sync_generator_in_thread(sync_gen):
-                        if event["type"] == "status":
+                        if event["type"] in ("status", "cached"):  # cached：用了快取的回答，前端顯示「重新查詢」
                             yield event
                         elif event["type"] == "token":
                             answer_parts.append(event["text"])

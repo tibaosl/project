@@ -27,14 +27,17 @@ function sseBody(events) {
   });
 }
 
-// 依網址回不同的假資料：推薦問題、聊天串流（每次呼叫都給一個新的 body）、其他（health 檢查等）。
-function mockFetch({ streamEvents } = {}) {
+// 依網址回不同的假資料：推薦問題、聊天串流（每次呼叫都給一個新的 body）、重新查詢、其他（health 檢查等）。
+function mockFetch({ streamEvents, refreshEvents } = {}) {
   return vi.spyOn(global, "fetch").mockImplementation(async (url) => {
     if (url === "/api/suggestions") {
       return { ok: true, json: async () => ({ questions: STARTER }) };
     }
     if (url === "/api/chat/stream" && streamEvents) {
       return { ok: true, body: sseBody(streamEvents) };
+    }
+    if (url === "/api/regulations/refresh" && refreshEvents) {
+      return refreshEvents === 404 ? { ok: false, status: 404 } : { ok: true, body: sseBody(refreshEvents) };
     }
     return { ok: true, json: async () => ({ status: "ok" }) };
   });
@@ -125,6 +128,55 @@ describe("Chat", () => {
       expect(screen.getAllByText("回答內容")).toHaveLength(2);
     });
     expect(screen.getByText("我的累計排名是多少？", { selector: ".role-user *" })).toBeInTheDocument();
+  });
+
+  it("快取的法規回答按「重新查詢」，同一則訊息換成重新整理的回答", async () => {
+    const user = userEvent.setup();
+    const key = "c".repeat(32);
+    const fetchSpy = mockFetch({
+      streamEvents: [
+        { type: "cached", key, created: "2026-10-18T21:03:11" },
+        { type: "token", text: "補發要 200 元" },
+        { type: "sources", sources: ["教務處/學生證遺失補發申請辦法.pdf"] },
+        { type: "done" },
+      ],
+      refreshEvents: [
+        { type: "status", text: "正在挑選相關文件..." },
+        { type: "token", text: "補發要 250 元" },
+        { type: "sources", sources: ["教務處/學生證遺失補發申請辦法.pdf"] },
+        { type: "done" },
+      ],
+    });
+    renderChat();
+
+    await user.click(await screen.findByRole("button", { name: /最近有什麼藝文活動？/ }));
+    expect(await screen.findByText("10/18 整理好的回答")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "重新查詢這則回答" }));
+
+    expect(await screen.findByText("補發要 250 元")).toBeInTheDocument();
+    expect(screen.queryByText("補發要 200 元")).not.toBeInTheDocument();
+    expect(screen.queryByText("10/18 整理好的回答")).not.toBeInTheDocument();  // 新的回答不是快取的
+    const call = fetchSpy.mock.calls.find(([url]) => url === "/api/regulations/refresh");
+    expect(JSON.parse(call[1].body)).toEqual({ key });
+  });
+
+  it("重新查詢找不到原本的問題時，請使用者直接再問一次", async () => {
+    const user = userEvent.setup();
+    mockFetch({
+      streamEvents: [
+        { type: "cached", key: "d".repeat(32), created: "2026-10-18T21:03:11" },
+        { type: "token", text: "補發要 200 元" },
+        { type: "done" },
+      ],
+      refreshEvents: 404,
+    });
+    renderChat();
+
+    await user.click(await screen.findByRole("button", { name: /最近有什麼藝文活動？/ }));
+    await user.click(await screen.findByRole("button", { name: "重新查詢這則回答" }));
+
+    expect(await screen.findByText("找不到這則回答原本的問題，請直接再問一次。")).toBeInTheDocument();
   });
 
   it("點登出不會讓整頁崩潰，會正確導回登入頁", async () => {
