@@ -509,3 +509,84 @@ def test_cached_answers_reuse_their_suggestions(monkeypatch, catalog):
     # 不是法規問答（沒有快取鍵）照平常產生
     asyncio.run(supervisor_agent._turn_suggestions(_final(None), "我的課表", True))
     assert len(generate.calls) == 3
+
+
+# ============================================================
+# 不問選工具的模型，直接用快取
+# ============================================================
+class _CountingToolLLM(_ToolCallingLLM):
+    def __init__(self):
+        self.calls = 0
+
+    async def ainvoke(self, messages):
+        self.calls += 1
+        return await super().ainvoke(messages)
+
+
+def _turn(user_input, username="", pending=None):
+    async def collect():
+        return [e async for e in supervisor_agent._agent_turn_events(
+            user_input, username, "", pending or {}, f"[使用者]: {user_input}")]
+    return asyncio.run(collect())
+
+
+@pytest.fixture
+def router(monkeypatch):
+    llm = _CountingToolLLM()
+    monkeypatch.setattr(supervisor_agent, "llm_smart", llm)
+    monkeypatch.setattr(supervisor_agent, "_route_fingerprint", {})
+    return llm
+
+
+def test_conversations_routed_to_regulations_twice_skip_the_tool_choice(monkeypatch, catalog, router):
+    fake = _fake(monkeypatch)
+    _turn("補辦學生證要多少錢？")
+    _turn("請問補辦學生證要多少錢")  # 第二次：回答確認、選工具的模型第二次選了法規問答
+    assert (router.calls, _model_calls(fake)) == (2, 4)
+
+    events = _turn("補辦學生證要多少錢?")
+    assert (router.calls, _model_calls(fake)) == (2, 4)  # 選工具、挑文件、回答都不用再問模型
+    assert any(e["type"] == "cached" for e in events)
+    assert not any(e.get("text") == "正在理解你的問題..." for e in events)
+    final = events[-1]
+    assert final["called_tools"] == ["search_campus_regulations"]
+    assert final["agent_results"] == ["補發學生證要 200 元"]
+    assert final["answer_cache"]["hit"] is True
+
+
+def test_logged_in_users_are_routed_separately(monkeypatch, catalog, router):
+    # 登入後「畢業要修幾學分」這類問題可能會被導到學業分析，訪客的紀錄不能拿來用
+    _fake(monkeypatch)
+    _turn("補辦學生證要多少錢？")
+    _turn("補辦學生證要多少錢？")
+    _turn("補辦學生證要多少錢？", username="113000000")
+    assert router.calls == 3
+    _turn("補辦學生證要多少錢？", username="113000000")
+    assert router.calls == 4
+    _turn("補辦學生證要多少錢？", username="113000000")
+    assert router.calls == 4  # 登入的人也被導到法規問答兩次之後才直接用
+
+
+def test_pending_actions_and_changed_prompts_go_through_the_tool_choice(monkeypatch, catalog, router):
+    _fake(monkeypatch)
+    _turn("補辦學生證要多少錢？")
+    _turn("補辦學生證要多少錢？")
+    _turn("補辦學生證要多少錢？", pending={"type": "ACTIVITY_RECOMMEND", "tag_names": ["國際視野"]})
+    assert router.calls == 3  # 有待接續的動作，照平常讓模型判斷
+
+    monkeypatch.setattr(supervisor_agent, "AGENT_SYSTEM_PROMPT", supervisor_agent.AGENT_SYSTEM_PROMPT + "新規則\n")
+    monkeypatch.setattr(supervisor_agent, "_route_fingerprint", {})
+    _turn("補辦學生證要多少錢？")
+    assert router.calls == 4  # 選工具的 prompt 改了，之前記的不算
+
+
+def test_routes_survive_a_new_answer_but_not_without_a_confirmed_one(monkeypatch, catalog, router):
+    fake = _fake(monkeypatch, _plan(documents=("D01",)), _plan(documents=("D02",)), _plan(documents=("D02",)))
+    _turn("補辦學生證要多少錢？")
+    _turn("補辦學生證要多少錢？")  # 兩次挑的文件不一樣，還沒確認
+    entry = answer_cache.all_entries()[0]
+    assert (entry["confirmed"], sum(entry["routes"].values())) == (False, 2)  # 選工具的次數跟著留下來
+    _turn("補辦學生證要多少錢？")
+    assert router.calls == 3 and _model_calls(fake) == 6
+    _turn("補辦學生證要多少錢？")
+    assert router.calls == 3  # 確認之後就直接用

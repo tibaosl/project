@@ -17,6 +17,8 @@ US$0.004，回答也是馬上出來，不用等十幾秒。
 - 超過 MAX_AGE_DAYS 天的重新問一次，兩次挑的文件一樣就直接確認。
 - 使用者按「重新查詢」時不用快取，新的回答存回去，要再被確認一次才會給別人用。
 - 回答下面的「你可能還想問」（或反問的回答選項）也跟著回答存（remember_suggestions），用到快取時一起沿用。
+- 同一段對話被選工具的模型導到法規問答兩次以上（remember_route，登入跟沒登入分開），回答也確認過的話，
+  supervisor 直接用快取回答，連選工具的模型都不用問（academic_agent.cached_answer_ready）。
 
 存在 storage/rag/answers/：一個鍵一個 JSON（裡面有原本的問題跟對話紀錄，「重新查詢」要用，只存在這台電腦），
 catalogs/ 是每個目錄版本的文件指紋清單。評估（rag_eval/run_eval.py）會關掉快取，量的才是每次重新回答的分數。
@@ -283,6 +285,18 @@ def cached_suggestions(key: str, logged_in: bool) -> Optional[tuple[str, list[st
     if not stored or not stored.get("questions"):
         return None
     return stored.get("kind", "follow_ups"), list(stored["questions"])
+
+
+def remember_route(key: str, route: str) -> None:
+    """記一次「這段對話被選工具的模型導到法規問答」。route 是登入或訪客加上選工具設定的指紋
+    （supervisor_agent.regulation_route），改了選工具的 prompt 或工具說明，之前記的次數就不算。
+    跟回答本身無關，回答重新整理時次數照樣留著。"""
+    entry = load(key)
+    if entry is None:
+        return
+    routes = entry.setdefault("routes", {})
+    routes[route] = routes.get(route, 0) + 1
+    save(entry)
 
 
 def all_entries() -> list[dict]:
