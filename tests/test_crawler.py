@@ -717,14 +717,3 @@ def test_crawl_keeps_files_when_most_of_them_disappear_at_once(data_dir):
     site[FORMS_PAGE] = forms_page()
     report = Crawler(FakeFetcher(site), manifest, allow_mass_removal=True).crawl(SOURCE)
     assert len(report.removed) == 10
-
-
-def test_detail_text_keeps_the_publish_date():
-    # 總務處〈校園餐廳介紹〉每家店的詳細頁：「發布單位 : 資產組」跟日期黏在同一行，日期要留著（舊的店家資料才看得出來）
-    html = """<html><body><main><h2>漢堡王</h2><div>發布單位 : 資產組<span>2025-07-01</span></div>
-    <p>美式速食、漢堡</p><p>平日營業時間：周一至周日09:00-20:30</p></main></body></html>"""
-    text = crawler.detail_text(html, "https://www.oga.ncu.edu.tw/2e319283/news/daeb8e93/detail/a", "漢堡王")
-    assert text.splitlines() == ["美式速食、漢堡", "平日營業時間：周一至周日09:00-20:30", "發布日期：2025-07-01"]
-    # 日期自己一行也一樣
-    html = html.replace("<span>2025-07-01</span></div>", "</div><div>2025-07-01</div>")
-    assert crawler.detail_text(html, "https://www.oga.ncu.edu.tw/x", "漢堡王").endswith("發布日期：2025-07-01")

@@ -92,9 +92,13 @@ def test_category_listing_reads_every_category_and_page(site, monkeypatch):
     assert items[f"{site}/detail/12"] == ("店家12", "")  # 在第二頁，要按下一頁才讀得到
 
 
-def test_detail_text_drops_publisher_date_and_repeated_title():
+def test_detail_text_drops_publisher_and_repeated_title_keeps_the_date():
+    # 發布日期留著放在最後一行：〈校園餐廳介紹〉2026-10 還有 2025 年登錄、店已經不在的，舊資料才看得出來
     text = crawler.detail_text(DETAIL_PAGE, "https://www.oga.ncu.edu.tw/x", "店家1")
-    assert text == "早午餐\n營業時間：周一至周五07:30-13:30"
+    assert text == "早午餐\n營業時間：周一至周五07:30-13:30\n發布日期：2025-12-01"
+    # 實際的網頁「發布單位 : 資產組」跟日期黏在同一行
+    joined = DETAIL_PAGE.replace("<p>發布單位 : 資產組</p><p>2025-12-01</p>", "<p>發布單位 : 資產組<span>2025-07-01</span></p>")
+    assert crawler.detail_text(joined, "https://www.oga.ncu.edu.tw/x", "店家1").splitlines()[-1] == "發布日期：2025-07-01"
 
 
 def test_listing_markdown_groups_by_category_with_uncategorized_last():
