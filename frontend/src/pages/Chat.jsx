@@ -73,7 +73,9 @@ export default function Chat() {
       } else if (event.type === "result") {
         updateMessage(assistantId, (m) => ({ ...m, status: null, content: event.content }));
       } else if (event.type === "cached") {
-        updateMessage(assistantId, (m) => ({ ...m, cached: { key: event.key, created: event.created } }));
+        updateMessage(assistantId, (m) => ({
+          ...m, cached: { key: event.key, created: event.created, standard: Boolean(event.standard) },
+        }));
       } else if (event.type === "sources") {
         updateMessage(assistantId, (m) => ({ ...m, sources: event.sources }));
       } else if (event.type === "error") {

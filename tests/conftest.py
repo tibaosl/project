@@ -1,7 +1,7 @@
 import pytest
 
 from backend import usage_log
-from backend.rag import answer_cache
+from backend.rag import answer_cache, standard_answers
 
 
 @pytest.fixture(autouse=True)
@@ -18,3 +18,11 @@ def _answer_cache_in_temp_dir(tmp_path_factory, monkeypatch):
     monkeypatch.setattr(answer_cache, "ENABLED", True)
     monkeypatch.setattr(answer_cache, "_state", {"catalog": None, "state": None})
     monkeypatch.setattr(answer_cache, "_version_cache", {})
+
+
+@pytest.fixture(autouse=True)
+def _no_standard_answers(monkeypatch):
+    """標準答案（standard_answers.json）預設關掉：檔案裡的題目跟真的文件綁在一起，配對又要算向量、呼叫模型。
+    測標準答案的測試自己打開、換成假的題目。"""
+    monkeypatch.setattr(standard_answers, "ENABLED", False)
+    monkeypatch.setattr(standard_answers, "_loaded", {"key": None, "answers": [], "vectors": None, "owners": None})

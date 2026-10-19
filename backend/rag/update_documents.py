@@ -1,5 +1,6 @@
 """法規問答的文件每週自動更新：重抓學校網站（crawler.py），再幫新增、改版的文件補卡片跟向量
-（rag_documents.load_catalog），最後整理新增、改版的獎學金文件的申請資格（scholarship_tools.py）。
+（rag_documents.load_catalog），整理新增、改版的獎學金文件的申請資格（scholarship_tools.py），
+最後列出因為文件改了而停用的標準答案（standard_answers.py）。
 卡片跟獎學金資格先建好，網站開著的話下一次查詢載入新目錄只要幾秒，不用讓使用者等模型整理。
 Windows 的工作排程器每週跑一次（設定方式見 README「法規文件每週自動更新」），也可以在專案根目錄自己跑：
 
@@ -30,6 +31,8 @@ STEPS = [
         "print(f'目錄共 {len(c)} 份文件')",
     ]),
     ("整理獎學金資格", [sys.executable, "-m", "backend.analysis.scholarship_tools"]),
+    # 不呼叫模型，只列出根據的文件改了、先停用的標準答案（standard_answers.py），看紀錄的人照著文件改寫
+    ("檢查標準答案", [sys.executable, "-m", "backend.rag.standard_answers"]),
 ]
 
 
