@@ -81,6 +81,9 @@ HOST_GIVE_UP_AFTER = 2
 
 # RAG 讀得懂的格式。同一份文件有好幾種格式時，留排前面的
 PREFERRED_TYPES = (".pdf", ".docx", ".odt", ".doc")
+# 一次要移走至少這麼多份、而且超過原本的這個比例時，當成網站改版沒讀到清單，先不移（見 Crawler.crawl）
+MASS_REMOVAL_MIN = 10
+MASS_REMOVAL_SHARE = 0.5
 DOC_EXTENSIONS = {"pdf", "doc", "docx", "odt", "ods", "odp", "xls", "xlsx", "ppt", "pptx", "rtf", "zip", "rar", "7z"}
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "bmp", "webp", "svg", "ico"}
 GOOGLE_HOSTS = {"drive.google.com", "docs.google.com"}
@@ -1394,15 +1397,47 @@ def ee_documents(fetcher: Fetcher) -> list[tuple[str, list[tuple[int, str]], str
     return found
 
 
+# 學務處下載專區的附件標題常在後面標格式（「申請表 (ODT)」「法規全文 (Word)」），同一份文件的各種格式
+# 拿掉這個標記之後同名，交給 crawl 的「同名不同格式只留一種」處理。「(附件2)」是另一份文件，不拿掉
+_OSA_FORMAT_MARK = re.compile(r"\s*[（(]\s*(?:PDF|ODF|ODT|DOCX?|Word|Excel|XLSX?)\s*[)）]\s*$", re.I)
+_OSA_GENERIC_TITLES = {"", "法規全文", "申請表", "表單", "附件", "全文"}
+
+
+def osa_documents(fetcher: Fetcher) -> list[tuple[str, list[tuple[int, str]], str]]:
+    """學務處網站（osa.ncu.edu.tw）2026-10 改版成前端用 JavaScript 呼叫 /api/downloads/ 畫出來的網頁，
+    下載專區的網頁本身沒有任何連結（舊的 downloads.php 只剩空殼）。這個 API 不用登入，就是下載專區網頁讀的那一份。
+    一筆是一份法規或表單，附件可能是好幾種格式（PDF、Word、ODF），也可能有「(附件2)」。外部連結（全國法規資料庫）不抓。
+    回傳（檔案網址, 候選名稱, 所在網頁）。
+    """
+    site, page_url = "https://osa.ncu.edu.tw/", "https://osa.ncu.edu.tw/downloads"
+    found, page, size = [], 1, 100
+    while True:
+        data = json.loads(fetcher.get_bytes(f"{site}api/downloads/?locale=zh-TW&page={page}&size={size}"))
+        for item in data.get("items", []):
+            title = (item.get("title") or "").strip()
+            for attachment in item.get("attachments", []):
+                if attachment.get("type") != "file" or not attachment.get("path"):
+                    continue
+                name = _OSA_FORMAT_MARK.sub("", (attachment.get("title") or "").strip())
+                if name in _OSA_GENERIC_TITLES:
+                    name = title
+                found.append((urljoin(site, attachment["path"]), [(P_LINK_TEXT, name), (P_HEADING, title)], page_url))
+        if not data.get("items") or page * size >= int(data.get("total") or 0):
+            break
+        page += 1
+    return found
+
+
 # Source.api 對應的函式：網頁沒有連結、文件清單要另外呼叫網站 API 取得的來源
-API_PROVIDERS = {"ee": ee_documents}
+API_PROVIDERS = {"ee": ee_documents, "osa": osa_documents}
 
 
 class Crawler:
-    def __init__(self, fetcher: Fetcher, manifest: Manifest, dry_run: bool = False):
+    def __init__(self, fetcher: Fetcher, manifest: Manifest, dry_run: bool = False, allow_mass_removal: bool = False):
         self.fetcher = fetcher
         self.manifest = manifest
         self.dry_run = dry_run
+        self.allow_mass_removal = allow_mass_removal
         self.run_stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.renderer = Renderer(fetcher)
 
@@ -1613,6 +1648,17 @@ class Crawler:
                 report.pages_ok = False
 
         # 5. 網站上已經不見的檔案移走（頁面都有讀到、那個網址也沒有下載失敗才移，避免誤刪）
+        gone = [path for path, entry in managed.items()
+                if path not in kept and path not in moved and url_key(entry.get("url", "")) not in failed]
+        if (report.pages_ok and not self.allow_mass_removal
+                and len(gone) >= MASS_REMOVAL_MIN and len(gone) > len(managed) * MASS_REMOVAL_SHARE):
+            # 網站改版時舊網頁常常還打得開、只是清單不見了，頁面讀得到卻一份文件也沒有，看起來就像全部下架。
+            # 2026-10-18 學務處就這樣一次移走 57 份。一次要移走大部分的文件時先不移，留給人確認網站
+            report.errors.append(
+                f"這次在網站上找不到 {len(gone)} 份文件（原本 {len(managed)} 份），可能是網站改版、清單沒讀到，"
+                "先不移走。請看過網站，真的拿掉了再用 --allow-mass-removal 跑這個來源"
+            )
+            report.pages_ok = False
         for path, entry in managed.items():
             if path in kept or path in moved:
                 continue
@@ -1849,6 +1895,8 @@ def main() -> None:
     parser.add_argument("--move-duplicate-legacy", action="store_true",
                         help="把跟爬到的檔案內容一模一樣的舊檔移到 storage/crawler/legacy_backup/")
     parser.add_argument("-v", "--verbose", action="store_true", help="連沒變、略過的檔案都列出來")
+    parser.add_argument("--allow-mass-removal", action="store_true",
+                        help="網站真的一次拿掉大部分文件時用：照樣把找不到的移走（平常會當成網站改版、先不移）")
     args = parser.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")  # logging 印在 stderr，Windows 主控台預設不是 UTF-8
@@ -1882,7 +1930,7 @@ def main() -> None:
         parser.error(f"沒有這個來源：{'、'.join(sorted(unknown))}（用 --list 看有哪些）")
     sources = [s for s in SOURCES if not args.source or s.name in args.source]
 
-    crawler = Crawler(Fetcher(), manifest, dry_run=args.dry_run)
+    crawler = Crawler(Fetcher(), manifest, dry_run=args.dry_run, allow_mass_removal=args.allow_mass_removal)
     try:
         _crawl_sources(crawler, sources, manifest, args)
     finally:

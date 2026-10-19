@@ -16,7 +16,7 @@
 - 擴充到全校之後（從 www.ncu.edu.tw 的「教學」「行政」頁列出約 80 個單位網站，逐一看過）：
   大多數是 RPage（/p/412-、/p/404-、/p/405-、/p/426- 開頭的頁面都可能放文件）、WordPress、
   Orbit（網址有 /zh_tw/，附檔是 /xhr/archive/download?file=…，有時候回傳 PDF 線上檢視器），
-  其餘是各單位自己寫的。特殊的：電機系的表格辦法要呼叫 API（Source.api）、數學系的檔案清單
+  其餘是各單位自己寫的。特殊的：電機系、學務處（2026-10 改版後）的下載清單要呼叫 API（Source.api）、數學系的檔案清單
   是 Vue 元件屬性裡的 JSON、工學院的附檔放在 assets.ppnet.tw、網學所首頁是 meta refresh 轉址。
 - 總務處（www.oga.ncu.edu.tw）跟生醫理工學院（ncu.edu.tw/chst/#/…）的頁面是 JavaScript 載入的，
   原始 HTML 裡沒有內容，設 render=True 用 Playwright 的無頭 Chromium 渲染完再讀（2026-10-10）。
@@ -210,13 +210,13 @@ SOURCES: tuple[Source, ...] = (
     ),
     # ---------------- 2026-10 擴充：全校性的單位 ----------------
     Source(
-        # 學務處下載中心把各組（生輔、住宿、課外、衛保、諮商、職涯、服務學習）的法規表單放在一起，
-        # 一頁十筆，s 是從第幾筆開始，超過最後一頁是空的（多列幾頁，之後文件變多也抓得到）
+        # 學務處下載專區把各組（生輔、住宿、課外、衛保、諮商、職涯、服務學習）的法規表單放在一起。
+        # 2026-10 網站改版成 JavaScript 載入的網頁（舊的 downloads.php 只剩空殼，10/18 的更新因此把 57 份全部當成下架），
+        # 新的 /downloads 網頁讀的是不用登入的 /api/downloads/，直接讀它（crawler.osa_documents）
         name="學生事務處",
-        seeds=("https://osa.ncu.edu.tw/downloads.php",) + tuple(
-            f"https://osa.ncu.edu.tw/downloads.php?&s={start}&np=13" for start in range(10, 200, 10)
-        ),
+        api="osa",
         exclude=(r"英文版", r"^[^\u3400-\u9fff]+$", r"導生活動費", r"職涯導師", r"合作申請表",
+                 r"單位適用", r"導師輔導費", r"導師輔導選課時間",
                  r"導師(辦法|獎勵|推薦)|優良.*(導師|單位)推薦|輔導老師管理|管理者帳號|教師輔導學生|教師擔任導師"),
     ),
     Source(

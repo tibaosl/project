@@ -173,6 +173,9 @@ python -m backend.rag.crawler             # 抓到 data/<來源>/，例如 data/
 
 * 要抓哪些網站設定在 `backend/rag/crawler_sources.py`（約 80 個單位，每個網站的狀況都寫在裡面）。重抓時沒變的檔案不會再下載，
   網站上更新的檔案會覆蓋，網站上已經拿掉的檔案會移到 `storage/crawler/removed/`。
+  一個來源一次要移走 10 份以上、而且超過原本一半的文件時，當成網站改版、清單沒讀到，先不移，紀錄裡會寫錯誤
+  （2026-10-18 學務處網站改版，舊的下載頁只剩空殼，57 份文件就這樣被當成全部下架）。看過網站、確定真的拿掉了，
+  再用 `python -m backend.rag.crawler --source 名稱 --allow-mass-removal` 跑那個來源。
 * 有些資訊不是附檔而是網頁本身（獎學金一覽、宿舍 Q&A），會存成 `.md`，海報圖片（英文畢業門檻）
   另存成 PDF，讓 RAG 用圖片轉錄讀（挑到網頁時會一起帶上）。網頁裡的瀏覽人次、今天日期這類每次都不一樣的
   內容會拿掉，不然每次重抓都會被當成改版、重做卡片。
@@ -181,6 +184,8 @@ python -m backend.rag.crawler             # 抓到 data/<來源>/，例如 data/
   `python -m playwright install chromium`。
   總務處的「校園餐廳介紹」「校園商店介紹」是分類在下拉選單、一頁 10 筆要按下一頁的清單（`Page(categories=True)`），
   爬蟲的瀏覽器會逐一選分類、翻頁，再打開每家店的詳細頁，整理成依地點分組、有營業時間跟電話的一份 Markdown。
+  學務處 2026-10 改版後的下載專區也是 JavaScript 載入的，但它讀的 `/api/downloads/` 不用登入，
+  跟電機系一樣直接讀網站的 API（`Source.api`，`crawler.osa_documents`），不用開瀏覽器一頁一頁按。
 * 每個檔案的來源網址記在 `data/.crawler_manifest.json`。不在裡面的檔案（自己手動放進 `data/` 的）
   爬蟲不會動。`python -m backend.rag.crawler --legacy` 可以檢查這些手動檔跟爬到的檔案有沒有重複，
   加 `--move-duplicate-legacy` 會把內容一模一樣的移到 `storage/crawler/legacy_backup/`。

@@ -626,3 +626,58 @@ def test_render_sources_are_read_with_the_browser(monkeypatch):
     assert "https://www.oga.ncu.edu.tw/files/a.pdf" in {info.url for info in links.values()}
     crawler.collect(Source(name="資工系", seeds=("https://www.csie.ncu.edu.tw/y",)), c.Report("資工系"))
     assert calls[-1] == ("requests", "https://www.csie.ncu.edu.tw/y")
+
+
+def test_api_provider_lists_student_affairs_documents(data_dir):
+    # 學務處 2026-10 改版後的下載專區：一筆可能有好幾種格式（標題後面標格式）、「(附件2)」，外部連結不抓
+    import json
+
+    items = [
+        {"title": "國立中央大學學生宿舍管理辦法", "attachments": [
+            {"type": "file", "path": "uploads/downloads/dorm_rules.pdf", "title": "法規全文 (PDF)"},
+            {"type": "file", "path": "uploads/downloads/dorm_rules.docx", "title": "法規全文 (Word)"}]},
+        {"title": "國立中央大學校園性別事件申請調查處理流程圖", "attachments": [
+            {"type": "file", "path": "uploads/downloads/flow.pdf", "title": "國立中央大學校園性別事件申請調查處理流程圖"},
+            {"type": "file", "path": "uploads/downloads/flow2.pdf", "title": "國立中央大學校園性別事件申請調查處理流程圖 (附件2)"}]},
+        {"title": "兵役法", "attachments": [
+            {"type": "link", "path": "https://law.moj.gov.tw/LawClass/LawAll.aspx?PCode=F0040001", "title": "兵役法"}]},
+    ]
+    osa = "https://osa.ncu.edu.tw"
+    site = {
+        f"{osa}/api/downloads/?locale=zh-TW&page=1&size=100": json.dumps({"total": 3, "page": 1, "size": 100, "items": items}).encode(),
+        f"{osa}/uploads/downloads/dorm_rules.pdf": _pdf("dorm"),
+        f"{osa}/uploads/downloads/dorm_rules.docx": _zip({"word/document.xml": "<w:document/>"}),
+        f"{osa}/uploads/downloads/flow.pdf": _pdf("flow"),
+        f"{osa}/uploads/downloads/flow2.pdf": _pdf("flow 2"),
+    }
+    fetcher = FakeFetcher(site)
+    report = Crawler(fetcher, Manifest(data_dir / ".crawler_manifest.json")).crawl(Source(name="學生事務處", api="osa"))
+    assert sorted(report.added) == [
+        "學生事務處/國立中央大學學生宿舍管理辦法.pdf",
+        "學生事務處/國立中央大學校園性別事件申請調查處理流程圖(附件2).pdf",
+        "學生事務處/國立中央大學校園性別事件申請調查處理流程圖.pdf",
+    ]
+    assert any("同一份文件已經有 .pdf 版" in s for s in report.skipped)  # Word 版不用再抓
+    assert not any("law.moj.gov.tw" in url for url in fetcher.requests)
+
+
+def test_crawl_keeps_files_when_most_of_them_disappear_at_once(data_dir):
+    # 網站改版時舊網頁常常還打得開、只是清單不見了。2026-10-18 學務處就這樣被當成 57 份全部下架
+    items = [f'<li>文件{i} 》<a href="/static/file/{i}/{i}.pdf">PDF</a></li>' for i in range(12)]
+    site = {FORMS_PAGE: forms_page(*items), **{f"{SITE}/static/file/{i}/{i}.pdf": _pdf(f"doc {i}") for i in range(12)}}
+    manifest = Manifest(data_dir / ".crawler_manifest.json")
+    Crawler(FakeFetcher(site), manifest).crawl(SOURCE)
+
+    site[FORMS_PAGE] = forms_page()  # 網頁打得開，清單是空的
+    report = Crawler(FakeFetcher(site), manifest).crawl(SOURCE)
+    assert not report.removed and len(list((data_dir / "註冊組").iterdir())) == 12
+    assert any("找不到 12 份文件" in e and "--allow-mass-removal" in e for e in report.errors)
+
+    # 拿掉少數幾份照常移走
+    site[FORMS_PAGE] = forms_page(*items[:10])
+    assert len(Crawler(FakeFetcher(site), manifest).crawl(SOURCE).removed) == 2
+
+    # 人工確認網站真的拿掉了，可以照樣移走
+    site[FORMS_PAGE] = forms_page()
+    report = Crawler(FakeFetcher(site), manifest, allow_mass_removal=True).crawl(SOURCE)
+    assert len(report.removed) == 10
