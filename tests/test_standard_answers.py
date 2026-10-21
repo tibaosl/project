@@ -249,6 +249,16 @@ def test_match_checks_vectors_then_rules_then_the_model(setup):
     assert sa.match("學生證可以當悠遊卡用嗎", vector, docs, set()) is None
 
 
+def test_answers_failing_the_rules_do_not_take_candidate_slots(setup):
+    # 各學院的英文門檻有好幾則時，別學院的比較像也不能佔掉候選的名額，問題講的那個學院的才排得進來
+    answers = sa.load(setup.docs)
+    vector = np.array([0.6, 0, 0, 0, 0.8, 0.1])
+    vector /= np.linalg.norm(vector)
+    assert [e.id for e, _ in sa.candidates(vector, answers, limit=1)] == ["cs_award"]
+    allowed = lambda entry: sa.passes_rules("學生證跟書卷獎", entry, set())  # noqa: E731
+    assert [e.id for e, _ in sa.candidates(vector, answers, limit=1, allowed=allowed)] == ["student_id"]
+
+
 def test_question_vectors_are_cached_on_disk(setup, monkeypatch):
     answers = sa.load(setup.docs)
     sa._question_vectors(answers)

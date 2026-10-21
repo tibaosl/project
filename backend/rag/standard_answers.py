@@ -6,7 +6,8 @@
 （評估分數大約 85～92%，標準答案涵蓋的題目幾乎都對）。
 
 配錯比查不到更糟（問資工系的人拿到電機系的答案），所以配對分三關，都過了才用：
-1. 向量：問題跟每一則標準答案的各種問法比相似度，取最像的幾則（只是找候選，門檻不高）。
+1. 向量：問題跟每一則標準答案的各種問法比相似度，取最像的幾則（只是找候選，門檻不高）。第 2 關的規則不過的不佔名額，
+   同一類的標準答案很多則時（例如各學院的英文門檻），問題講的那個學院的才不會被別學院比較像的擠出候選。
 2. 規則（不呼叫模型）：問題裡有標準問法跟答案都沒寫到的數字（年度、分數）不算；標準答案只適用某些學制（例如大學部），
    問題要講到那個學制；只適用某些系所的，問題要講到那個系所（學院的規定講到學院或底下的系所都算）；全校通用、但系所可能另有規定的，
    問題講到系所就不算（any_unit 標成 true 的才不管系所，例如補辦學生證）。
@@ -240,17 +241,24 @@ def passes_rules(question: str, entry: StandardAnswer, user_units: set[str]) -> 
 # ============================================================
 # 配對
 # ============================================================
-def candidates(vector: np.ndarray, answers: list[StandardAnswer], limit: int = CANDIDATES) -> list[tuple[StandardAnswer, float]]:
-    """跟問題最像的幾則（每則取它最像的那種問法），相似度低於 MIN_SIMILARITY 的不要。"""
+def candidates(vector: np.ndarray, answers: list[StandardAnswer], limit: int = CANDIDATES,
+               allowed: Optional[Callable[[StandardAnswer], bool]] = None) -> list[tuple[StandardAnswer, float]]:
+    """跟問題最像的幾則（每則取它最像的那種問法），相似度低於 MIN_SIMILARITY 的不要。
+    allowed（第 2 關的規則）不過的跳過、不算在幾則裡。"""
     vectors, owners = _question_vectors(answers)
     if vectors is None:
         return []
     similarity = vectors @ vector
     best: dict[int, float] = {}
+    checked: dict[int, bool] = {}
     for row in np.argsort(-similarity):
         if similarity[row] < MIN_SIMILARITY or len(best) >= limit:
             break
-        best.setdefault(int(owners[row]), float(similarity[row]))
+        owner = int(owners[row])
+        if owner not in checked:
+            checked[owner] = allowed is None or allowed(answers[owner])
+        if checked[owner]:
+            best.setdefault(owner, float(similarity[row]))
     return [(answers[i], score) for i, score in best.items()]
 
 
@@ -302,13 +310,13 @@ def match(question: str, vector: np.ndarray, catalog: list, user_units: set[str]
     trace 給 --try 跟測試看每一關的結果。"""
     note = trace or (lambda _: None)
     answers = load(catalog)
-    found = candidates(vector, answers)
-    note(f"向量候選：{[(e.id, round(s, 3)) for e, s in found]}")
-    passed = [entry for entry, _ in found if passes_rules(question, entry, user_units)]
-    note(f"通過規則：{[e.id for e in passed]}")
+    if trace:
+        note(f"向量候選：{[(e.id, round(s, 3)) for e, s in candidates(vector, answers)]}")
+    passed = candidates(vector, answers, allowed=lambda entry: passes_rules(question, entry, user_units))
+    note(f"通過規則：{[(e.id, round(s, 3)) for e, s in passed]}")
     if not passed:
         return None
-    return verify(question, passed, note)
+    return verify(question, [entry for entry, _ in passed], note)
 
 
 def available(catalog: list) -> bool:
