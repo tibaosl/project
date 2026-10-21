@@ -239,6 +239,7 @@ def sniff_extension(data: bytes) -> str:
 # 文件名稱
 # ============================================================
 # 候選名稱的可信度：同樣像樣的名稱，先採用可信度高的來源
+P_SOURCE_NAME = 7     # 來源設定指定的名稱（Follow.name）
 P_DOWNLOAD_ATTR = 6   # <a download="...">
 P_LINK_TEXT = 5
 P_TITLE_ATTR = 5      # title / aria-label
@@ -665,8 +666,9 @@ def _json_attribute_links(soup: BeautifulSoup, page_url: str) -> list[tuple[str,
     return found
 
 
-def follow_targets(soup: BeautifulSoup, page_url: str, rules: tuple[Follow, ...]) -> list[str]:
-    targets: list[str] = []
+def follow_targets(soup: BeautifulSoup, page_url: str, rules: tuple[Follow, ...]) -> list[tuple[str, str]]:
+    """（要跟進的網址, 那一頁上文件的指定名稱）。指定名稱是 Follow.name 填入連結文字的括號群組，沒設是空字串。"""
+    targets: dict[str, str] = {}
     for rule in rules:
         matches = []
         for link in soup.find_all("a", href=True):
@@ -680,12 +682,13 @@ def follow_targets(soup: BeautifulSoup, page_url: str, rules: tuple[Follow, ...]
                 continue
             matches.append((url, match))
         if rule.latest:
-            numbered = [(int(m.group(1)), url) for url, m in matches if m and m.groups() and (m.group(1) or "").isdigit()]
-            if numbered:
-                targets.append(max(numbered)[1])
-        else:
-            targets.extend(url for url, _ in matches)
-    return list(dict.fromkeys(targets))
+            numbered = [(url, m) for url, m in matches
+                        if m and m.groups() and all((g or "").isdigit() for g in m.groups())]
+            matches = [max(numbered, key=lambda pair: tuple(int(g) for g in pair[1].groups()))] if numbered else []
+        for url, match in matches:
+            name = rule.name.format(*match.groups()) if rule.name and match else rule.name
+            targets.setdefault(url, name)
+    return list(targets.items())
 
 
 # ============================================================
@@ -865,19 +868,28 @@ def page_markdown(soup: BeautifulSoup, page: Page, url: str, base: str = "") -> 
     return f"# {page.name}\n\n來源網頁：{url}\n\n{body}\n", root
 
 
-_DETAIL_NOISE = re.compile(r"^(發布單位\s*[:：].*|\d{4}-\d{2}-\d{2})$")
+# 詳細頁開頭的「發布單位 : 資產組2025-07-01」（單位跟日期黏在同一行，有時候日期自己一行）
+_DETAIL_HEADER = re.compile(r"^(?:發布單位\s*[:：]\s*[^\d]*)?(\d{4}-\d{2}-\d{2})?$")
 
 
 def detail_text(html: str, url: str, name: str) -> str:
-    """圖文清單（Page.categories）裡一筆的詳細頁內容，拿掉發布單位、日期、重複的標題。"""
+    """圖文清單（Page.categories）裡一筆的詳細頁內容，拿掉發布單位、重複的標題。發布日期留著，寫成內容最後一行
+    「發布日期：…」：清單裡每筆登錄的時間不同（總務處的〈校園餐廳介紹〉2026-10 還有 2025 年登錄、店已經整修中的），
+    跟較新的營業時間表衝突時才看得出哪個是舊的。"""
     soup = BeautifulSoup(html, "lxml")
     root = main_content(soup)
     _drop_view_counters(root)
     blocks: list[str] = []
     _render(root, base_url(soup, url), blocks)
     lines = [line.strip() for line in normalize_text("\n\n".join(blocks)).splitlines()]
-    kept = [line for line in lines if line and line.lstrip("#").strip() != name and not _DETAIL_NOISE.match(line)]
-    return "\n".join(kept)
+    kept, dates = [], []
+    for line in lines:
+        header = _DETAIL_HEADER.match(line)
+        if header and line:
+            dates.extend(filter(None, [header.group(1)]))
+        elif line and line.lstrip("#").strip() != name:
+            kept.append(line)
+    return "\n".join(kept + [f"發布日期：{date}" for date in dates[:1]])
 
 
 def listing_markdown(page: Page, url: str, entries: list[tuple[str, str, str]]) -> str:
@@ -1091,7 +1103,7 @@ class Renderer:
             return page.content(), page.url
 
     def category_listing(self, url: str) -> tuple[str, dict[str, tuple[str, str]]]:
-        """總務處網站的圖文清單（校園餐廳介紹、校園商店介紹）：分類在下拉選單、要按「搜尋」才會換，
+        """總務處網站的圖文清單（校園餐廳介紹）：分類在下拉選單、要按「搜尋」才會換，
         一頁 10 筆要按「下一頁」，網址都不會變。像真人一樣先讀完不分類的清單，再一個一個選分類、
         按搜尋、讀完每一頁，記下每筆屬於哪個分類。
 
@@ -1446,7 +1458,7 @@ class Crawler:
         links: dict[str, LinkInfo] = {}
         snapshots: list[tuple[Page, str, str]] = []
         pages = {url_key(p.url): p for p in source.pages}
-        queue = [(url, 0) for url in source.seeds] + [(p.url, 0) for p in source.pages]
+        queue = [(url, 0, "") for url in source.seeds] + [(p.url, 0, "") for p in source.pages]
         seen: set[str] = set()
         if source.api:
             try:
@@ -1458,7 +1470,7 @@ class Crawler:
                 report.errors.append(f"讀不到 {source.name} 的文件清單（{source.api} API）：{e}")
                 report.pages_ok = False
         while queue:
-            url, depth = queue.pop(0)
+            url, depth, doc_name = queue.pop(0)
             if url_key(url) in seen:
                 continue
             seen.add(url_key(url))
@@ -1473,10 +1485,10 @@ class Crawler:
             base = base_url(soup, final_url)
             for doc_url, names in find_document_links(soup, base):
                 info = links.setdefault(url_key(doc_url), LinkInfo(doc_url))
-                info.names.extend(names)
+                info.names.extend(names + ([(P_SOURCE_NAME, doc_name)] if doc_name else []))
                 info.pages.append((final_url, title))
             if depth == 0 and source.follow:
-                queue.extend((target, 1) for target in follow_targets(soup, base, source.follow))
+                queue.extend((target, 1, name) for target, name in follow_targets(soup, base, source.follow))
             page = pages.get(url_key(url))
             if page is not None:
                 snapshots.append((page, final_url, html))
